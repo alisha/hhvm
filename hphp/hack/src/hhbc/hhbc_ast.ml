@@ -30,6 +30,7 @@ type method_id = Hhbc_id.Method.t
 type const_id = Hhbc_id.Const.t
 type prop_id = Hhbc_id.Prop.t
 type num_params = int
+type has_unpack = bool
 type classref_id = int
 (* Conventionally this is "A_" followed by an integer *)
 type adata_id = string
@@ -265,6 +266,9 @@ type instruct_operator =
   | Clone
   | Exit
   | Fatal of FatalOp.t
+  | ResolveFunc of function_id
+  | ResolveObjMethod
+  | ResolveClsMethod
 
 type switchkind =
   | Bounded
@@ -414,13 +418,8 @@ type instruct_call =
   | FIsParamByRefCufIter of param_num * fpass_hint * Iterator.t
   | FThrowOnRefMismatch of bool list
   | FHandleRefMismatch of param_num * fpass_hint * string
-  | FCall of num_params
-  | FCallM of num_params * num_params
-  | FCallDM of num_params * num_params * class_id * function_id
-  | FCallUnpackM of num_params * num_params
-  | FCallD of num_params * class_id * function_id
+  | FCall of num_params * has_unpack * num_params * class_id * function_id
   | FCallAwait of num_params * class_id * function_id
-  | FCallUnpack of num_params
   | FCallBuiltin of num_params * num_params * string
 
 type instruct_base =
@@ -428,11 +427,11 @@ type instruct_base =
   | BaseNL of local_id * MemberOpMode.t
   | BaseGC of stack_index * MemberOpMode.t
   | BaseGL of local_id * MemberOpMode.t
-  | BaseSC of stack_index * classref_id
-  | BaseSL of local_id * stack_index
+  | BaseSC of stack_index * classref_id * MemberOpMode.t
+  | BaseSL of local_id * stack_index * MemberOpMode.t
   | BaseL of local_id * MemberOpMode.t
-  | BaseC of stack_index
-  | BaseR of stack_index
+  | BaseC of stack_index * MemberOpMode.t
+  | BaseR of stack_index * MemberOpMode.t
   | BaseH
   | Dim of MemberOpMode.t * MemberKey.t
 

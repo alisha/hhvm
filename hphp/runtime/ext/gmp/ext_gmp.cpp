@@ -161,6 +161,8 @@ static bool variantToGMPData(const char* const fnCaller,
   case KindOfArray:
   case KindOfRef:
   case KindOfResource:
+  case KindOfFunc:
+  case KindOfClass:
     raise_warning(cs_GMP_INVALID_TYPE, fnCaller);
     return false;
   }
@@ -1352,7 +1354,7 @@ static void HHVM_METHOD(GMP, unserialize,
 
   auto gmpObjectData = Native::data<GMPData>(this_);
   gmpObjectData->setGMPMpz(gmpData);
-  this_->setDynPropArray(props.toArray());
+  this_->setDynProps(props.toArray());
 
   mpz_clear(gmpData);
 }

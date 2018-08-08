@@ -78,8 +78,8 @@ struct Program;
  * dependency - either a php::Func, or, if we're doing private
  * property analysis and its a suitable class, a php::Class
  */
-using DependencyContext = Either<borrowed_ptr<php::Func>,
-                                 borrowed_ptr<const php::Class>>;
+using DependencyContext = Either<const php::Func*,
+                                 const php::Class*>;
 
 struct DependencyContextLess {
   bool operator()(const DependencyContext& a,
@@ -92,6 +92,13 @@ struct DependencyContextHash {
   size_t operator()(const DependencyContext& d) const {
     return pointer_hash<void>{}(reinterpret_cast<void*>(d.toOpaque()));
   }
+};
+
+struct DependencyContextHashCompare : DependencyContextHash {
+  bool equal(const DependencyContext& a, const DependencyContext& b) const {
+    return a.toOpaque() == b.toOpaque();
+  }
+  size_t hash(const DependencyContext& d) const { return (*this)(d); }
 };
 
 using DependencyContextSet = hphp_hash_set<DependencyContext,
@@ -204,6 +211,12 @@ struct Class {
   bool couldBeMocked() const;
 
   /*
+   * Whether initializing this class (which sets up the class' properties and is
+   * a side-effect of several different bytecodes) can potentially raise.
+   */
+  bool initMightRaise() const;
+
+  /*
    * Returns the Class that is the first common ancestor between 'this' and 'o'.
    * If there is no common ancestor folly::none is returned
    */
@@ -226,17 +239,17 @@ struct Class {
    * Returns the php::Class for this Class if there is one, or
    * nullptr.
    */
-  borrowed_ptr<const php::Class> cls() const;
+  const php::Class* cls() const;
 
 private:
-  Class(borrowed_ptr<const Index>, Either<SString,borrowed_ptr<ClassInfo>>);
+  Class(const Index*, Either<SString,ClassInfo*>);
 
 private:
   friend std::string show(const Class&);
   friend struct ::HPHP::HHBBC::Index;
   friend struct ::HPHP::HHBBC::PublicSPropIndexer;
-  borrowed_ptr<const Index> index;
-  Either<SString,borrowed_ptr<ClassInfo>> val;
+  const Index* index;
+  Either<SString,ClassInfo*> val;
 };
 
 /*
@@ -266,7 +279,7 @@ struct Func {
   /*
    * If this resolved function represents exactly one php::Func, return it.
    */
-  borrowed_ptr<const php::Func> exactFunc() const;
+  const php::Func* exactFunc() const;
 
   /*
    * Returns whether this resolved function could possibly be going through a
@@ -327,17 +340,17 @@ private:
   };
   using Rep = boost::variant< FuncName
                             , MethodName
-                            , borrowed_ptr<FuncInfo>
-                            , borrowed_ptr<const MethTabEntryPair>
-                            , borrowed_ptr<FuncFamily>
+                            , FuncInfo*
+                            , const MethTabEntryPair*
+                            , FuncFamily*
                             >;
 
 private:
-  Func(borrowed_ptr<const Index>, Rep);
+  Func(const Index*, Rep);
   friend std::string show(const Func&);
 
 private:
-  borrowed_ptr<const Index> index;
+  const Index* index;
   Rep val;
 };
 
@@ -382,7 +395,7 @@ struct Index {
    * Create an Index for a php::Program.  Performs some initial
    * analysis of the program.
    */
-  explicit Index(borrowed_ptr<php::Program>, rebuild* = nullptr);
+  explicit Index(php::Program*, rebuild* = nullptr);
 
   /*
    * This class must not be destructed after its associated
@@ -437,15 +450,15 @@ struct Index {
    * Find all the closures created inside the context of a given
    * php::Class.
    */
-  const CompactVector<borrowed_ptr<const php::Class>>*
-    lookup_closures(borrowed_ptr<const php::Class>) const;
+  const CompactVector<const php::Class*>*
+    lookup_closures(const php::Class*) const;
 
   /*
    * Find all the extra methods associated with a class from its
    * traits.
    */
-  const std::set<borrowed_ptr<php::Func>>*
-    lookup_extra_methods(borrowed_ptr<const php::Class>) const;
+  const hphp_fast_set<php::Func*>*
+    lookup_extra_methods(const php::Class*) const;
 
   /*
    * Attempt to record a new alias in the index. May be called from
@@ -472,7 +485,7 @@ struct Index {
    * Returns a name-only resolution if there are no legal
    * instantiations of the class, or if there is more than one.
    */
-  res::Class resolve_class(borrowed_ptr<const php::Class>) const;
+  res::Class resolve_class(const php::Class*) const;
 
   /*
    * Try to resolve which class will be the class named `name' from a
@@ -496,7 +509,7 @@ struct Index {
   struct ResolvedInfo {
     AnnotType                               type;
     bool                                    nullable;
-    Either<SString,borrowed_ptr<ClassInfo>> value;
+    Either<SString,ClassInfo*> value;
   };
 
   /*
@@ -516,7 +529,7 @@ struct Index {
    * Returns both a resolved Class, and the actual php::Class for the
    * closure.
    */
-  std::pair<res::Class,borrowed_ptr<php::Class>>
+  std::pair<res::Class,php::Class*>
     resolve_closure_class(Context ctx, int32_t idx) const;
 
   /*
@@ -556,7 +569,7 @@ struct Index {
    * Try to resolve a class method named `name' with a given Context
    * and class type.
    *
-   * Pre: clsType.subtypeOf(TCls)
+   * Pre: clsType.subtypeOf(BCls)
    */
   res::Func resolve_method(Context, Type clsType, SString name) const;
 
@@ -630,7 +643,7 @@ struct Index {
    * return that constant; otherwise return TTop.
    */
   Type lookup_foldable_return_type(Context ctx,
-                                   borrowed_ptr<const php::Func> func,
+                                   const php::Func* func,
                                    std::vector<Type> args) const;
   /*
    * Return the best known return type for a resolved function, in a
@@ -655,13 +668,13 @@ struct Index {
    * Nothing may be writing to the index when this function is used,
    * but concurrent readers are allowed.
    */
-  Type lookup_return_type_raw(borrowed_ptr<const php::Func>) const;
+  Type lookup_return_type_raw(const php::Func*) const;
 
   /*
    * As lookup_return_type_raw, but also clean out the FuncInfo struct.
    * For use during emit, to keep memory usage down.
    */
-  Type lookup_return_type_and_clear(borrowed_ptr<const php::Func>) const;
+  Type lookup_return_type_and_clear(const php::Func*) const;
 
   /*
    * Return the best known types of a closure's used variables (on
@@ -671,18 +684,18 @@ struct Index {
    * should only be done at emit time.
    */
   std::vector<Type>
-    lookup_closure_use_vars(borrowed_ptr<const php::Func>,
+    lookup_closure_use_vars(const php::Func*,
                             bool move = false) const;
 
   CompactVector<Type>
-    lookup_local_static_types(borrowed_ptr<const php::Func> f) const;
+    lookup_local_static_types(const php::Func* f) const;
 
   /*
    * Return the availability of $this on entry to the provided method.
    * If the Func provided is not a method of a class false is
    * returned.
    */
-  bool lookup_this_available(borrowed_ptr<const php::Func>) const;
+  bool lookup_this_available(const php::Func*) const;
 
   /*
    * Returns the parameter preparation kind (if known) for parameter
@@ -702,7 +715,7 @@ struct Index {
    * If move is true, the value will be moved out of the index. This
    * should only be done at emit time.
    */
-  PropState lookup_private_props(borrowed_ptr<const php::Class>,
+  PropState lookup_private_props(const php::Class*,
                                  bool move = false) const;
 
   /*
@@ -716,7 +729,7 @@ struct Index {
    * If move is true, the value will be moved out of the index. This
    * should only be done at emit time.
    */
-  PropState lookup_private_statics(borrowed_ptr<const php::Class>,
+  PropState lookup_private_statics(const php::Class*,
                                    bool move = false) const;
 
   /*
@@ -727,7 +740,13 @@ struct Index {
    * been called, or if the AnalyzePublicStatics option is off.
    */
   Type lookup_public_static(const Type& cls, const Type& name) const;
-  Type lookup_public_static(borrowed_ptr<const php::Class>, SString name) const;
+  Type lookup_public_static(const php::Class*, SString name) const;
+
+  /*
+   * Lookup if initializing (which is a side-effect of several bytecodes) the
+   * given class might raise.
+   */
+  bool lookup_class_init_might_raise(Context, res::Class) const;
 
   /*
    * If we resolve a public static initializer to a constant, and eliminate the
@@ -739,14 +758,14 @@ struct Index {
    * one InitProp which sets it, and all we do is modify an existing
    * element of a map.
    */
-  void fixup_public_static(borrowed_ptr<const php::Class>, SString name,
+  void fixup_public_static(const php::Class*, SString name,
                            const Type& ty) const;
   /*
    * Returns whether a public static property is known to be immutable.  This
    * is used to add AttrPersistent flags to static properties, and relies on
    * AnalyzePublicStatics (without this flag it will always return false).
    */
-  bool lookup_public_static_immutable(borrowed_ptr<const php::Class>,
+  bool lookup_public_static_immutable(const php::Class*,
                                       SString name) const;
 
   /*
@@ -755,7 +774,7 @@ struct Index {
    * class will share the same vtable slot. May return kInvalidSlot, if the
    * given class isn't an interface or if it wasn't assigned a slot.
    */
-  Slot lookup_iface_vtable_slot(borrowed_ptr<const php::Class>) const;
+  Slot lookup_iface_vtable_slot(const php::Class*) const;
 
   /*
    * Return the DependencyContext for ctx.
@@ -769,6 +788,12 @@ struct Index {
    * Must be called in single-threaded context.
    */
   void use_class_dependencies(bool f);
+
+  /*
+   * Initialize the initial types for public static properties. This should be
+   * done after rewriting initial property values, as that affects the types.
+   */
+  void init_public_static_prop_types();
 
   /*
    * Refine the types of the class constants defined by an 86cinit,
@@ -803,13 +828,13 @@ struct Index {
   /*
    * Refine the types of the local statics owned by the function.
    */
-  void refine_local_static_types(borrowed_ptr<const php::Func> func,
+  void refine_local_static_types(const php::Func* func,
                                  const CompactVector<Type>& localStaticTypes);
 
   /*
    * Refine the effectFree flag for func.
    */
-  void refine_effect_free(borrowed_ptr<const php::Func> func, bool flag);
+  void refine_effect_free(const php::Func* func, bool flag);
 
   /*
    * Refine the return type for a function, based on a round of
@@ -821,7 +846,8 @@ struct Index {
    * Merges the set of Contexts that depended on the return type of
    * this php::Func into deps.
    */
-  void refine_return_type(borrowed_ptr<const php::Func>, Type,
+  void refine_return_type(const php::Func*,
+                          Type, LocalId,
                           DependencyContextSet& deps);
 
   /*
@@ -833,7 +859,7 @@ struct Index {
    *
    * Returns: true if the types have changed.
    */
-  bool refine_closure_use_vars(borrowed_ptr<const php::Class>,
+  bool refine_closure_use_vars(const php::Class*,
                                const std::vector<Type>&);
 
   /*
@@ -843,7 +869,7 @@ struct Index {
    * No other threads should be calling functions on this Index when
    * this function is called.
    */
-  void refine_private_props(borrowed_ptr<const php::Class> cls,
+  void refine_private_props(const php::Class* cls,
                             const PropState&);
 
   /*
@@ -853,7 +879,7 @@ struct Index {
    * No other threads should be calling functions on this Index when
    * this function is called.
    */
-  void refine_private_statics(borrowed_ptr<const php::Class> cls,
+  void refine_private_statics(const php::Class* cls,
                               const PropState&);
 
   /*
@@ -866,9 +892,36 @@ struct Index {
   void refine_public_statics(const PublicSPropIndexer&);
 
   /*
+   * Refine whether the given class has properties with initial values which
+   * might violate their type-hints.
+   *
+   * No other threads should be calling functions on this Index when this
+   * function is called.
+   */
+  void refine_bad_initial_prop_values(const php::Class* cls,
+                                      bool value,
+                                      DependencyContextSet& deps);
+
+  /*
    * Identify the persistent classes, functions and typeAliases.
    */
   void mark_persistent_classes_and_functions(php::Program& program);
+
+  /*
+   * Mark any properties in cls that definitely do not redeclare a property in
+   * the parent, which has an inequivalent type-hint.
+   */
+  void mark_no_bad_redeclare_props(php::Class& cls) const;
+
+  /*
+   * Rewrite the initial values of any AttrSystemInitialValue properties to
+   * something more suitable for its type-hint, and add AttrNoImplicitNullable
+   * where appropriate.
+   *
+   * This must be done before any analysis is done, as the initial values
+   * affects the analysis.
+   */
+  void rewrite_default_initial_values(php::Program&) const;
 
   /*
    * Return true if the resolved function is an async
@@ -892,14 +945,14 @@ struct Index {
    * Note that eg for an async function it will map Type to
    * WaitH<Type>.
    */
-  void fixup_return_type(borrowed_ptr<const php::Func>, Type&) const;
+  void fixup_return_type(const php::Func*, Type&) const;
 
   /*
    * Return true if we know for sure that one php::Class must derive
    * from another at runtime, in all possible instantiations.
    */
-  bool must_be_derived_from(borrowed_ptr<const php::Class>,
-                            borrowed_ptr<const php::Class>) const;
+  bool must_be_derived_from(const php::Class*,
+                            const php::Class*) const;
 
   struct IndexData;
 private:
@@ -910,9 +963,9 @@ private:
   friend struct PublicSPropIndexer;
   template<class FuncRange>
   res::Func resolve_func_helper(const FuncRange&, SString) const;
-  res::Func do_resolve(borrowed_ptr<const php::Func>) const;
-  bool could_be_related(borrowed_ptr<const php::Class>,
-                        borrowed_ptr<const php::Class>) const;
+  res::Func do_resolve(const php::Func*) const;
+  bool could_be_related(const php::Class*,
+                        const php::Class*) const;
 
   template<bool getSuperType>
   Type get_type_for_constraint(Context,
@@ -922,7 +975,7 @@ private:
     Context ctx, AnnotType annot, bool nullable,
     SString name, const Type& candidate) const;
 
-  void init_return_type(borrowed_ptr<const php::Func> func);
+  void init_return_type(const php::Func* func);
 
 private:
   std::unique_ptr<IndexData> const m_data;
@@ -936,7 +989,7 @@ private:
  * how it is used.
  */
 struct PublicSPropIndexer {
-  explicit PublicSPropIndexer(borrowed_ptr<const Index> index)
+  explicit PublicSPropIndexer(const Index* index)
     : m_index(index)
   {}
 
@@ -970,7 +1023,7 @@ private:
       return folly::hash::hash_combine(k.cinfo, k.prop);
     }
 
-    borrowed_ptr<ClassInfo> cinfo;
+    ClassInfo* cinfo;
     SString prop;
   };
 
@@ -978,7 +1031,7 @@ private:
   using KnownMap = tbb::concurrent_hash_map<KnownKey,Type>;
 
 private:
-  borrowed_ptr<const Index> m_index;
+  const Index* m_index;
   std::atomic<bool> m_everything_bad{false};
   UnknownMap m_unknown;
   KnownMap m_known;

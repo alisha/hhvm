@@ -29,6 +29,7 @@ type autocomplete_kind =
   | Function_kind
   | Interface_kind
   | Keyword_kind
+  | Literal_kind
   | Method_kind
   | Namespace_kind
   | Property_kind
@@ -69,7 +70,11 @@ type ide_result = {
 type result = complete_autocomplete_result list
 
 type legacy_autocomplete_context = {
+  is_manually_invoked : bool;
   is_xhp_classname : bool;
   is_instance_member : bool;
   is_after_single_colon : bool;
+  is_after_double_right_angle_bracket : bool;
+  is_after_open_square_bracket : bool;
+  is_after_quote : bool;
 }

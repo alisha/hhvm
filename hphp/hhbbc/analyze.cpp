@@ -48,6 +48,7 @@ TRACE_SET_MOD(hhbbc);
 const StaticString s_86cinit("86cinit");
 const StaticString s_86pinit("86pinit");
 const StaticString s_86sinit("86sinit");
+const StaticString s_86linit("86linit");
 const StaticString s_Closure("Closure");
 
 //////////////////////////////////////////////////////////////////////
@@ -60,7 +61,7 @@ uint32_t rpoId(const FuncAnalysis& ai, BlockId blk) {
   return ai.bdata[blk].rpoId;
 }
 
-State pseudomain_entry_state(borrowed_ptr<const php::Func> func) {
+State pseudomain_entry_state(const php::Func* func) {
   auto ret = State{};
   ret.initialized = true;
   ret.thisAvailable = false;
@@ -73,7 +74,6 @@ State pseudomain_entry_state(borrowed_ptr<const php::Func> func) {
 }
 
 State entry_state(const Index& index, Context const ctx,
-                  ClassAnalysis* /*clsAnalysis*/,
                   const std::vector<Type>* knownArgs) {
   auto ret = State{};
   ret.initialized = true;
@@ -94,11 +94,12 @@ State entry_state(const Index& index, Context const ctx,
       if (locId < knownArgs->size()) {
         if (ctx.func->params[locId].isVariadic) {
           std::vector<Type> pack(knownArgs->begin() + locId, knownArgs->end());
+          for (auto& p : pack) p = unctx(std::move(p));
           ret.locals[locId] = RuntimeOption::EvalHackArrDVArrs
             ? vec(std::move(pack))
             : arr_packed_varray(std::move(pack));
         } else {
-          ret.locals[locId] = (*knownArgs)[locId];
+          ret.locals[locId] = unctx((*knownArgs)[locId]);
         }
       } else {
         ret.locals[locId] = ctx.func->params[locId].isVariadic
@@ -190,7 +191,6 @@ State entry_state(const Index& index, Context const ctx,
 dataflow_worklist<uint32_t>
 prepare_incompleteQ(const Index& index,
                     FuncAnalysis& ai,
-                    ClassAnalysis* clsAnalysis,
                     const std::vector<Type>* knownArgs) {
   auto incompleteQ     = dataflow_worklist<uint32_t>(ai.rpoBlocks.size());
   auto const ctx       = ai.ctx;
@@ -198,10 +198,10 @@ prepare_incompleteQ(const Index& index,
 
   auto const entryState = [&] {
     if (!is_pseudomain(ctx.func)) {
-      return entry_state(index, ctx, clsAnalysis, knownArgs);
+      return entry_state(index, ctx, knownArgs);
     }
 
-    assert(!knownArgs && !clsAnalysis);
+    assert(!knownArgs);
     assert(numParams == 0);
     return pseudomain_entry_state(ctx.func);
   }();
@@ -267,10 +267,27 @@ Context adjust_closure_context(Context ctx) {
 FuncAnalysis do_analyze_collect(const Index& index,
                                 Context const ctx,
                                 CollectedInfo& collect,
-                                ClassAnalysis* clsAnalysis,
                                 const std::vector<Type>* knownArgs) {
   assertx(ctx.cls == adjust_closure_context(ctx).cls);
   FuncAnalysis ai{ctx};
+
+  SCOPE_ASSERT_DETAIL("do-analyze-collect-2") {
+    std::string ret;
+    for (auto& blk : ctx.func->blocks) {
+      folly::format(&ret,
+                    "block #{}\nin-{}\n{}",
+                    blk->id,
+                    state_string(*ctx.func, ai.bdata[blk->id].stateIn, collect),
+                    show(*ctx.func, *blk)
+                   );
+    }
+
+    return ret;
+  };
+
+  SCOPE_ASSERT_DETAIL("do-analyze-collect-1") {
+    return "Analyzing: " + show(ctx);
+  };
 
   auto const bump = trace_bump_for(ctx.cls, ctx.func);
   Trace::Bump bumper1{Trace::hhbbc, bump};
@@ -295,7 +312,7 @@ FuncAnalysis do_analyze_collect(const Index& index,
    * back edges---when state merges cause a change to the block
    * stateIn, we will add it to this queue so it gets visited again.
    */
-  auto incompleteQ = prepare_incompleteQ(index, ai, clsAnalysis, knownArgs);
+  auto incompleteQ = prepare_incompleteQ(index, ai, knownArgs);
 
   /*
    * There are potentially infinitely growing types when we're using union_of to
@@ -318,7 +335,7 @@ FuncAnalysis do_analyze_collect(const Index& index,
 
   // Used to force blocks that depended on the types of local statics
   // to be re-analyzed when the local statics change.
-  hphp_fast_map<borrowed_ptr<const php::Block>, std::map<LocalId, Type>>
+  hphp_fast_map<const php::Block*, hphp_fast_map<LocalId, Type>>
     usedLocalStatics;
 
   /*
@@ -380,6 +397,15 @@ FuncAnalysis do_analyze_collect(const Index& index,
 
       if (flags.returned) {
         ai.inferredReturn |= std::move(*flags.returned);
+        if (flags.retParam == NoLocalId) {
+          ai.retParam = NoLocalId;
+        } else if (ai.retParam != flags.retParam) {
+          if (ai.retParam != MaxLocalId) {
+            ai.retParam = NoLocalId;
+          } else {
+            ai.retParam = flags.retParam;
+          }
+        }
       }
     }
 
@@ -427,7 +453,7 @@ FuncAnalysis do_analyze_collect(const Index& index,
    * In this case, we leave the return type as TBottom, to indicate
    * the same to callers.
    */
-  assert(ai.inferredReturn.subtypeOf(TGen));
+  assert(ai.inferredReturn.subtypeOf(BGen));
 
   // For debugging, print the final input states for each block.
   FTRACE(2, "{}", [&] {
@@ -470,7 +496,7 @@ FuncAnalysis do_analyze(const Index& index,
     index, ctx, clsAnalysis, nullptr, opts
   };
 
-  auto ret = do_analyze_collect(index, ctx, collect, clsAnalysis, knownArgs);
+  auto ret = do_analyze_collect(index, ctx, collect, knownArgs);
   if (ctx.func->name == s_86cinit.get() && !knownArgs) {
     // We need to try to resolve any dynamic constants
     size_t idx = 0;
@@ -523,7 +549,7 @@ void expand_hni_prop_types(ClassAnalysis& clsAnalysis) {
       RuntimeOption::DisallowDynamicVarEnvFuncs != HackStrictOption::ON ||
       clsAnalysis.anyInterceptable
         ? TGen
-        : from_hni_constraint(prop.typeConstraint);
+        : from_hni_constraint(prop.userType);
     if (it->second.subtypeOf(hniTy)) {
       it->second = hniTy;
       return;
@@ -580,7 +606,7 @@ FuncAnalysis analyze_func(const Index& index, Context const ctx,
 FuncAnalysis analyze_func_collect(const Index& index,
                                   Context const ctx,
                                   CollectedInfo& collect) {
-  return do_analyze_collect(index, ctx, collect, nullptr, nullptr);
+  return do_analyze_collect(index, ctx, collect, nullptr);
 }
 
 FuncAnalysis analyze_func_inline(const Index& index,
@@ -619,12 +645,24 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
    * Also, set Uninit properties to TBottom, so that analysis
    * of 86pinit methods sets them to the correct type.
    */
-  for (auto& prop : ctx.cls->properties) {
+  for (auto& prop : const_cast<php::Class*>(ctx.cls)->properties) {
+    auto const cellTy = from_cell(prop.val);
+
+    if (is_closure(*ctx.cls) ||
+        (prop.attrs & AttrSystemInitialValue) ||
+        (!cellTy.subtypeOf(TUninit) &&
+         index.satisfies_constraint(ctx, cellTy, prop.typeConstraint))) {
+      prop.attrs |= AttrInitialSatisfiesTC;
+    } else {
+      prop.attrs = (Attr)(prop.attrs & ~AttrInitialSatisfiesTC);
+      // If Uninit, it will be determined in the 86[s,p]init function.
+      if (!cellTy.subtypeOf(TUninit)) clsAnalysis.badPropInitialValues = true;
+    }
+
     if (!(prop.attrs & AttrPrivate)) continue;
 
-    auto const cellTy = from_cell(prop.val);
     if (isHNIBuiltin) {
-      auto const hniTy = from_hni_constraint(prop.typeConstraint);
+      auto const hniTy = from_hni_constraint(prop.userType);
       if (!cellTy.subtypeOf(hniTy)) {
         std::fprintf(stderr, "hni %s::%s has impossible type. "
                      "The annotation says it is type (%s) "
@@ -640,7 +678,7 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
 
     if (!(prop.attrs & AttrStatic)) {
       auto t = (prop.attrs & AttrNoSerialize) ? cellTy : loosen_all(cellTy);
-      if (!is_closure(*ctx.cls) && t.subtypeOf(TUninit)) {
+      if (!is_closure(*ctx.cls) && t.subtypeOf(BUninit)) {
         /*
          * For non-closure classes, a property of type KindOfUninit
          * means that it has non-scalar initializer which will be set
@@ -662,7 +700,7 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
       // though---we use instance properties for the closure
       // 86static_* properties.
       auto t = cellTy;
-      if (t.subtypeOf(TUninit)) {
+      if (t.subtypeOf(BUninit)) {
         t = TBottom;
       }
       clsAnalysis.privateStatics[prop.name] = t;
@@ -670,44 +708,33 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
   }
 
   /*
-   * For classes with non-scalar initializers, the 86pinit and 86sinit
-   * methods are guaranteed to run before any other method, and
+   * For classes with non-scalar initializers, the 86pinit, 86sinit, and
+   * 86linit methods are guaranteed to run before any other method, and
    * are never called afterwards. Thus, we can analyze these
    * methods first to determine the initial types of properties with
    * non-scalar initializers, and these need not be be run again as part
    * of the fixedpoint computation.
    */
-  if (auto f = find_method(ctx.cls, s_86pinit.get())) {
-    do_analyze(
-      index,
-      Context { ctx.unit, f, ctx.cls },
-      &clsAnalysis,
-      nullptr,
-      CollectionOpts::TrackConstantArrays
-    );
-  }
-  if (auto f = find_method(ctx.cls, s_86sinit.get())) {
-    do_analyze(
-      index,
-      Context { ctx.unit, f, ctx.cls },
-      &clsAnalysis,
-      nullptr,
-      CollectionOpts::TrackConstantArrays
-    );
-  }
+  auto analyze_86init = [&](const StaticString &name) {
+    if (auto f = find_method(ctx.cls, name.get())) {
+      do_analyze(
+        index,
+        Context { ctx.unit, f, ctx.cls },
+        &clsAnalysis,
+        nullptr,
+        CollectionOpts::TrackConstantArrays
+      );
+    }
+  };
+  analyze_86init(s_86pinit);
+  analyze_86init(s_86sinit);
+  analyze_86init(s_86linit);
+
   /*
    * The 86cinit is a little different from the other two, but
    * similarly can't play a role in the fixed point computation.
    */
-  if (auto f = find_method(ctx.cls, s_86cinit.get())) {
-    do_analyze(
-      index,
-      Context { ctx.unit, f, ctx.cls },
-      &clsAnalysis,
-      nullptr,
-      CollectionOpts::TrackConstantArrays
-    );
-  }
+  analyze_86init(s_86cinit);
 
   // Verify that none of the class properties are TBottom, i.e.
   // any property of type KindOfUninit has been initialized (by
@@ -715,9 +742,9 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
   for (auto& prop : ctx.cls->properties) {
     if (!(prop.attrs & AttrPrivate)) continue;
     if (prop.attrs & AttrStatic) {
-      assert(!clsAnalysis.privateStatics[prop.name].subtypeOf(TBottom));
+      assert(!clsAnalysis.privateStatics[prop.name].subtypeOf(BBottom));
     } else {
-      assert(!clsAnalysis.privateProperties[prop.name].subtypeOf(TBottom));
+      assert(!clsAnalysis.privateProperties[prop.name].subtypeOf(BBottom));
     }
   }
 
@@ -745,6 +772,7 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
     for (auto& f : ctx.cls->methods) {
       if (f->name->isame(s_86pinit.get()) ||
           f->name->isame(s_86sinit.get()) ||
+          f->name->isame(s_86linit.get()) ||
           f->name->isame(s_86cinit.get())) {
         continue;
       }
@@ -752,7 +780,7 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
       methodResults.push_back(
         do_analyze(
           index,
-          Context { ctx.unit, borrow(f), ctx.cls },
+          Context { ctx.unit, f.get(), ctx.cls },
           &clsAnalysis,
           nullptr,
           CollectionOpts::TrackConstantArrays
@@ -762,7 +790,7 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
 
     if (associatedClosures) {
       for (auto const c : *associatedClosures) {
-        auto const invoke = borrow(c->methods[0]);
+        auto const invoke = c->methods[0].get();
         closureResults.push_back(
           do_analyze(
             index,
@@ -863,7 +891,7 @@ std::vector<std::pair<State,StepFlags>>
 locally_propagated_states(const Index& index,
                           const FuncAnalysis& fa,
                           CollectedInfo& collect,
-                          borrowed_ptr<const php::Block> blk,
+                          const php::Block* blk,
                           State state) {
   Trace::Bump bumper{Trace::hhbbc, 10};
 

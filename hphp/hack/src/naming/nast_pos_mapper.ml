@@ -53,6 +53,7 @@ and expr_ f = function
   | Call (ct, e, hl, el, uel) ->
     Call (ct, expr f e, hl, List.map el (expr f), List.map uel (expr f))
   | String2 el -> String2 (List.map el (expr f))
+  | PrefixedString (n, e) -> PrefixedString (n, (expr f e))
   | Pair (e1, e2) -> Pair (expr f e1, expr f e2)
   | Cast (h, e) -> Cast (hint f h, expr f e)
   | Unop (uop, e) -> Unop (uop, expr f e)
@@ -93,7 +94,8 @@ and shape f sm =
   end sm ShapeMap.empty
 
 and shape_field f = function
-  | Ast.SFlit pstr -> Ast.SFlit (pstring f pstr)
+  | Ast.SFlit_int pstr -> Ast.SFlit_int (pstring f pstr)
+  | Ast.SFlit_str pstr -> Ast.SFlit_str (pstring f pstr)
   | Ast.SFclass_const (sid, pstr) ->
     Ast.SFclass_const (pstring f sid, pstring f pstr)
 
@@ -108,7 +110,7 @@ and special_func f = function
   | Genva el -> Genva (List.map el (expr f))
   | Gen_array_rec e -> Gen_array_rec (expr f e)
 
-and class_id f ((), ci) = (), class_id_ f ci
+and class_id f (pos, ci) = f pos, class_id_ f ci
 
 and class_id_ f = function
   | CIparent -> CIparent

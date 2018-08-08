@@ -70,6 +70,11 @@ struct Repo::GlobalData {
   bool HardReturnTypeHints = false;
 
   /*
+   * Indicates whether the repo was compiled with CheckPropTypeHints.
+   */
+  int32_t CheckPropTypeHints = 0;
+
+  /*
    * Indicates whether a repo was compiled assumming that `this` types will be
    * verified by Verify*Type instructions at runtime.
    *
@@ -143,6 +148,11 @@ struct Repo::GlobalData {
   bool PromoteEmptyObject = true;
 
   /*
+   * Disable return by reference in PHP
+   */
+  bool DisableReturnByReference = true;
+
+  /*
    * Should all functions be interceptable?
    */
   bool EnableRenameFunction = false;
@@ -153,6 +163,7 @@ struct Repo::GlobalData {
    */
   bool HackArrCompatNotices = false;
   bool HackArrCompatIsArrayNotices = false;
+  bool HackArrCompatIsVecDictNotices = false;
   bool HackArrCompatPromoteNotices = false;
   bool HackArrCompatTypeHintNotices = false;
   bool HackArrCompatDVCmpNotices = false;
@@ -186,15 +197,14 @@ struct Repo::GlobalData {
   bool ReffinessInvariance = false;
 
   /*
-   * Should we use the multiple stack return value optimization for inout
-   * function calls?
-   */
-  bool UseMSRVForInOut = false;
-
-  /*
    * Are objects allowed to run destructors?
    */
   bool AllowObjectDestructors = false;
+
+  /*
+   * Should HHBBC do build time verification?
+   */
+  bool AbortBuildOnVerifyError = false;
 
   /*
    * A more-or-less unique identifier for the repo
@@ -213,6 +223,7 @@ struct Repo::GlobalData {
       (HardTypeHints)
       (ThisTypeHintLevel)
       (HardReturnTypeHints)
+      (CheckPropTypeHints)
       (HardPrivatePropInference)
       (DisallowDynamicVarEnvFuncs)
       (ElideAutoloadInvokes)
@@ -226,6 +237,7 @@ struct Repo::GlobalData {
       (EnableRenameFunction)
       (HackArrCompatNotices)
       (HackArrCompatIsArrayNotices)
+      (HackArrCompatIsVecDictNotices)
       (HackArrCompatPromoteNotices)
       (HackArrCompatTypeHintNotices)
       (HackArrCompatDVCmpNotices)
@@ -235,9 +247,10 @@ struct Repo::GlobalData {
       (ReffinessInvariance)
       (ForbidDynamicCalls)
       (NoticeOnBuiltinDynamicCalls)
-      (UseMSRVForInOut)
       (AllowObjectDestructors)
       (Signature)
+      (DisableReturnByReference)
+      (AbortBuildOnVerifyError)
       ;
   }
 };

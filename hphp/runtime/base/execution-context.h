@@ -17,17 +17,9 @@
 #ifndef incl_HPHP_EXECUTION_CONTEXT_H_
 #define incl_HPHP_EXECUTION_CONTEXT_H_
 
-#include <list>
-#include <set>
-#include <string>
-#include <unordered_map>
-#include <utility>
-#include <vector>
-
-#include "hphp/util/lock.h"
-#include "hphp/util/logger.h"
-#include "hphp/util/thread-local.h"
-#include "hphp/util/tiny-vector.h"
+#include "hphp/runtime/base/req-list.h"
+#include "hphp/runtime/base/req-tiny-vector.h"
+#include "hphp/runtime/base/req-vector.h"
 #include "hphp/runtime/base/apc-handle.h"
 #include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/mixed-array.h"
@@ -39,6 +31,17 @@
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/minstr-state.h"
 #include "hphp/runtime/vm/pc-filter.h"
+
+#include "hphp/util/lock.h"
+#include "hphp/util/logger.h"
+#include "hphp/util/thread-local.h"
+
+#include <list>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace HPHP {
 struct RequestEventHandler;
@@ -57,6 +60,7 @@ struct VMState {
   TypedValue* sp;
   MInstrState mInstrState;
   ActRec* jitCalledFrame;
+  jit::TCA jitReturnAddr;
 };
 
 enum class InclOpFlags {
@@ -370,7 +374,7 @@ public:
   int getLine();
   Array getCallerInfo();
   bool evalUnit(Unit* unit, PC& pc, int funcType);
-  TypedValue invokeUnit(const Unit* unit);
+  TypedValue invokeUnit(const Unit* unit, bool callByHPHPInvoke = false);
   Unit* compileEvalString(StringData* code,
                                 const char* evalFilename = nullptr);
   StrNR createFunction(const String& args, const String& code);
@@ -409,7 +413,8 @@ public:
   ActRec* getPrevVMState(const ActRec* fp,
                          Offset* prevPc = nullptr,
                          TypedValue** prevSp = nullptr,
-                         bool* fromVMEntry = nullptr);
+                         bool* fromVMEntry = nullptr,
+                         uint64_t* jitReturnAddr = nullptr);
   ActRec* getPrevVMStateSkipFrame(const ActRec* fp,
                                   Offset* prevPc = nullptr,
                                   TypedValue** prevSp = nullptr,
@@ -560,7 +565,7 @@ private:
   const VirtualHost* m_vhost;
 public:
   DebuggerSettings debuggerSettings;
-  req::set<ObjectData*> m_liveBCObjs; // objects with destructors
+  req::vector_set<ObjectData*> m_liveBCObjs; // objects with destructors
 private:
   size_t m_apcMemSize{0};
   std::vector<APCHandle*> m_apcHandles; // gets moved to treadmill
@@ -568,7 +573,7 @@ public:
   // Although the error handlers may want to access dynamic properties,
   // we cannot *call* the error handlers (or their destructors) while
   // destroying the context, so C++ order of destruction is not an issue.
-  req::hash_map<const ObjectData*,ArrayNoDtor> dynPropTable;
+  req::fast_map<const ObjectData*,ArrayNoDtor> dynPropTable;
   TYPE_SCAN_IGNORE_FIELD(dynPropTable);
   VarEnv* m_globalVarEnv;
   struct FileInfo {
@@ -576,7 +581,7 @@ public:
     time_t ts_sec; // timestamp seconds
     unsigned long ts_nsec; // timestamp nanoseconds (or 0 if ns not supported)
   };
-  req::hash_map<const StringData*, FileInfo, string_data_hash, string_data_same>
+  req::fast_map<const StringData*, FileInfo, string_data_hash, string_data_same>
     m_evaledFiles;
   req::vector<const StringData*> m_evaledFilesOrder;
   req::vector<Unit*> m_createdFuncs;

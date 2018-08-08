@@ -160,17 +160,8 @@ let rec translate_id ~reverse ns_map id =
       then target ^ (String_utils.lstrip id source)
       else translate_id ~reverse rest id
 
-(* Runs the autonamespace translation for both fully qualified and non qualified
- * names *)
-let renamespace_if_aliased ?(reverse = false) ns_map id =
-  try
-    let has_bslash = id.[0] = '\\' in
-    let len = String.length id in
-    let id = if has_bslash then String.sub id 1 (len - 1) else id in
-    let translation = translate_id ~reverse ns_map id in
-    if has_bslash then "\\" ^ translation else translation
-  (* If there is some matching problem, that means we are not aliasing *)
-  with _ -> id
+let aliased_to_fully_qualified_id alias_map id =
+  translate_id ~reverse:true alias_map id
 
 type elaborate_kind =
   | ElaborateFun
@@ -188,9 +179,7 @@ let elaborate_defined_id nsenv kind (p, id) =
     if update_nsenv
     then {nsenv with ns_class_uses = SMap.add id newid nsenv.ns_class_uses}
     else nsenv in
-  let translated = renamespace_if_aliased
-      (ParserOptions.auto_namespace_map nsenv.ns_popt) newid in
-  (p, translated), nsenv, update_nsenv
+  (p, newid), nsenv, update_nsenv
 
 (* Resolves an identifier in a given namespace environment. For example, if we
  * are in the namespace "N\O", the identifier "P\Q" is resolved to "\N\O\P\Q".
@@ -210,10 +199,10 @@ let elaborate_defined_id nsenv kind (p, id) =
  *)
 let elaborate_id_impl ~autoimport nsenv kind (p, id) =
   (* Go ahead and fully-qualify the name first. *)
+  if id <> "" && id.[0] = '\\'
+  then false, (p, id)
+  else
   let was_renamed, fully_qualified =
-    if id <> "" && id.[0] = '\\'
-    then false, id
-    else
     begin
       (* Expand "use" imports. *)
       let (bslash_loc, has_bslash) =
@@ -236,7 +225,11 @@ let elaborate_id_impl ~autoimport nsenv kind (p, id) =
       begin
       match SMap.get prefix uses with
         | None ->
-          if autoimport
+          let unaliased_id = aliased_to_fully_qualified_id
+            nsenv.ns_auto_namespace_map id in
+          if unaliased_id <> id
+          then false, ("\\" ^ unaliased_id)
+          else if autoimport
           then
             match get_autoimport_name_namespace id with
             | true, ns_name ->
@@ -256,9 +249,7 @@ let elaborate_id_impl ~autoimport nsenv kind (p, id) =
         end
       end
     end in
-  let translated = renamespace_if_aliased
-      (ParserOptions.auto_namespace_map nsenv.ns_popt) fully_qualified in
-  was_renamed, (p, translated)
+  was_renamed, (p, fully_qualified)
 
 let elaborate_id ?(autoimport=true) nsenv kind id =
   let _, newid = elaborate_id_impl ~autoimport nsenv kind id in

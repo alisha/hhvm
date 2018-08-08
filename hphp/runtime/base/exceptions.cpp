@@ -204,13 +204,23 @@ namespace {
   DEBUG_ONLY bool throwable_has_expected_props() {
     auto const erCls = SystemLib::s_ErrorClass;
     auto const exCls = SystemLib::s_ExceptionClass;
+    if (erCls->lookupDeclProp(s_file.get()) != s_fileIdx ||
+        exCls->lookupDeclProp(s_file.get()) != s_fileIdx ||
+        erCls->lookupDeclProp(s_line.get()) != s_lineIdx ||
+        exCls->lookupDeclProp(s_line.get()) != s_lineIdx ||
+        erCls->lookupDeclProp(s_trace.get()) != s_traceIdx ||
+        exCls->lookupDeclProp(s_trace.get()) != s_traceIdx) {
+      return false;
+    }
+    // Check that we don't have the expected type-hints on these props so we
+    // don't need to verify anything.
     return
-      erCls->lookupDeclProp(s_file.get()) == s_fileIdx &&
-      exCls->lookupDeclProp(s_file.get()) == s_fileIdx &&
-      erCls->lookupDeclProp(s_line.get()) == s_lineIdx &&
-      exCls->lookupDeclProp(s_line.get()) == s_lineIdx &&
-      erCls->lookupDeclProp(s_trace.get()) == s_traceIdx &&
-      exCls->lookupDeclProp(s_trace.get()) == s_traceIdx;
+      erCls->declPropTypeConstraint(s_fileIdx).isString() &&
+      exCls->declPropTypeConstraint(s_fileIdx).isString() &&
+      erCls->declPropTypeConstraint(s_lineIdx).isInt() &&
+      exCls->declPropTypeConstraint(s_lineIdx).isInt() &&
+      !erCls->declPropTypeConstraint(s_traceIdx).isCheckable() &&
+      !exCls->declPropTypeConstraint(s_traceIdx).isCheckable();
   }
 
   int64_t exception_get_trace_options() {
@@ -269,10 +279,15 @@ void throwable_init_file_and_line_from_builtin(ObjectData* throwable) {
     return;
   }
 
-  assertx(isArrayType(trace_rval.type()));
+  assertx(RuntimeOption::EvalHackArrDVArrs ?
+    isVecType(trace_rval.type()) :
+    isArrayType(trace_rval.type())
+  );
   auto const trace = trace_rval.val().parr;
   for (ArrayIter iter(trace); iter; ++iter) {
-    assertx(iter.second().asTypedValue()->m_type == KindOfArray);
+    assertx(iter.second().asTypedValue()->m_type == (
+      RuntimeOption::EvalHackArrDVArrs ? KindOfDict : KindOfArray
+    ));
     auto const frame = iter.second().asTypedValue()->m_data.parr;
     auto const file = frame->rval(s_file.get());
     auto const line = frame->rval(s_line.get());
@@ -309,7 +324,10 @@ void throwable_init(ObjectData* throwable) {
      opts != k_DEBUG_BACKTRACE_IGNORE_ARGS)
     ) {
     auto trace = HHVM_FN(debug_backtrace)(opts);
-    cellMove(make_tv<KindOfArray>(trace.detach()), trace_lval);
+    auto tv = RuntimeOption::EvalHackArrDVArrs ?
+      make_tv<KindOfVec>(trace.detach()) :
+      make_tv<KindOfArray>(trace.detach());
+    cellMove(tv, trace_lval);
   } else {
     cellMove(
       make_tv<KindOfResource>(createCompactBacktrace().detach()->hdr()),

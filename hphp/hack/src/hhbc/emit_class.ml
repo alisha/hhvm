@@ -49,6 +49,7 @@ let make_86method
   let method_is_pair_generator = false in
   let method_is_closure_body = false in
   let method_is_memoize_wrapper = false in
+  let method_is_memoize_wrapper_lsb = false in
   let method_no_injection = true in
   let method_inout_wrapper = false in
   let method_static_inits = [] in
@@ -61,6 +62,7 @@ let make_86method
     instrs
     method_decl_vars
     method_is_memoize_wrapper
+    method_is_memoize_wrapper_lsb
     params
     method_return_type
     method_static_inits
@@ -139,10 +141,8 @@ let from_class_elt_classvars
   | A.ClassVars cv ->
     (* TODO: we need to emit doc comments for each property,
      * not one per all properties on the same line *)
-    let hint = if cv.A.cv_is_promoted_variadic then
-      let hint_list = Option.value_map ~f:(fun h -> [h]) ~default:[] cv.A.cv_hint in
-      Some (Pos.none, A.Happly((Pos.none, "array"), hint_list))
-      else cv.A.cv_hint
+    let hint =
+      if cv.A.cv_is_promoted_variadic then None else cv.A.cv_hint
     in
     let emit_prop = Emit_property.from_ast
       ast_class
@@ -239,7 +239,7 @@ let emit_class : A.class_ * bool -> Hhas_class.t =
    * turns it on. *)
   let class_no_dynamic_props = class_is_immutable in
   let class_id, _ =
-    Hhbc_id.Class.elaborate_id_at_definition_site namespace ast_class.Ast.c_name in
+    Hhbc_id.Class.elaborate_id namespace ast_class.Ast.c_name in
   let class_is_trait = ast_class.A.c_kind = Ast.Ctrait in
   let class_is_interface = ast_is_interface ast_class in
   let class_uses =
@@ -368,17 +368,17 @@ let emit_class : A.class_ * bool -> Hhas_class.t =
   let class_requirements =
     List.filter_map class_body
       (from_class_elt_requirements namespace) in
-  let pinit_methods =
+  let make_init_methods filter ~name =
     if List.exists class_properties
       (fun p -> Option.is_some (Hhas_property.initializer_instrs p)
-                && not (Hhas_property.is_static p))
+                && filter p)
     then
       let instrs = gather @@ List.filter_map class_properties
-        (fun p -> if Hhas_property.is_static p
-                  then None else Hhas_property.initializer_instrs p) in
+        (fun p -> if filter p
+                  then Hhas_property.initializer_instrs p else None) in
       let instrs = gather [instrs; instr_null; instr_retc] in
       [make_86method
-        ~name:"86pinit"
+        ~name:name
         ~params:[]
         ~is_static:true
         ~is_private:true
@@ -387,25 +387,13 @@ let emit_class : A.class_ * bool -> Hhas_class.t =
         instrs]
     else
       [] in
-  let sinit_methods =
-    if List.exists class_properties
-      (fun p -> Option.is_some (Hhas_property.initializer_instrs p)
-                && (Hhas_property.is_static p))
-    then
-      let instrs = gather @@ List.filter_map class_properties
-        (fun p -> if not (Hhas_property.is_static p)
-                  then None else Hhas_property.initializer_instrs p) in
-      let instrs = gather [instrs; instr_null; instr_retc] in
-      [make_86method
-        ~name:"86sinit"
-        ~params:[]
-        ~is_static:true
-        ~is_private:true
-        ~is_abstract:false
-        ~span:class_span
-        instrs]
-    else
-      [] in
+  let property_has_lsb p = Hhas_attribute.has_lsb (Hhas_property.attributes p) in
+  let pinit_filter p = not (Hhas_property.is_static p) in
+  let sinit_filter p = Hhas_property.is_static p && not (property_has_lsb p) in
+  let linit_filter p = Hhas_property.is_static p && (property_has_lsb p) in
+  let pinit_methods = make_init_methods pinit_filter ~name:"86pinit" in
+  let sinit_methods = make_init_methods sinit_filter ~name:"86sinit" in
+  let linit_methods = make_init_methods linit_filter ~name:"86linit" in
   let initialized_class_constants = List.filter_map class_constants
       (fun p -> match Hhas_constant.initializer_instrs p with
           | None -> None
@@ -454,7 +442,7 @@ let emit_class : A.class_ * bool -> Hhas_class.t =
         instrs] in
   let additional_methods =
     additional_methods @
-    pinit_methods @ sinit_methods @ cinit_methods in
+    pinit_methods @ sinit_methods @ linit_methods @ cinit_methods in
   let methods = ast_methods class_body in
   let class_methods = Emit_method.from_asts ast_class methods in
   let class_methods = class_methods @ additional_methods in

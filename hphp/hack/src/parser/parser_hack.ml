@@ -239,29 +239,7 @@ let check_toplevel env pos =
 (* Check expressions. *)
 (*****************************************************************************)
 
-let rec check_lvalue env = function
-  | pos, Obj_get (_, (_, Id (_, name)), OG_nullsafe) ->
-      error_at env pos "?-> syntax is not supported for lvalues"
-  | pos, Obj_get (_, (_, Id (_, name)), _) when name.[0] = ':' ->
-      error_at env pos "->: syntax is not supported for lvalues"
-  | pos, Array_get ((_, Class_const _), _) ->
-      error_at env pos "Array-like class consts are not valid lvalues"
-  | _, (Lvar _ | Obj_get _ | Array_get _ | Class_get _ |
-    Unsafeexpr _ | Omitted | BracedExpr _ | Dollar _) -> ()
-  | pos, Call ((_, Id (_, "tuple")), _, _, _) ->
-      error_at env pos
-        "Tuple cannot be used as an lvalue. Maybe you meant List?"
-  | _, List el -> List.iter el (check_lvalue env)
-  | pos, (Array _ | Darray _ | Varray _ | Shape _ | Collection _
-  | Null | True | False | Id _ | Clone _ | Id_type_arguments _
-  | Class_const _ | Call _ | Int _ | Float _
-  | String _ | String2 _ | Yield _ | Yield_break | Yield_from _
-  | Await _ | Suspend _ | Expr_list _ | Cast _ | Unop _
-  | Binop _ | Eif _ | InstanceOf _
-  | New _ | NewAnonClass _ | Efun _ | Lfun _
-  | Xml _ | Import _ | Pipe _ | Callconv _ | Is _ | Execution_operator _ | As _
-  | ParenthesizedExpr _) ->
-      error_at env pos "Invalid lvalue"
+let check_lvalue env = Ast_check.check_lvalue (error_at env)
 
 (* The bound variable of a foreach can be a reference (but not inside
   a list expression. *)
@@ -1040,24 +1018,24 @@ and class_param env =
       then class_param_error env
       else
         let parameter_name, parameter_constraint = class_param_name env in
-        Covariant, parameter_name, parameter_constraint
+        Covariant, parameter_name, parameter_constraint, false
   | Tminus ->
       if L.token env.file env.lb <> Tword
       then class_param_error env
       else
         let parameter_name, parameter_constraint = class_param_name env in
-        Contravariant, parameter_name, parameter_constraint
+        Contravariant, parameter_name, parameter_constraint, false
   | Tword ->
       let parameter_name, parameter_constraint = class_param_name env in
       let variance = Invariant in
-      variance, parameter_name, parameter_constraint
+      variance, parameter_name, parameter_constraint, false
   | _ ->
       class_param_error env
 
 and class_param_error env =
   error_expect env "type parameter";
   let parameter_name = Pos.make env.file env.lb, "T*unknown*" in
-  Invariant, parameter_name, []
+  Invariant, parameter_name, [], false
 
 and class_param_name env =
   let parameter_name = Pos.make env.file env.lb, Lexing.lexeme env.lb in
@@ -1540,7 +1518,7 @@ and xhp_format env =
       let pos = Pos.make env.file env.lb in
       ignore (expr_encapsed env pos);
       xhp_format env
-  | x ->
+  | _ ->
       xhp_format env
 
 (*****************************************************************************)
@@ -1791,7 +1769,7 @@ and xhp_attr env =
     | None ->
         begin
           let h = (match maybe_enum with
-            | Some x -> None
+            | Some _ -> None
             | None -> Some (hint env)) in
           let (pos_start, _) as ident = xhp_identifier env in
           let default = parameter_default env in
@@ -2243,7 +2221,7 @@ and statement_word env = function
       | Some expr -> expr
       | None -> statement_goto_label env x
     )
-  | x -> parse_expr env
+  | _ -> parse_expr env
 
 (*****************************************************************************)
 (* Break statement *)
@@ -2399,7 +2377,7 @@ and switch_body_word env = function
       (* Only allow fallthrough statement as the final statement at the end of a case body *)
       let rec filter_fallthroughs = function
       | [] -> []
-      | [(p, Fallthrough)] as x -> x
+      | [(_, Fallthrough)] as x -> x
       | (_, Fallthrough)::xs -> filter_fallthroughs xs
       | x::xs -> x::(filter_fallthroughs xs)
       in
@@ -3056,7 +3034,7 @@ and expr_remain env e1 =
       expr_binop env Tbarbar BArbar e1
   | Tword when Lexing.lexeme env.lb = "xor" ->
       error env ("Do not use \"xor\", it has surprising precedence. "^
-        "Cast to bool and use \"^\" instead");
+        "Cast to bool and use \"!==\" instead");
       expr_binop env Txor Xor e1
   | _ ->
       L.back env.lb; e1
@@ -3310,7 +3288,7 @@ and expr_atomic ~allow_class ~class_const env =
       expr_atomic_word ~allow_class ~class_const ~attrs env pos word
     | Tlvar ->
         let tok_value = Lexing.lexeme env.lb in
-        let dollars, var_id = strip_variablevariable 0 tok_value in
+        let _dollars, var_id = strip_variablevariable 0 tok_value in
         if peek env = Tlambda
         then pos1, lambda_single_arg ~sync:FDeclSync ~attrs env (pos, var_id)
         else lambda_expected ()
@@ -3515,7 +3493,8 @@ and expr_call env e1 =
 and expr_call_with_hint env e1 =
   reduce env e1 Tlt begin fun e1 env ->
     L.back env.lb;
-    let hint_list = call_site_hint_params env in
+    let hint_list = call_site_hint_params env
+      |> List.map ~f:(fun h -> (h, false)) in
     let args1, args2 = expr_call_list env in
     let end_ = Pos.make env.file env.lb in
     Pos.btw (fst e1) end_, Call (e1, hint_list, args1, args2)
@@ -3785,27 +3764,26 @@ and use_list env =
 
 and expr_new env pos_start =
   with_priority env Tnew begin fun env ->
-    let cname =
+    let cname, hl =
       let e = expr env in
       match e with
-      | p, Id id ->
-        let typeargs = class_hint_params env in
-        if typeargs == []
-        then e
-        else (p, Id_type_arguments (id, typeargs))
+      | _, Id _ ->
+        let hint_list =
+          class_hint_params env |> List.map ~f:(fun h -> (h, false)) in
+        e, hint_list
       | _, Lvar _
       | _, Array_get _
       | _, Obj_get _
       | _, Class_get _
       | _, Call _ ->
-        e
-      | p, _ ->
-          error_expect env "class name";
-          e
+        e, []
+      | _, _ ->
+        error_expect env "class name";
+        e, []
     in
     let args1, args2 = expr_call_list env in
     let pos_end = Pos.make env.file env.lb in
-    Pos.btw pos_start pos_end, New (cname, args1, args2)
+    Pos.btw pos_start pos_end, New (cname, hl, args1, args2)
   end
 
 (*****************************************************************************)
@@ -3948,7 +3926,7 @@ and expr_string env start abs_start =
       start, String ""
   | _ -> assert false
 
-and expr_encapsed env start =
+and expr_encapsed env _start =
   let pos_start = Pos.make env.file env.lb in
   let el = encapsed_nested pos_start env in
   let pos_end = Pos.make env.file env.lb in
@@ -4146,7 +4124,7 @@ and heredoc_tag env =
       error_expect env "heredoc or nowdoc identifier";
       Pos.make env.file env.lb, "HEREDOC"
 
-and heredoc_body (pos, tag_value as tag) env =
+and heredoc_body (_pos, tag_value as tag) env =
   match L.heredoc_token env.lb with
   | Tnewline ->
       heredoc_end tag env
@@ -4155,7 +4133,7 @@ and heredoc_body (pos, tag_value as tag) env =
   | _ ->
       heredoc_body tag env
 
-and heredoc_end (pos, tag_value as tag) env =
+and heredoc_end (_pos, tag_value as tag) env =
   match L.heredoc_token env.lb with
   | Tword ->
       let tag2 = Lexing.lexeme env.lb in
@@ -4329,10 +4307,10 @@ and shape_field env =
 and shape_field_name env =
   let pos, e = expr env in
   match e with
-  | String p -> SFlit (pos, p)
+  | String p -> SFlit_str (pos, p)
   | Class_const ((_, Id id), ps) -> SFclass_const (id, ps)
   | _ -> error_expect env "string literal or class constant";
-    SFlit (pos, "")
+    SFlit_str (pos, "")
 
 
 (*****************************************************************************)

@@ -21,6 +21,7 @@
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/base/string-hash-set.h"
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/tv-refcount.h"
 #include "hphp/runtime/base/type-structure.h"
@@ -35,7 +36,6 @@
 #include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/runtime/ext/extension-registry.h"
 
-#include "hphp/parser/parser.h"
 #include "hphp/system/systemlib.h"
 
 #include "hphp/runtime/vm/native-prop-handler.h"
@@ -117,6 +117,8 @@ Class* Reflection::s_ReflectionExtensionClass = nullptr;
 Class* get_cls(const Variant& class_or_object) {
   if (class_or_object.is(KindOfObject)) {
     return class_or_object.toCObjRef()->getVMClass();
+  } else if (class_or_object.isClass()) {
+    return class_or_object.toClassVal();
   }
 
   return Unit::loadClass(class_or_object.toString().get());
@@ -184,12 +186,15 @@ Array HHVM_FUNCTION(hphp_get_extension_info, const String& name) {
   return ret;
 }
 
-int get_modifiers(Attr attrs, bool cls) {
+int get_modifiers(Attr attrs, bool cls, bool prop) {
   int php_modifier = 0;
-  if (attrs & AttrAbstract)  php_modifier |= cls ? 0x20 : 0x02;
-  if (attrs & AttrFinal)     php_modifier |= cls ? 0x40 : 0x04;
-  if (attrs & AttrStatic)    php_modifier |= 0x01;
+  if (!prop) {
+    // These bits have different meanings with properties
+    if (attrs & AttrAbstract)  php_modifier |= cls ? 0x20 : 0x02;
+    if (attrs & AttrFinal)     php_modifier |= cls ? 0x40 : 0x04;
+  }
   if (!cls) {  // AttrPublic bits are not valid on class (have other meaning)
+    if (attrs & AttrStatic)    php_modifier |= 0x01;
     if (attrs & AttrPublic)    php_modifier |= 0x100;
     if (attrs & AttrProtected) php_modifier |= 0x200;
     if (attrs & AttrPrivate)   php_modifier |= 0x400;
@@ -263,12 +268,12 @@ static void set_instance_prop_info(Array& ret,
   ret.set(s_name, make_tv<KindOfPersistentString>(prop->name));
   ret.set(s_default, true_varNR.tv());
   ret.set(s_defaultValue, default_val);
-  set_attrs(ret, get_modifiers(prop->attrs, false) & ~0x66);
+  set_attrs(ret, get_modifiers(prop->attrs, false, true) & ~0x66);
   ret.set(s_class, make_tv<KindOfPersistentString>(prop->cls->name()));
   set_doc_comment(ret, prop->docComment, prop->cls->isBuiltin());
 
-  if (prop->typeConstraint && prop->typeConstraint->size()) {
-    ret.set(s_type, make_tv<KindOfPersistentString>(prop->typeConstraint));
+  if (prop->userType && prop->userType->size()) {
+    ret.set(s_type, make_tv<KindOfPersistentString>(prop->userType));
   } else {
     ret.set(s_type, false_varNR.tv());
   }
@@ -276,10 +281,10 @@ static void set_instance_prop_info(Array& ret,
 
 static void set_dyn_prop_info(
     Array &ret,
-    const Variant& name,
+    Cell name,
     const StringData* className) {
   ret.set(s_name, name);
-  set_attrs(ret, get_modifiers(AttrPublic, false) & ~0x66);
+  set_attrs(ret, get_modifiers(AttrPublic, false, true) & ~0x66);
   ret.set(s_class, make_tv<KindOfPersistentString>(className));
   set_empty_doc_comment(ret);
   ret.set(s_type, false_varNR.tv());
@@ -289,11 +294,11 @@ static void set_static_prop_info(Array &ret, const Class::SProp* prop) {
   ret.set(s_name, make_tv<KindOfPersistentString>(prop->name));
   ret.set(s_default, true_varNR.tv());
   ret.set(s_defaultValue, prop->val);
-  set_attrs(ret, get_modifiers(prop->attrs, false) & ~0x66);
+  set_attrs(ret, get_modifiers(prop->attrs, false, true) & ~0x66);
   ret.set(s_class, make_tv<KindOfPersistentString>(prop->cls->name()));
   set_doc_comment(ret, prop->docComment, prop->cls->isBuiltin());
-  if (prop->typeConstraint && prop->typeConstraint->size()) {
-    ret.set(s_type, make_tv<KindOfPersistentString>(prop->typeConstraint));
+  if (prop->userType && prop->userType->size()) {
+    ret.set(s_type, make_tv<KindOfPersistentString>(prop->userType));
   } else {
     ret.set(s_type, false_varNR.tv());
   }
@@ -470,7 +475,7 @@ Variant HHVM_FUNCTION(hphp_get_static_property, const String& cls,
     force ? class_ : arGetContextClass(vmfp()),
     prop.get()
   );
-  if (!lookup.prop) {
+  if (!lookup.val) {
     raise_error("Class %s does not have a property named %s",
                 sd->data(), prop.get()->data());
   }
@@ -478,7 +483,7 @@ Variant HHVM_FUNCTION(hphp_get_static_property, const String& cls,
     raise_error("Invalid access to class %s's property %s",
                 sd->data(), prop.get()->data());
   }
-  return tvAsVariant(lookup.prop);
+  return tvAsVariant(lookup.val);
 }
 
 void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
@@ -500,7 +505,7 @@ void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
     force ? class_ : arGetContextClass(vmfp()),
     prop.get()
   );
-  if (!lookup.prop) {
+  if (!lookup.val) {
     raise_error("Class %s does not have a property named %s",
                 cls.get()->data(), prop.get()->data());
   }
@@ -509,7 +514,7 @@ void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
                 sd->data(), prop.get()->data());
   }
 
-  tvAsVariant(lookup.prop) = value;
+  tvAsVariant(lookup.val) = value;
 }
 
 /*
@@ -951,7 +956,7 @@ static bool HHVM_METHOD(ReflectionMethod, isConstructor) {
 
 static int HHVM_METHOD(ReflectionMethod, getModifiers) {
   auto const func = ReflectionFuncHandle::GetFuncFor(this_);
-  return get_modifiers(func->attrs(), false);
+  return get_modifiers(func->attrs(), false, false);
 }
 
 // private helper for getPrototype
@@ -1126,7 +1131,7 @@ static bool HHVM_METHOD(ReflectionClass, isEnum) {
 
 static int HHVM_METHOD(ReflectionClass, getModifiers) {
   auto const cls = ReflectionClassHandle::GetClassFor(this_);
-  return get_modifiers(cls->attrs(), true);
+  return get_modifiers(cls->attrs(), true, false);
 }
 
 static Variant HHVM_METHOD(ReflectionClass, getFileName) {
@@ -1271,15 +1276,13 @@ static Object HHVM_METHOD(ReflectionClass, getMethodOrder, int64_t filter) {
 
   // At each step, we fetch from the PreClass is important because the
   // order in which getMethods returns matters
-  req::StringISet visitedMethods;
+  req::StringIFastSet visitedMethods;
   auto st = req::make<c_Set>();
   st->reserve(cls->numMethods());
 
   auto add = [&] (const Func* m) {
     if (m->isGenerated()) return;
-    if (visitedMethods.count(m->nameStr())) return;
-
-    visitedMethods.insert(m->nameStr());
+    if (!visitedMethods.insert(m->nameStr()).second) return;
     if (m->attrs() & mask) {
       st->add(HHVM_FN(strtolower)(m->nameStr()).get());
     }
@@ -1572,13 +1575,17 @@ static Array HHVM_METHOD(ReflectionClass, getDynamicPropertyInfos,
     return empty_array();
   }
 
-  auto const dynPropArray = obj_data->dynPropArray().get();
+  auto const dynPropArray = obj_data->dynPropArray();
   ArrayInit ret(dynPropArray->size(), ArrayInit::Mixed{});
-  for (ArrayIter it(dynPropArray); !it.end(); it.next()) {
+  IterateKV(dynPropArray.get(), [&](Cell k, TypedValue) {
+    if (RuntimeOption::EvalNoticeOnReadDynamicProp) {
+      auto const key = tvCastToString(k);
+      obj_data->raiseReadDynamicProp(key.get());
+    }
     Array info = Array::Create();
-    set_dyn_prop_info(info, it.first(), cls->name());
-    ret.setValidKey(*it.first().asTypedValue(), VarNR(info).tv());
-  }
+    set_dyn_prop_info(info, k, cls->name());
+    ret.setValidKey(k, VarNR(info).tv());
+  });
   return ret.toArray();
 }
 
@@ -1737,7 +1744,7 @@ static void HHVM_METHOD(ReflectionProperty, __construct,
 
   // is there a declared instance property?
   auto lookup = cls->getDeclPropIndex(cls, prop_name.get());
-  auto propIdx = lookup.prop;
+  auto propIdx = lookup.slot;
   if (propIdx != kInvalidSlot) {
     auto const prop = &cls->declProperties()[propIdx];
     data->setInstanceProp(prop);
@@ -1750,7 +1757,7 @@ static void HHVM_METHOD(ReflectionProperty, __construct,
 
   // is there a declared static property?
   lookup = cls->findSProp(cls, prop_name.get());
-  propIdx = lookup.prop;
+  propIdx = lookup.slot;
   if (propIdx != kInvalidSlot) {
     auto const prop = &cls->staticProperties()[propIdx];
     data->setStaticProp(prop);
@@ -1765,7 +1772,11 @@ static void HHVM_METHOD(ReflectionProperty, __construct,
   if (cls_or_obj.is(KindOfObject)) {
     auto obj = cls_or_obj.toCObjRef().get();
     assertx(cls == obj->getVMClass());
-    if (obj->hasDynProps() && obj->dynPropArray().exists(prop_name)) {
+    if (obj->getAttribute(ObjectData::HasDynPropArr) &&
+        obj->dynPropArray().exists(prop_name)) {
+      if (RuntimeOption::EvalNoticeOnReadDynamicProp) {
+        obj->raiseReadDynamicProp(prop_name.get());
+      }
       data->setDynamicProp();
       this_->setProp(nullptr, s_class.get(),
                      make_tv<KindOfPersistentString>(cls->name()));
@@ -1861,11 +1872,11 @@ static int HHVM_METHOD(ReflectionProperty, getModifiers) {
   auto const data = Native::data<ReflectionPropHandle>(this_);
   switch (data->getType()) {
     case ReflectionPropHandle::Type::Instance:
-      return get_modifiers(data->getProp()->attrs, false);
+      return get_modifiers(data->getProp()->attrs, false, true);
     case ReflectionPropHandle::Type::Static:
-      return get_modifiers(data->getSProp()->attrs, false);
+      return get_modifiers(data->getSProp()->attrs, false, true);
     case ReflectionPropHandle::Type::Dynamic:
-      return get_modifiers(AttrPublic, false);
+      return get_modifiers(AttrPublic, false, true);
     default:
       reflection_property_internal_error();
   }
@@ -1899,10 +1910,10 @@ static String HHVM_METHOD(ReflectionProperty, getTypeText) {
   const StringData *type = nullptr;
   switch (data->getType()) {
     case ReflectionPropHandle::Type::Instance:
-      type = data->getProp()->typeConstraint;
+      type = data->getProp()->userType;
       break;
     case ReflectionPropHandle::Type::Static:
-      type = data->getSProp()->typeConstraint;
+      type = data->getSProp()->userType;
       break;
     case ReflectionPropHandle::Type::Dynamic:
       break;
@@ -1927,7 +1938,7 @@ static TypedValue HHVM_METHOD(ReflectionProperty, getDefaultValue) {
       // it was declared in); so if we don't want to store propIdx we have to
       // look it up by name.
       auto lookup = prop->cls->getDeclPropIndex(prop->cls, prop->name);
-      auto propIdx = lookup.prop;
+      auto propIdx = lookup.slot;
       assertx(propIdx != kInvalidSlot);
       prop->cls->initialize();
       auto const& propInitVec = prop->cls->getPropData()
@@ -2280,7 +2291,7 @@ static void set_debugger_reflection_function_info(Array& ret,
 static void set_debugger_reflection_method_info(Array& ret, const Func* func,
                                                 const Class* cls) {
   ret.set(s_name, make_tv<KindOfPersistentString>(func->name()));
-  set_attrs(ret, get_modifiers(func->attrs(), false));
+  set_attrs(ret, get_modifiers(func->attrs(), false, false));
 
   if (isConstructor(func)) {
     ret.set(s_constructor, true_varNR.tv());
@@ -2375,7 +2386,7 @@ Array get_class_info(const String& name) {
       ret.set(s_trait,     true_varNR.tv());
     }
     ret.set(s_modifiers, make_tv<KindOfInt64>(
-      get_modifiers(cls->attrs(), true))
+      get_modifiers(cls->attrs(), true, false))
     );
 
     if (cls->getCtor()->attrs() & AttrPublic &&

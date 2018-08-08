@@ -20,7 +20,7 @@
 #include "hphp/runtime/ext/libxml/ext_libxml.h"
 
 #include "hphp/util/functional.h"
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
 #include "hphp/system/systemlib.h"
 #include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/vm/native-data.h"
@@ -661,6 +661,8 @@ Variant HHVM_METHOD(XMLReader, __get,
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    case KindOfFunc:
+    case KindOfClass:
       return init_null();
   }
   not_reached();

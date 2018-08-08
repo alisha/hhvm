@@ -87,11 +87,15 @@ static size_t encoded_iva_size(uint8_t lowByte) {
   return int8_t(lowByte) >= 0 ? 1 : 4;
 }
 
-int immSize(PC origPC, int idx) {
-  auto pc = origPC;
-  auto const op = decode_op(pc);
-  assertx(idx >= 0 && idx < numImmediates(op));
-  always_assert(idx < kMaxHhbcImms); // No origPCs have more than 5 immediates
+namespace {
+
+bool argTypeIsVector(ArgType type) {
+  return
+    type == BLA || type == SLA || type == VSA || type == I32LA || type == BLLA;
+}
+
+int immSize(ArgType type, PC immPC) {
+  auto pc = immPC;
   static const int8_t argTypeToSizes[] = {
 #define ARGTYPE(nm, type) sizeof(type),
 #define ARGTYPEVEC(nm, type) 0,
@@ -100,24 +104,11 @@ int immSize(PC origPC, int idx) {
 #undef ARGTYPEVEC
   };
 
-  if (immType(op, idx) == IVA ||
-      immType(op, idx) == LA ||
-      immType(op, idx) == IA ||
-      immType(op, idx) == CAR ||
-      immType(op, idx) == CAW) {
-    if (idx >= 1) pc += immSize(origPC, 0);
-    if (idx >= 2) pc += immSize(origPC, 1);
-    if (idx >= 3) pc += immSize(origPC, 2);
-    if (idx >= 4) pc += immSize(origPC, 3);
+  if (type == IVA || type == LA || type == IA || type == CAR || type == CAW) {
     return encoded_iva_size(decode_raw<uint8_t>(pc));
   }
 
-  if (immType(op, idx) == KA) {
-    if (idx >= 1) pc += immSize(origPC, 0);
-    if (idx >= 2) pc += immSize(origPC, 1);
-    if (idx >= 3) pc += immSize(origPC, 2);
-    if (idx >= 4) pc += immSize(origPC, 3);
-
+  if (type == KA) {
     switch (decode_raw<MemberCode>(pc)) {
       case MW:
         return 1;
@@ -131,35 +122,20 @@ int immSize(PC origPC, int idx) {
     not_reached();
   }
 
-  if (immType(op, idx) == RATA) {
-    if (idx >= 1) pc += immSize(origPC, 0);
-    if (idx >= 2) pc += immSize(origPC, 1);
-    if (idx >= 3) pc += immSize(origPC, 2);
-    if (idx >= 4) pc += immSize(origPC, 3);
+  if (type == RATA) {
     return encodedRATSize(pc);
   }
 
-  if (immType(op, idx) == LAR) {
-    if (idx >= 1) pc += immSize(origPC, 0);
-    if (idx >= 2) pc += immSize(origPC, 1);
-    if (idx >= 3) pc += immSize(origPC, 2);
-    if (idx >= 4) pc += immSize(origPC, 3);
-    auto start = pc;
+  if (type == LAR) {
     decode_iva(pc); // first
     decode_iva(pc); // restCount
-    return pc - start;
+    return pc - immPC;
   }
 
-  if (immIsVector(op, idx)) {
-    if (idx >= 1) pc += immSize(origPC, 0);
-    if (idx >= 2) pc += immSize(origPC, 1);
-    if (idx >= 3) pc += immSize(origPC, 2);
-    if (idx >= 4) pc += immSize(origPC, 3);
-    auto start = pc;
+  if (argTypeIsVector(type)) {
     auto size = decode_iva(pc);
     int vecElemSz;
-    auto itype = immType(op, idx);
-    switch (itype) {
+    switch (type) {
       case BLA:   vecElemSz = sizeof(Offset);     break;
       case SLA:   vecElemSz = sizeof(StrVecItem); break;
       case I32LA: vecElemSz = sizeof(uint32_t);   break;
@@ -168,47 +144,32 @@ int immSize(PC origPC, int idx) {
       default: not_reached();
     }
 
-    if (itype == BLLA) {
+    if (type == BLLA) {
       size = (size + 7) / 8;
     }
 
-    return pc - start + vecElemSz * size;
+    return pc - immPC + vecElemSz * size;
   }
 
-  if (immIsIterTable(op, idx)) {
-    if (idx >= 1) pc += immSize(origPC, 0);
-    if (idx >= 2) pc += immSize(origPC, 1);
-    if (idx >= 3) pc += immSize(origPC, 2);
-    if (idx >= 4) pc += immSize(origPC, 3);
-    auto start = pc;
+  if (type == ILA) {
     auto const size = decode_iva(pc);
     for (int i = 0; i < size; ++i) {
       auto const kind = static_cast<IterKind>(decode_iva(pc));
       decode_iva(pc);
       if (kind == KindOfLIter) decode_iva(pc);
     }
-    return pc - start;
+    return pc - immPC;
   }
 
-  ArgType type = immType(op, idx);
   return (type >= 0) ? argTypeToSizes[type] : 0;
 }
 
-bool immIsVector(Op opcode, int idx) {
-  ArgType type = immType(opcode, idx);
-  return
-    type == BLA || type == SLA || type == VSA || type == I32LA || type == BLLA;
-}
-
-bool immIsIterTable(Op opcode, int idx) {
-  auto const type = immType(opcode, idx);
-  return type == ILA;
 }
 
 bool hasImmVector(Op opcode) {
   const int num = numImmediates(opcode);
   for (int i = 0; i < num; ++i) {
-    if (immIsVector(opcode, i)) return true;
+    if (argTypeIsVector(immType(opcode, i))) return true;
   }
   return false;
 }
@@ -216,21 +177,21 @@ bool hasImmVector(Op opcode) {
 bool hasIterTable(Op opcode) {
   auto const num = numImmediates(opcode);
   for (int i = 0; i < num; ++i) {
-    if (immIsIterTable(opcode, i)) return true;
+    if (immType(opcode, i) == ILA) return true;
   }
   return false;
 }
 
-ArgUnion getImm(PC const origPC, int idx, const Unit* unit) {
+ArgUnion getImm(const PC origPC, int idx, const Unit* unit) {
   auto pc = origPC;
-  auto const UNUSED op = decode_op(pc);
+  auto const op = decode_op(pc);
   assertx(idx >= 0 && idx < numImmediates(op));
   ArgUnion retval;
   retval.u_NA = 0;
   int cursor = 0;
   for (cursor = 0; cursor < idx; cursor++) {
     // Advance over this immediate.
-    pc += immSize(origPC, cursor);
+    pc += immSize(immType(op, cursor), pc);
   }
   always_assert(cursor == idx);
   auto const type = immType(op, idx);
@@ -242,17 +203,19 @@ ArgUnion getImm(PC const origPC, int idx, const Unit* unit) {
     retval.u_KA = decode_member_key(pc, unit);
   } else if (type == LAR) {
     retval.u_LAR = decodeLocalRange(pc);
-  } else if (!immIsVector(op, cursor)) {
-    always_assert(type != RATA);  // Decode RATAs with a different function.
-    memcpy(&retval.bytes, pc, immSize(origPC, idx));
+  } else if (type == RATA) {
+    assertx(unit != nullptr);
+    retval.u_RATA = decodeRAT(unit, pc);
+  } else if (!argTypeIsVector(type)) {
+    memcpy(&retval.bytes, pc, immSize(type, pc));
   }
   always_assert(numImmediates(op) > idx);
   return retval;
 }
 
-ArgUnion* getImmPtr(PC const origPC, int idx) {
+ArgUnion* getImmPtr(const PC origPC, int idx) {
   auto pc = origPC;
-  auto const UNUSED op = decode_op(pc);
+  auto const op = decode_op(pc);
   assertx(immType(op, idx) != IVA);
   assertx(immType(op, idx) != LA);
   assertx(immType(op, idx) != IA);
@@ -260,7 +223,7 @@ ArgUnion* getImmPtr(PC const origPC, int idx) {
   assertx(immType(op, idx) != CAW);
   assertx(immType(op, idx) != RATA);
   for (int i = 0; i < idx; i++) {
-    pc += immSize(origPC, i);
+    pc += immSize(immType(op, i), pc);
   }
   return (ArgUnion*)pc;
 }
@@ -272,17 +235,17 @@ T decodeImm(const unsigned char** immPtr) {
   return val;
 }
 
-int instrLen(PC const origPC) {
+int instrLen(const PC origPC) {
   auto pc = origPC;
   auto op = decode_op(pc);
   int nImm = numImmediates(op);
   for (int i = 0; i < nImm; i++) {
-    pc += immSize(origPC, i);
+    pc += immSize(immType(op, i), pc);
   }
   return pc - origPC;
 }
 
-Offset* instrJumpOffset(PC const origPC) {
+Offset* instrJumpOffset(const PC origPC) {
   static const int8_t jumpMask[] = {
 #define IMM_NA 0
 #define IMM_IVA 0
@@ -406,7 +369,7 @@ OffsetSet instrSuccOffsets(PC opc, const Unit* unit) {
  * Return the number of successor-edges including fall-through paths but not
  * implicit exception paths.
  */
-int numSuccs(PC const origPC) {
+int numSuccs(const PC origPC) {
   auto pc = origPC;
   auto const op = decode_op(pc);
   if ((instrFlags(op) & TF) != 0) {
@@ -443,9 +406,7 @@ int instrNumPops(PC pc) {
 #define V_MFINAL C_MFINAL
 #define CVMANY -3
 #define CVUMANY -3
-#define C_CVMANY -3
-#define CVMANY_UMANY -4
-#define C_CVMANY_UMANY -4
+#define FCALL -4
 #define CMANY -3
 #define SMANY -1
 #define O(name, imm, pop, push, flags) pop,
@@ -461,9 +422,7 @@ int instrNumPops(PC pc) {
 #undef V_MFINAL
 #undef CVMANY
 #undef CVUMANY
-#undef C_CVMANY
-#undef CVMANY_UMANY
-#undef C_CVMANY_UMANY
+#undef FCALL
 #undef CMANY
 #undef SMANY
 #undef O
@@ -473,12 +432,13 @@ int instrNumPops(PC pc) {
   // For most instructions, we know how many values are popped based
   // solely on the opcode
   if (n >= 0) return n;
-  // FCall, NewPackedArray, and some final member operations specify how many
-  // values are popped in their first immediate
+  // FCallAwait, NewPackedArray, and some final member operations specify how
+  // many values are popped in their first immediate
   if (n == -3) return getImm(pc, 0).u_IVA;
-  // FCallM, FCallDM, and FCallUnpackM pop uninit values from the stack and
-  // push multiple returned values.
-  if (n == -4) return getImm(pc, 0).u_IVA + getImm(pc, 1).u_IVA - 1;
+  // FCall pops numArgs (imm0), unpack (imm1) and uninit values (imm2 - 1)
+  if (n == -4) {
+    return getImm(pc, 0).u_IVA + getImm(pc, 1).u_IVA + getImm(pc, 2).u_IVA - 1;
+  }
   // Other final member operations pop their first immediate + 1
   if (n == -5) return getImm(pc, 0).u_IVA + 1;
 
@@ -504,7 +464,7 @@ int instrNumPushes(PC pc) {
 #define FOUR(...) 4
 #define FIVE(...) 5
 #define INS_1(...) 0
-#define CMANY -1
+#define FCALL -1
 #define O(name, imm, pop, push, flags) push,
     OPCODES
 #undef NOV
@@ -514,14 +474,14 @@ int instrNumPushes(PC pc) {
 #undef FOUR
 #undef FIVE
 #undef INS_1
-#undef CMANY
+#undef FCALL
 #undef O
   };
   auto const op = peek_op(pc);
   int n = numberOfPushes[size_t(op)];
 
-  // The FCallM call flavors push a tuple of arguments onto the stack
-  if (n == -1) return getImm(pc, 1).u_IVA;
+  // The FCall call flavors push a tuple of arguments onto the stack
+  if (n == -1) return getImm(pc, 2).u_IVA;
 
   return n;
 }
@@ -540,9 +500,12 @@ FlavorDesc manyFlavor(PC op, uint32_t i, FlavorDesc flavor) {
   return flavor;
 }
 
-FlavorDesc manyManyFlavor(PC op, uint32_t i, FlavorDesc f1, FlavorDesc f2) {
+FlavorDesc fcallFlavor(PC op, uint32_t i) {
   always_assert(i < uint32_t(instrNumPops(op)));
-  return i < getImm(op, 0).u_IVA ? f1 : f2;
+  auto const numArgs = getImm(op, 0).u_IVA;
+  auto const unpack = getImm(op, 1).u_IVA;
+  if (i == 0 && unpack) return CV;
+  return i < numArgs + unpack ? CVV : UV;
 }
 
 }
@@ -562,9 +525,7 @@ FlavorDesc instrInputFlavor(PC op, uint32_t idx) {
 #define V_MFINAL return idx == 0 ? VV : CRV;
 #define CVMANY return manyFlavor(op, idx, CVV);
 #define CVUMANY return manyFlavor(op, idx, CVUV);
-#define C_CVMANY return idx == 0 ? CV : manyFlavor(op, idx, CVV);
-#define CVMANY_UMANY return manyManyFlavor(op, idx, CVV, UV);
-#define C_CVMANY_UMANY return idx == 0 ? CV : manyManyFlavor(op, idx, CVV, UV);
+#define FCALL return fcallFlavor(op, idx);
 #define CMANY return manyFlavor(op, idx, CV);
 #define SMANY return manyFlavor(op, idx, CV);
 #define O(name, imm, pop, push, flags) case Op::name: pop
@@ -583,9 +544,7 @@ FlavorDesc instrInputFlavor(PC op, uint32_t idx) {
 #undef V_MFINAL
 #undef CVMANY
 #undef CVUMANY
-#undef C_CVMANY
-#undef CVMANY_UMANY
-#undef C_CVMANY_UMANY
+#undef FCALL
 #undef CMANY
 #undef SMANY
 #undef O
@@ -599,7 +558,7 @@ StackTransInfo instrStackTransInfo(PC opcode) {
 #define THREE(...) StackTransInfo::Kind::PushPop
 #define FOUR(...) StackTransInfo::Kind::PushPop
 #define FIVE(...) StackTransInfo::Kind::PushPop
-#define CMANY StackTransInfo::Kind::PushPop
+#define FCALL StackTransInfo::Kind::PushPop
 #define INS_1(...) StackTransInfo::Kind::InsertMid
 #define O(name, imm, pop, push, flags) push,
     OPCODES
@@ -610,7 +569,7 @@ StackTransInfo instrStackTransInfo(PC opcode) {
 #undef FOUR
 #undef FIVE
 #undef INS_1
-#undef CMANY
+#undef FCALL
 #undef O
   };
   static const int8_t peekPokeType[] = {
@@ -620,7 +579,7 @@ StackTransInfo instrStackTransInfo(PC opcode) {
 #define THREE(...) -1
 #define FOUR(...) -1
 #define FIVE(...) -1
-#define CMANY -1
+#define FCALL -1
 #define INS_1(...) 0
 #define O(name, imm, pop, push, flags) push,
     OPCODES
@@ -631,7 +590,7 @@ StackTransInfo instrStackTransInfo(PC opcode) {
 #undef FOUR
 #undef FIVE
 #undef INS_1
-#undef CMANY
+#undef FCALL
 #undef O
   };
   StackTransInfo ret;
@@ -742,6 +701,8 @@ void staticStreamer(const TypedValue* tv, std::string& out) {
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    case KindOfFunc:
+    case KindOfClass:
       break;
   }
   not_reached();

@@ -36,7 +36,7 @@ let emit_method_prolog ~pos ~params ~should_emit_init_this =
 
 
 let tparams_to_strings tparams =
-  List.map tparams (fun (_, (_, s), _) -> s)
+  List.map tparams (fun (_, (_, s), _, _) -> s)
 
 let rec emit_def env def =
   match def with
@@ -146,7 +146,8 @@ let deduplicate l =
   |> List.fold_left ~init:Unique_list_string.empty ~f:Unique_list_string.add
   |> Unique_list_string.items
 
-let make_body_ function_directives_opt body_instrs decl_vars is_memoize_wrapper
+let make_body_ function_directives_opt body_instrs decl_vars
+              is_memoize_wrapper is_memoize_wrapper_lsb
               params return_type_info static_inits doc_comment
               env =
   let body_instrs = rewrite_user_labels body_instrs in
@@ -172,15 +173,16 @@ let make_body_ function_directives_opt body_instrs decl_vars is_memoize_wrapper
     num_iters
     num_cls_ref_slots
     is_memoize_wrapper
+    is_memoize_wrapper_lsb
     params
     return_type_info
     static_inits
     doc_comment
     env
 
-let make_body body_instrs decl_vars is_memoize_wrapper params
+let make_body body_instrs decl_vars is_memoize_wrapper is_memoize_wrapper_lsb params
               return_type_info static_inits doc_comment env =
-  make_body_ None body_instrs decl_vars is_memoize_wrapper params
+  make_body_ None body_instrs decl_vars is_memoize_wrapper is_memoize_wrapper_lsb params
              return_type_info static_inits doc_comment env
 
 let prepare_inline_hhas_blocks decl_vars params hhas_blocks =
@@ -218,7 +220,7 @@ let prepare_inline_hhas_blocks decl_vars params hhas_blocks =
 
 let emit_return_type_info ~scope ~skipawaitable ~namespace ret =
   let tparams =
-    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _) -> s) in
+    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _, _) -> s) in
   match ret with
   | None ->
     Hhas_type_info.make (Some "") (Hhas_type_constraint.make None [])
@@ -282,7 +284,6 @@ let is_mixed_or_dynamic t =
  String_utils.string_ends_with t "HH\\dynamic"
 
 let emit_verify_out params =
-  let msrv = Hhbc_options.use_msrv_for_inout !Hhbc_options.compiler_options in
   let param_instrs = List.filter_mapi params ~f:(fun i p ->
     if not @@ Hhas_param.is_inout p then None else
       let b = match Hhas_param.type_info p with
@@ -296,7 +297,7 @@ let emit_verify_out params =
           if b then instr_verifyOutType (Param_unnamed i) else empty
         ]
       )) in
-  let param_instrs = if msrv then List.rev param_instrs else param_instrs in
+  let param_instrs = List.rev param_instrs in
   let len = List.length param_instrs in
   if len = 0 then (0, empty) else (len, gather param_instrs)
 
@@ -314,6 +315,13 @@ let emit_body
   ~return_value
   ~namespace
   ~doc_comment params ret body =
+  if is_return_by_ref && Hhbc_options.disable_return_by_reference !Hhbc_options.compiler_options
+  then begin
+    Emit_fatal.raise_fatal_runtime pos (
+      "Return by reference is disabled by the " ^
+      "compiler through the option hhvm.disable_return_by_reference " ^
+      "or Eval.DisableReturnByReference")
+  end;
   if is_async && skipawaitable
   then begin
     let report_error =
@@ -337,7 +345,7 @@ let emit_body
       end;
   end;
   let tparams =
-    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _) -> s) in
+    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _, _) -> s) in
   Label.reset_label ();
   Iterator.reset_iterator ();
   let return_type_info =
@@ -528,6 +536,7 @@ let emit_body
     body_instrs
     decl_vars
     false (*is_memoize_wrapper*)
+    false (*is_memoize_wrapper_lsb*)
     params
     (Some return_type_info)
     svar_instrs

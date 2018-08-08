@@ -16,7 +16,7 @@
 #ifndef incl_HPHP_WEAKREF_DATA_H_
 #define incl_HPHP_WEAKREF_DATA_H_
 
-#include "hphp/runtime/base/req-containers.h"
+#include "hphp/runtime/base/req-memory.h"
 #include "hphp/runtime/base/typed-value.h"
 
 #include "hphp/util/type-scan.h"

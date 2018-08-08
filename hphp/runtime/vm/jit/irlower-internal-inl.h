@@ -44,12 +44,16 @@ inline Vout& vcold(IRLS& env) { assertx(env.vcold); return *env.vcold; }
 
 inline Vlabel label(IRLS& env, Block* b) { return env.labels[b]; }
 
+inline Vloc tmpLoc(IRLS& env, const SSATmp* tmp) {
+  return env.locs[tmp];
+}
+
 inline Vloc srcLoc(IRLS& env, const IRInstruction* inst, unsigned i) {
-  return env.locs[inst->src(i)];
+  return tmpLoc(env, inst->src(i));
 }
 
 inline Vloc dstLoc(IRLS& env, const IRInstruction* inst, unsigned i) {
-  return env.locs[inst->dst(i)];
+  return tmpLoc(env, inst->dst(i));
 }
 
 inline ArgGroup argGroup(IRLS& env, const IRInstruction* inst) {
@@ -65,41 +69,35 @@ inline CallDest callDest(Vreg reg0, Vreg reg1) {
 }
 
 inline CallDest callDest(IRLS& env, const IRInstruction* inst) {
-  if (!inst->numDsts()) return kVoidDest;
+  if (inst->numDsts() == 0) return kVoidDest;
+  assertx(inst->numDsts() == 1);
 
   auto const loc = dstLoc(env, inst, 0);
-  if (loc.numAllocated() == 0) return kVoidDest;
-  assertx(loc.numAllocated() == 1);
+  assertx(loc.numAllocated() == 1 ||
+          (inst->dst()->isA(TLvalToGen) && loc.numAllocated() == 2));
 
-  return {
-    inst->dst(0)->isA(TBool) ? DestType::Byte : DestType::SSA,
-    loc.reg(0)
-  };
+  auto const dst = inst->dst();
+  auto const kind = dst->isA(TBool) ? DestType::Byte :
+                    dst->isA(TDbl) ? DestType::Dbl :
+                    DestType::SSA;
+
+  return { kind, dst->type(), loc.reg(0), loc.reg(1) };
 }
 
 inline CallDest callDestTV(IRLS& env, const IRInstruction* inst) {
-  if (!inst->numDsts()) return kVoidDest;
+  assertx(inst->numDsts() == 1);
 
   auto const loc = dstLoc(env, inst, 0);
-  if (loc.numAllocated() == 0) return kVoidDest;
+  assertx(loc.numAllocated() == 1 || loc.numAllocated() == 2);
 
   if (loc.isFullSIMD()) {
     assertx(loc.numAllocated() == 1);
-    return { DestType::SIMD, loc.reg(0) };
+    return { DestType::SIMD, TGen, loc.reg(0) };
   }
-  if (loc.numAllocated() == 2) {
-    return { DestType::TV, loc.reg(0), loc.reg(1) };
-  }
-  assertx(loc.numAllocated() == 1);
 
-  // Sometimes we statically know the type and only need the value.
-  return { DestType::TV, loc.reg(0), InvalidReg };
-}
-
-inline CallDest callDestDbl(IRLS& env, const IRInstruction* inst) {
-  if (!inst->numDsts()) return kVoidDest;
-  auto const loc = dstLoc(env, inst, 0);
-  return { DestType::Dbl, loc.reg(0) };
+  // loc.reg(1) may be InvalidReg, if the type is statically known. This is
+  // expected and handled by users of CallDest.
+  return { DestType::TV, TGen, loc.reg(0), loc.reg(1) };
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -181,7 +179,7 @@ void emitTypeTest(Vout& v, IRLS& env, Type type,
   // negativeCheckType() to indicate whether it is precise or not.
   always_assert(!type.hasConstVal());
   always_assert_flog(
-    !type.subtypeOfAny(TCls, TCountedStr, TPersistentArrLike),
+    !type.subtypeOfAny(TCountedStr, TPersistentArrLike),
     "Unsupported type in emitTypeTest(): {}", type
   );
 

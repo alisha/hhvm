@@ -198,6 +198,10 @@ struct TypeConstraint {
    */
   MaybeDataType underlyingDataTypeResolved() const;
 
+  bool isCheckable() const {
+    return hasConstraint() && !isMixed() && !isTypeVar() && !isTypeConstant();
+  }
+
   /*
    * Predicates for various properties of the type constraint.
    */
@@ -217,6 +221,7 @@ struct TypeConstraint {
   bool isParent()   const { return m_type == Type::Parent; }
   bool isCallable() const { return m_type == Type::Callable; }
   bool isNumber()   const { return m_type == Type::Number; }
+  bool isNoReturn() const { return m_type == Type::NoReturn; }
   bool isArrayKey() const { return m_type == Type::ArrayKey; }
   bool isArrayLike() const { return m_type == Type::ArrayLike; }
 
@@ -239,6 +244,8 @@ struct TypeConstraint {
   }
 
   bool isObject()   const { return m_type == Type::Object; }
+  bool isInt()      const { return m_type == Type::Int; }
+  bool isString()   const { return m_type == Type::String; }
 
   bool isVArray()   const {
     return !RuntimeOption::EvalHackArrDVArrs && m_type == Type::VArray;
@@ -251,6 +258,10 @@ struct TypeConstraint {
   }
 
   AnnotType type()  const { return m_type; }
+
+  bool validForProp() const {
+    return !isSelf() && !isParent() && !isCallable() && !isNoReturn();
+  }
 
   /*
    * A string representation of this type constraint.
@@ -270,7 +281,46 @@ struct TypeConstraint {
     return name;
   }
 
-  std::string displayName(const Func* func = nullptr, bool extra = false) const;
+  /*
+   * Format this TypeConstraint for display to the user. Context is used to
+   * optionally resolve Self, Parent, and This to their class names. Extra will
+   * cause the resolved type (if any) to be appended to the name.
+   */
+  std::string displayName(const Class* context = nullptr,
+                          bool extra = false) const;
+
+  /*
+   * Obtain an initial value suitable for this type-constraint. Where possible,
+   * the initial value is chosen to satisfy the type-constraint, but this isn't
+   * always possible (for example, for objects).
+   */
+  Cell defaultValue() const {
+    // Nullable type-constraints should always default to null, as Hack
+    // guarantees this.
+    if (!isCheckable() || isNullable()) return make_tv<KindOfNull>();
+    return annotDefaultValue(m_type);
+  }
+
+  /*
+   * Returns whether this and another type-constraint might not be equivalent at
+   * runtime. Two type-constraints are equivalent if they allow exactly the same
+   * values. This function is conservative and will return true if not
+   * sure. This function will not autoload or check loaded classes of
+   * type-aliases. Only meant for property type-hints.
+   */
+  bool maybeInequivalentForProp(const TypeConstraint& other) const;
+
+  /*
+   * Returns whether this and another type-constraint are definitely
+   * equivalent. Unlike maybeInequivalentForProp(), this function is exact and
+   * can autoload. Only meant for property type-hints.
+   */
+  enum class EquivalentResult {
+    Pass,    // Equivalent
+    DVArray, // Not equivalent because of d/varray mismatch
+    Fail     // Not equivalent
+  };
+  EquivalentResult equivalentForProp(const TypeConstraint& other) const;
 
   /*
    * Returns: whether two TypeConstraints are compatible, in the sense
@@ -279,46 +329,93 @@ struct TypeConstraint {
    */
   bool compat(const TypeConstraint& other) const;
 
-  // General check for any constraint.
-  bool check(TypedValue* tv, const Func* func) const;
-
-  bool checkTypeAliasObj(const Class* cls) const;
-  bool checkTypeAliasNonObj(const TypedValue* tv) const;
-
-  // NB: will throw if the check fails.
-  void verifyParam(TypedValue* tv, const Func* func, int paramNum) const {
-    if (UNLIKELY(!check(tv, func))) {
-      verifyParamFail(func, tv, paramNum);
-    }
+  /*
+   * Normal check if this type-constraint is compatible with the given value
+   * (using the given context). This can invoke the autoloader and is always
+   * exact. This should not be used for property type-hints (which behave
+   * slightly differently) and the context is required. The context determines
+   * the meaning of Self, Parent, and This type-constraints.
+   */
+  bool check(const TypedValue* tv, const Class* context) const {
+    return checkImpl<CheckMode::Exact>(tv, context);
   }
-  void verifyReturn(TypedValue* tv, const Func* func) const {
-    if (UNLIKELY(!check(tv, func))) {
-      verifyReturnFail(func, tv);
-    }
+
+  /*
+   * Assert that this type-constraint is compatible with the given value. This
+   * is meant for use in assertions and is conservative. It will not invoke the
+   * autoloader, but can consult already loaded classes or type-aliases. It will
+   * only return false if the value definitely does not satisfy the
+   * type-constraint, true otherwise.
+   */
+  bool assertCheck(const TypedValue* tv) const {
+    return checkImpl<CheckMode::Assert>(tv, nullptr);
   }
+
+  /*
+   * Check if this type-constraint is compatible with the given value in *all
+   * contexts*. That is, regardless of what classes or type-aliases are
+   * currently loaded. A type which passes this check will never need to be
+   * checked at run-time.
+   */
+  bool alwaysPasses(const TypedValue* tv) const {
+    if (!isCheckable()) return true;
+    return checkImpl<CheckMode::AlwaysPasses>(tv, nullptr);
+  }
+
+  bool checkTypeAliasObj(const Class* cls) const {
+    return checkTypeAliasObjImpl<false>(cls);
+  }
+
+  // NB: Can throw if the check fails.
+  void verifyParam(TypedValue* tv, const Func* func, int paramNum) const;
+  void verifyReturn(TypedValue* tv, const Func* func) const;
   void verifyReturnNonNull(TypedValue* tv, const Func* func) const;
-  void verifyOutParam(TypedValue* tv, const Func* func, int paramNum) const {
-    if (UNLIKELY(!check(tv, func))) {
-      verifyOutParamFail(func, tv, paramNum);
-    }
-  }
+  void verifyOutParam(const TypedValue* tv, const Func* func,
+                      int paramNum) const;
+  void verifyProperty(const TypedValue* tv,
+                      const Class* thisCls,
+                      const Class* declCls,
+                      const StringData* propName) const;
+  void verifyStaticProperty(const TypedValue* tv,
+                            const Class* thisCls,
+                            const Class* declCls,
+                            const StringData* propName) const;
 
-  // Can not be private; used by the translator.
-  void selfToClass(const Func* func, const Class **cls) const;
-  void thisToClass(const Class **cls) const;
-  void parentToClass(const Func* func, const Class **cls) const;
   void verifyFail(const Func* func, TypedValue* tv, int id) const;
-  void verifyParamFail(const Func* func, TypedValue* tv,
-                       int paramNum) const;
-  void verifyOutParamFail(const Func* func, TypedValue* tv, int paramNum) const;
+  void verifyParamFail(const Func* func, TypedValue* tv, int paramNum) const;
+  void verifyOutParamFail(const Func* func, const TypedValue* tv,
+                          int paramNum) const;
   void verifyReturnFail(const Func* func, TypedValue* tv) const {
     verifyFail(func, tv, ReturnId);
   }
+  void verifyPropFail(const Class* thisCls, const Class* declCls,
+                      const TypedValue* tv, const StringData* propName,
+                      bool isStatic) const;
 
 private:
   void init();
-  void selfToTypeName(const Func* func, const StringData **typeName) const;
-  void parentToTypeName(const Func* func, const StringData **typeName) const;
+
+  enum class CheckMode {
+    Exact, // Do an exact check with autoloading
+    ExactProp, // Do an exact prop check with autoloading
+    AlwaysPasses, // Don't check environment at all. Return false if not sure.
+    Assert // Check loaded classes/type-aliases, but don't autoload. Return true
+           // if not sure.
+  };
+
+  template <CheckMode>
+  bool checkImpl(const TypedValue* tv, const Class* context) const;
+
+  template <bool, bool>
+  bool checkTypeAliasNonObj(const TypedValue* tv) const;
+
+  template <bool>
+  bool checkTypeAliasObjImpl(const Class* cls) const;
+
+  void verifyFail(const Func* func, TypedValue* tv, int id,
+                  bool useStrictTypes) const;
+
+  folly::Optional<AnnotType> checkDVArray(const Cell*) const;
 
 private:
   // m_type represents the type to check on.  We don't know whether a

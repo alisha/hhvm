@@ -111,7 +111,10 @@ VariableSerializer::VariableSerializer(Type type, int option /* = 0 */,
 VariableSerializer::ArrayKind
 VariableSerializer::getKind(const ArrayData* arr) const {
   assertx(!RuntimeOption::EvalHackArrDVArrs || arr->isNotDVArray());
-  if (UNLIKELY(m_forcePHPArrays)) return VariableSerializer::ArrayKind::PHP;
+  if (UNLIKELY(m_forcePHPArrays ||
+        (arr->isLegacyArray() && getType() == Type::Serialize))) {
+    return VariableSerializer::ArrayKind::PHP;
+  }
   if (arr->isDict())              return VariableSerializer::ArrayKind::Dict;
   if (arr->isVecArray())          return VariableSerializer::ArrayKind::Vec;
   if (arr->isKeyset())            return VariableSerializer::ArrayKind::Keyset;
@@ -664,7 +667,7 @@ void VariableSerializer::write(const Object& v) {
       } else {
         auto props = v->toArray(true);
         pushObjectInfo(v->getClassName(), v->getId(), 'O');
-        serializeArray(props);
+        serializeArray(props, true);
         popObjectInfo();
       }
     });
@@ -1413,6 +1416,52 @@ void VariableSerializer::serializeRef(tv_rval tv, bool isArrayKey) {
   }
 }
 
+void VariableSerializer::serializeFunc(const Func* func) {
+  auto const name = func->fullDisplayName();
+  switch (getType()) {
+    case Type::VarExport:
+    case Type::PHPOutput:
+      m_buf->append("fun(");
+      write(name->data(), name->size());
+      m_buf->append(')');
+      break;
+    case Type::VarDump:
+    case Type::DebugDump:
+      // TODO (T29639296)
+      // For now we use function(foo) to dump function pointers in most cases,
+      // and this can be changed in the future.
+      m_buf->append("function(");
+      m_buf->append(name->data());
+      m_buf->append(")\n");
+      break;
+    case Type::PrintR:
+    case Type::DebuggerDump:
+      m_buf->append("function(");
+      m_buf->append(name->data());
+      m_buf->append(')');
+      break;
+    case Type::JSON:
+      write(name->data(), name->size());
+      break;
+    case Type::Serialize:
+      m_buf->append("f:");
+      m_buf->append(name->size());
+      m_buf->append(":\"");
+      m_buf->append(name->data(), name->size());
+      m_buf->append("\";");
+      break;
+    case Type::Internal:
+    case Type::APCSerialize:
+    case Type::DebuggerSerialize:
+      raise_error("Unable to serialize a function value");
+  }
+}
+
+void VariableSerializer::serializeClass(const Class* cls) {
+  auto const name = cls->name();
+  write(name->data(), name->size());
+}
+
 NEVER_INLINE
 void VariableSerializer::serializeVariant(tv_rval tv,
                                           bool isArrayKey /* = false */,
@@ -1484,6 +1533,16 @@ void VariableSerializer::serializeVariant(tv_rval tv,
 
     case KindOfRef:
       serializeRef(tv, isArrayKey);
+      return;
+
+    case KindOfFunc:
+      assertx(!isArrayKey);
+      serializeFunc(val(tv).pfunc);
+      return;
+
+    case KindOfClass:
+      assertx(!isArrayKey);
+      serializeClass(val(tv).pclass);
       return;
   }
   not_reached();
@@ -1799,7 +1858,7 @@ void VariableSerializer::serializeObjectImpl(const ObjectData* obj) {
         }
 
         auto const lookup = obj_cls->getDeclPropIndex(ctx, memberName.get());
-        auto const slot = lookup.prop;
+        auto const slot = lookup.slot;
 
         if (slot != kInvalidSlot && lookup.accessible) {
           auto const prop = obj->propRvalAtOffset(slot);

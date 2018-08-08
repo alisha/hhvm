@@ -206,20 +206,25 @@ let rec localize_with_env ~ety_env env (dty: decl ty) =
 and localize_tparams ~ety_env env pos tyl tparams =
   let length = min (List.length tyl) (List.length tparams) in
   let tyl, tparams = List.take tyl length, List.take tparams length in
-  List.map2_env env tyl tparams (localize_tparam ~ety_env pos)
+  let ety_env = { ety_env with validate_dty = None; } in
+  let (env, _), tyl = List.map2_env (env, ety_env) tyl tparams (localize_tparam pos) in
+  env, tyl
 
-and localize_tparam ~ety_env pos env ty (_, (_, name), cstrl) =
+and localize_tparam pos (env, ety_env) ty (_, (_, name), cstrl, _) =
   match ty with
     | r, Tapply ((_, x), _argl) when x = SN.Typehints.wildcard ->
-      let env, name = Env.add_fresh_generic_parameter env name in
-      let ty_fresh = (r, Tabstract (AKgeneric name, None)) in
+      let env, new_name = Env.add_fresh_generic_parameter env name in
+      let ty_fresh = (r, Tabstract (AKgeneric new_name, None)) in
       let env = List.fold_left cstrl ~init:env ~f:(fun env (ck, ty) ->
-          (* Substitute fresh type parameters for
-           * original formals in constraint *)
         let env, ty = localize ~ety_env env ty in
         TUtils.add_constraint pos env ck ty_fresh ty) in
-      env, ty_fresh
-    | _ -> localize ~ety_env env ty
+      (* Substitute fresh type parameters for original formals in constraint *)
+      let substs = SMap.add name ty_fresh ety_env.substs in
+      let ety_env = { ety_env with substs; } in
+      (env, ety_env), ty_fresh
+    | _ ->
+      let env, ty = localize ~ety_env env ty in
+      (env, ety_env), ty
 
 and tyl_contains_wildcard tyl =
   List.exists tyl begin function
@@ -264,13 +269,13 @@ and localize_ft ~use_pos ?(instantiate_tparams=true) ?(explicit_tparams=[]) ~ety
             | (pos, Nast.Happly ((_, id), [])) when id = SN.Typehints.wildcard ->
               let reason = Reason.Rwitness pos in
               TUtils.in_var env (reason, Tunresolved [])
-            | _ -> hint_locl env hint in
+            | _ -> localize_hint_with_self env hint in
           List.map_env env explicit_tparams type_argument
       in
       let ft_subst = Subst.make ft.ft_tparams tvarl in
       env, SMap.union ft_subst ety_env.substs
     else
-      env, List.fold_left ft.ft_tparams ~f:begin fun subst (_, (_, x), _) ->
+      env, List.fold_left ft.ft_tparams ~f:begin fun subst (_, (_, x), _, _) ->
         SMap.remove x subst
       end ~init:ety_env.substs
   in
@@ -281,7 +286,7 @@ and localize_ft ~use_pos ?(instantiate_tparams=true) ?(explicit_tparams=[]) ~ety
   end in
 
   (* Localize the constraints for a type parameter declaration *)
-  let localize_tparam env (var, name, cstrl) =
+  let localize_tparam env (var, name, cstrl, reified) =
     let env, cstrl = List.map_env env cstrl begin fun env (ck, ty) ->
       let env, ty = localize ~ety_env env ty in
       let name_str = snd name in
@@ -299,7 +304,7 @@ and localize_ft ~use_pos ?(instantiate_tparams=true) ?(explicit_tparams=[]) ~ety
         Env.add_upper_bound (Env.add_lower_bound env name_str ty) name_str ty in
       env, (ck, ty)
     end in
-    env, (var, name, cstrl)
+    env, (var, name, cstrl, reified)
   in
 
   let localize_where_constraint env (ty1, ck, ty2) =
@@ -372,7 +377,7 @@ and localize_ft ~use_pos ?(instantiate_tparams=true) ?(explicit_tparams=[]) ~ety
  * function's body.
  *)
 and check_tparams_constraints ~use_pos ~ety_env env tparams =
-  let check_tparam_constraints env (_variance, id, cstrl) =
+  let check_tparam_constraints env (_variance, id, cstrl, _) =
     List.fold_left cstrl ~init:env ~f:begin fun env (ck, ty) ->
       let env, ty = localize ~ety_env env ty in
       match SMap.get (snd id) ety_env.substs with
@@ -430,9 +435,13 @@ and localize_with_dty_validator env ty validate_dty =
   let ety_env = {(env_with_self env) with validate_dty = Some validate_dty;} in
   localize ~ety_env env ty
 
-and hint_locl env h =
+and localize_hint_with_self env h =
   let h = Decl_hint.hint env.Env.decl_env h in
   localize_with_self env h
+
+and localize_hint ~ety_env env hint =
+  let hint_ty = Decl_hint.hint env.Env.decl_env hint in
+  localize ~ety_env env hint_ty
 
 (* Add generic parameters to the environment, localize their bounds, and
  * transform these into a flat list of constraints of the form (ty1,ck,ty2)
@@ -441,7 +450,7 @@ and hint_locl env h =
 let localize_generic_parameters_with_bounds
     ~ety_env (env:Env.env) (tparams:Nast.tparam list) =
   let env = Env.add_generic_parameters env tparams in
-  let localize_bound env ((_var, (pos,name), cstrl): Nast.tparam) =
+  let localize_bound env ((_var, (pos,name), cstrl, _): Nast.tparam) =
     let tparam_ty = (Reason.Rwitness pos, Tabstract(AKgeneric name, None)) in
     List.map_env env cstrl (fun env (ck, h) ->
       let env, ty = localize env (Decl_hint.hint env.Env.decl_env h) ~ety_env in

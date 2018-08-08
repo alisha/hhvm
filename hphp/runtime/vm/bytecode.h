@@ -713,6 +713,12 @@ public:
   }
 
   ALWAYS_INLINE
+  void pushFunc(Func* f) {
+    m_top--;
+    *m_top = make_tv<KindOfFunc>(f);
+  }
+
+  ALWAYS_INLINE
   void nalloc(size_t n) {
     assertx((uintptr_t)(m_top - n) <= (uintptr_t)m_base);
     m_top -= n;
@@ -910,7 +916,7 @@ using InterpOneFunc = jit::TCA (*) (ActRec*, TypedValue*, Offset);
 extern InterpOneFunc interpOneEntryPoints[];
 
 bool doFCallUnpackTC(PC pc, int32_t numArgs, void*);
-bool doFCall(ActRec* ar, PC& pc);
+bool doFCall(ActRec* ar, PC& pc, uint32_t numArgs, bool unpack);
 jit::TCA dispatchBB();
 void pushFrameSlots(const Func* func, int nparams = 0);
 Array getDefinedVariables(const ActRec*);

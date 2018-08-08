@@ -69,15 +69,6 @@ function usage() {
   return "usage: $argv[0] [-m jit|interp] [-r] <test/directories>";
 }
 
-function suppress_opts_for_codegen_test($test) {
-  $opts_file = $test . ".opts";
-  if (!file_exists($opts_file)) {
-    return true;
-  }
-  $content = file_get_contents($opts_file);
-  return preg_match("/Eval\.DisableHphpcOpts=0/i", $content) !== 1;
-}
-
 function help() {
   global $argv;
   $ztestexample = 'test/zend/good/*/*z*.php'; // sep. for syntax highlighting.
@@ -214,13 +205,6 @@ function hh_codegen_binary_routes() {
   );
 }
 
-function hh_semdiff_binary_routes() {
-  return array(
-    "buck"    => "/buck-out/bin/hphp/hack/src/hhbc/semdiff/semdiff",
-    "cmake"   => "/hphp/hack/bin"
-  );
-}
-
 // For Facebook: We have several build systems, and we can use any of them in
 // the same code repo.  If multiple binaries exist, we want the onus to be on
 // the user to specify a particular one because before we chose the buck one
@@ -296,30 +280,13 @@ function hhvm_path() {
   return rel_path($file);
 }
 
-function hh_codegen_cmd($options, $config_file = null, $disable_hphpc_opts = true) {
+function hh_codegen_cmd($options) {
   $cmd = hh_codegen_path();
-  if (isset($config_file)) {
-    $cmd .= ' -c '.escapeshellarg($config_file);
-  }
   $cmd .= ' -v Hack.Compiler.SourceMapping=1 ';
-  if (isset($options['compare-hh-codegen'])) {
-    if ($disable_hphpc_opts) {
-      $cmd .= ' -v Eval.DisableHphpcOpts=1 ';
-    }
-    $cmd .= ' -v Hack.Lang.EnableIsExprPrimitiveMigration=0 ';
-  }
   if (isset($options['hackc'])) {
     $cmd .= ' --daemon';
   }
 
-  return $cmd;
-}
-
-function hh_semdiff_cmd($options) {
-  $cmd = hh_semdiff_path();
-  if (isset($options['hackc'])) $cmd .= ' --daemon';
-  if (isset($options['srcloc'])) $cmd .= ' --srcloc';
-  $cmd .= ' --verbose 1';
   return $cmd;
 }
 
@@ -395,42 +362,10 @@ function hh_codegen_path() {
   return rel_path($file);
 }
 
-function hh_semdiff_path() {
-  $file = "";
-  if (getenv("HH_SEMDIFF_BIN") !== false) {
-    $file = realpath(getenv("HH_SEMDIFF_BIN"));
-  } else {
-    $file = hh_semdiff_bin_root().'/semdiff.opt';
-  }
-  if (!is_file($file)) {
-    error("$file doesn't exist. Did you forget to build first?");
-  }
-  return rel_path($file);
-}
-
 function hh_codegen_bin_root() {
   $home = hphp_home();
   $env_tool = getenv("FBCODE_BUILD_TOOL");
   $routes = hh_codegen_binary_routes();
-
-  if ($env_tool !== false) {
-    return $home . $routes[$env_tool];
-  }
-
-  foreach ($routes as $_ => $path) {
-    $dir = $home . $path;
-    if (is_dir($dir)) {
-      return $dir;
-    }
-  }
-
-  return $home . $routes["cmake"];
-}
-
-function hh_semdiff_bin_root() {
-  $home = hphp_home();
-  $env_tool = getenv("FBCODE_BUILD_TOOL");
-  $routes = hh_semdiff_binary_routes();
 
   if ($env_tool !== false) {
     return $home . $routes[$env_tool];
@@ -507,54 +442,53 @@ function rel_path($to) {
 }
 
 function get_options($argv) {
+  # Options marked * affect test behavior, and need to be reported by list_tests
   $parameters = array(
-    'env:' => '',
+    '*env:' => '',
     'exclude:' => 'e:',
     'exclude-pattern:' => 'E:',
     'exclude-recorded-failures:' => 'x:',
     'include:' => 'i:',
     'include-pattern:' => 'I:',
-    'repo' => 'r',
-    'hhbbc2' => '',
-    'mode:' => 'm:',
-    'server' => 's',
-    'cli-server' => 'S',
+    '*repo' => 'r',
+    '*repo-threads:' => '',
+    '*hhbbc2' => '',
+    '*mode:' => 'm:',
+    '*server' => 's',
+    '*cli-server' => 'S',
     'shuffle' => '',
     'help' => 'h',
     'verbose' => 'v',
     'testpilot' => '',
     'threads:' => '',
-    'args:' => 'a:',
+    '*args:' => 'a:',
     'log' => 'l',
     'failure-file:' => '',
-    'arm' => '',
-    'wholecfg' => '',
-    'hhas-round-trip' => '',
+    '*wholecfg' => '',
+    '*hhas-round-trip' => '',
     'color' => 'c',
     'no-fun' => '',
     'cores' => '',
     'no-clean' => '',
     'list-tests' => '',
-    'relocate:' => '',
-    'recycle-tc:' => '',
-    'retranslate-all:' => '',
-    'jit-serialize:' => '',
-    'hhvm-binary-path:' => 'b:',
-    'typechecker' => '',
-    'vendor:' => '',
-    'hhserver-binary-path:' => '',
-    'compare-hh-codegen' => '',
-    'no-semdiff' => '',
+    '*relocate:' => '',
+    '*recycle-tc:' => '',
+    '*retranslate-all:' => '',
+    '*jit-serialize:' => '',
+    '*hhvm-binary-path:' => 'b:',
+    '*typechecker' => '',
+    '*vendor:' => '',
+    '*hhserver-binary-path:' => '',
     'record-failures:' => '',
-    'hackc' => '',
-    'srcloc' => '',
-    'hack-only' => '',
-    'ignore-oids' => '',
-    'hphpc' => '',
+    '*hackc' => '',
+    '*srcloc' => '',
+    '*hack-only' => '',
+    '*ignore-oids' => '',
     'jitsample:' => ''
   );
   $options = array();
   $files = array();
+  $recorded = array();
 
   /*
    * '-' argument causes all future arguments to be treated as filenames, even
@@ -577,13 +511,16 @@ function get_options($argv) {
 
       foreach ($parameters as $long => $short) {
         if ($arg == '-'.str_replace(':', '', $short) ||
-            $arg == '--'.str_replace(':', '', $long)) {
+            $arg == '--'.str_replace(array(':', '*'), array('', ''), $long)) {
+          $record = substr($long, 0, 1) === '*';
+          if ($record) $recorded[] = $arg;
           if (substr($long, -1, 1) == ':') {
             $value = $argv[++$i];
+            if ($record) $recorded[] = $value;
           } else {
             $value = true;
           }
-          $options[str_replace(':', '', $long)] = $value;
+          $options[str_replace(array(':', '*'), array('', ''), $long)] = $value;
           $found = true;
           break;
         }
@@ -596,6 +533,8 @@ function get_options($argv) {
       $files[] = $arg;
     }
   }
+
+  $GLOBALS['recorded_options'] = $recorded;
 
   if (isset($options['jit-serialize'])) {
     if (!isset($options['repo'])) {
@@ -750,10 +689,6 @@ function find_tests($files, array $options = null) {
                 file_exists($test . '.hhconfig');
       }
     );
-  } else if (isset($options['compare-hh-codegen'])) {
-    $tests = explode("\n", shell_exec(
-      "find $files -name '*.php'"
-    ));
   } else {
     $tests = explode("\n", shell_exec(
       "find $files '(' " .
@@ -761,8 +696,7 @@ function find_tests($files, array $options = null) {
           "-o -name '*.php.type-errors' " .
           "-o -name '*.hhas' " .
         "')' " .
-        "-not -regex '.*round_trip[.]hhas' " .
-        "-not -regex '.*hhcodegen_output[.]hhas'"
+        "-not -regex '.*round_trip[.]hhas'"
     ));
   }
   if (!$tests) {
@@ -808,38 +742,14 @@ function find_tests($files, array $options = null) {
 }
 
 function list_tests($files, $options) {
-  $args = array();
-  $mode = idx($options, 'mode', '');
-  switch ($mode) {
-    case '':
-      break;
-    case 'jit':
-    case 'interp':
-    case 'interp,jit':
-      $args[] = '-m ' . $mode;
-      break;
-    default:
-      throw new Exception("Unsupported mode for listing tests: ".$mode);
-  }
-
-  if (isset($options['hhbbc2'])) {
-    $args[] = '--hhbbc2';
-  } else if (isset($options['repo'])) {
-    $args[] = '-r';
-  }
-
-  foreach (multi_request_modes() as $option) {
-    if (isset($options[$option])) {
-      $args[] = '--' . $option;
-      $args[] = $options[$option];
-    }
-  }
+  $args = implode(' ', $GLOBALS['recorded_options']);
 
   foreach (find_tests($files, $options) as $test) {
-    print Status::jsonEncode(array(
-      'args' => implode(' ', $args),
-      'name' => $test,
-    ))."\n";
+    print str_replace('\\', '\\\\',
+                      Status::jsonEncode(
+                        array('args' => $args, 'name' => $test)
+                      )
+                     )."\n";
   }
 }
 
@@ -920,7 +830,6 @@ function extra_args($options): string {
 function hhvm_cmd_impl() {
   $args = func_get_args();
   $options = array_shift(&$args);
-  $disable_hphpc_opts = array_shift(&$args);
   $config = array_shift(&$args);
   $extra_args = $args;
   $modes = (array)mode_cmd($options);
@@ -932,27 +841,23 @@ function hhvm_cmd_impl() {
       $config,
       '-vEval.EnableArgsInBacktraces=true',
       '-vEval.EnableIntrinsicsExtension=true',
+      '-vEval.HHIRInliningIgnoreHints=false',
       $mode,
-      isset($options['arm']) ? '-vEval.SimulateARM=1' : '',
       isset($options['wholecfg']) ? '-vEval.JitPGORegionSelector=wholecfg' : '',
 
       // load/store counters don't work on Ivy Bridge so disable for tests
       '-vEval.ProfileHWEnable=false',
 
-      // use a fixed hackc path
+      // use a fixed path for embedded data
       '-vEval.HackCompilerExtractPath='.bin_root().'/hackc_%{schema}',
+      '-vEval.EmbeddedDataExtractPath='.bin_root().'/hhvm_%{type}_%{buildid}',
 
       extra_args($options),
     );
 
     if (isset($options['hackc'])) {
       $args[] = '-vEval.HackCompilerCommand="'.hh_codegen_cmd($options).'"';
-      $args[] = '-vEval.HackCompilerDefault=true';
       $args[] = '-vEval.HackCompilerUseEmbedded=false';
-    }
-
-    if (isset($options['hphpc'])) {
-      $args[] = '-vEval.HackCompilerDefault=false';
     }
 
     if (isset($options['relocate'])) {
@@ -988,25 +893,6 @@ function hhvm_cmd_impl() {
       $args[] = '-vEval.LoadFilepathFromUnitCache=1';
     }
 
-    if (isset($options['compare-hh-codegen'])) {
-      if ($disable_hphpc_opts) {
-        $args[] = '-vEval.DisableHphpcOpts=1';
-      }
-      $args[] = '-vEval.DisassemblerSourceMapping=1';
-      $args[] = '-vEval.CreateInOutWrapperFunctions=1';
-      $args[] = '-vEval.ReffinessInvariance=1';
-      $args[] = '-vEval.HackCompilerDefault=false';
-      $args[] = '-vEval.HackCompilerUseEmbedded=false';
-
-      // T29079834: Is Expr Migration
-      $args[] = '-vHack.Lang.EnableIsExprPrimitiveMigration=0';
-
-      // TODO(paulbiss): support these
-      $args[] = '-vEval.DisassemblerPropDocComments=0';
-      $args[] = '-vEval.JitEnableRenameFunction=0';
-      $args[] = '-vEval.DisassemblerDocComments=0';
-    }
-
     if (!isset($options['cores'])) {
       $args[] = '-vResourceLimit.CoreFileSize=0';
     }
@@ -1027,10 +913,8 @@ function hhvm_cmd($options, $test, $test_run = null, $is_temp_file = false) {
   $hdf = file_exists($test.$hdf_suffix)
        ? '-c ' . $test . $hdf_suffix
        : "";
-  $disable_hphpc_opts = suppress_opts_for_codegen_test($test);
   $cmds = hhvm_cmd_impl(
     $options,
-    $disable_hphpc_opts,
     find_test_ext($test, 'ini'),
     $hdf,
     find_debug_config($test, 'hphpd.ini'),
@@ -1154,27 +1038,10 @@ function hphp_cmd($options, $test, $program) {
   if (isset($options['hackc'])) {
     $hh_single_compile = hh_codegen_path();
     $compiler_args = implode(" ", array(
-      "-vRuntime.Eval.HackCompilerDefault=true",
       '-vRuntime.Eval.HackCompilerUseEmbedded=false',
       "-vRuntime.Eval.HackCompilerInheritConfig=true",
       "-vRuntime.Eval.HackCompilerCommand=\"${hh_single_compile} -v Hack.Compiler.SourceMapping=1 --daemon --dump-symbol-refs\""
     ));
-  }
-  if (isset($options['hphpc'])) {
-    $compiler_args = '-vRuntime.Eval.HackCompilerDefault=false';
-  }
-  if (isset($options['compare-hh-codegen'])) {
-    // If we want to compare hphpc to hackc codegen, we have to force the
-    // compiler in both directions, because the default is uncertain - it
-    // depends on whether HHVM_NO_DEFAULT_HACKC was defined at build time
-    if ($program === 'hackc') {
-      $compiler_args = implode(' ', array(
-        '-vRuntime.Eval.HackCompilerDefault=true',
-        '-vRuntime.Eval.HackCompilerUseEmbedded=true',
-      ));
-    } else {
-      $compiler_args = '-vRuntime.Eval.HackCompilerDefault=false';
-    }
   }
 
   return implode(" ", array(
@@ -1186,6 +1053,7 @@ function hphp_cmd($options, $test, $program) {
     '-vRuntime.ResourceLimit.CoreFileSize=0',
     '-vRuntime.Eval.EnableIntrinsicsExtension=true',
     '-vRuntime.Eval.HackCompilerExtractPath='.bin_root().'/hackc_%{schema}',
+    '-vParserThreadCount=' . ($options['repo-threads'] ?? 1),
     '--nofork=1 -thhbc -l1 -k1',
     "-o \"$test.repo\" --program $program.hhbc \"$test\"",
     $extra_args,
@@ -1200,7 +1068,7 @@ function hhbbc_cmd($options, $test, $program) {
     '--hhbbc',
     '--no-logging',
     '--no-cores',
-    '--parallel-num-threads=1',
+    '--parallel-num-threads=' . ($options['repo-threads'] ?? 1),
     '--hack-compiler-extract-path='.bin_root().'/hackc_%{schema}',
     read_opts_file("$test.hhbbc_opts"),
     "-o \"$test.repo/$program.hhbbc\" \"$test.repo/$program.hhbc\"",
@@ -1338,6 +1206,7 @@ class Status {
 
   private static $use_color = false;
 
+  public static $nofork = false;
   private static $queue = null;
   private static $killed = false;
   public static $key;
@@ -1346,6 +1215,11 @@ class Status {
   private static $overall_end_time = 0;
 
   private static $tempdir = "";
+
+  public static $passed = 0;
+  public static $skipped = 0;
+  public static $skip_reasons = array();
+  public static $failed = 0;
 
   const MODE_NORMAL = 0;
   const MODE_VERBOSE = 1;
@@ -1484,8 +1358,132 @@ class Status {
     self::send(self::MSG_TEST_FAIL, array($test, $time, $stime, $etime));
   }
 
+  public static function handle_message($type, $message) {
+    switch ($type) {
+      case Status::MSG_STARTED:
+        break;
+
+      case Status::MSG_FINISHED:
+        return false;
+
+      case Status::MSG_SERVER_RESTARTED:
+        switch (Status::getMode()) {
+          case Status::MODE_NORMAL:
+            if (!Status::hasCursorControl()) {
+              Status::sayColor(Status::RED, 'x');
+            }
+            break;
+
+          case Status::MODE_VERBOSE:
+            Status::sayColor("$test ", Status::YELLOW, "failed",
+                             " to talk to server\n");
+            break;
+
+          case Status::MODE_TESTPILOT:
+            break;
+
+          case Status::MODE_RECORD_FAILURES:
+            break;
+        }
+
+      case Status::MSG_TEST_PASS:
+        self::$passed++;
+        list($test, $how, $time, $stime, $etime) = $message;
+        switch (Status::getMode()) {
+          case Status::MODE_NORMAL:
+            if (!Status::hasCursorControl()) {
+              if ($how == Status::SKIP_SERVER) {
+                Status::sayColor(Status::RED, '.');
+              } else {
+                Status::sayColor(Status::GREEN,
+                                 $how == Status::PASS_SERVER ? ',' : '.');
+              }
+            }
+            break;
+
+          case Status::MODE_VERBOSE:
+            Status::sayColor("$test ", Status::GREEN,
+                             sprintf("passed (%.2fs)\n", $time));
+            break;
+
+          case Status::MODE_TESTPILOT:
+            Status::sayTestpilot($test, 'passed', $stime, $etime);
+            break;
+
+          case Status::MODE_RECORD_FAILURES:
+            break;
+        }
+        break;
+
+      case Status::MSG_TEST_SKIP:
+        self::$skipped++;
+        list($test, $reason, $time, $stime, $etime) = $message;
+        self::$skip_reasons[$reason]++;
+
+        switch (Status::getMode()) {
+          case Status::MODE_NORMAL:
+            if (!Status::hasCursorControl()) {
+              Status::sayColor(Status::YELLOW, 's');
+            }
+            break;
+
+          case Status::MODE_VERBOSE:
+            Status::sayColor("$test ", Status::YELLOW, "skipped");
+
+            if ($reason !== null) {
+              Status::sayColor(" - $reason");
+            }
+            Status::sayColor(sprintf(" (%.2fs)\n", $time));
+            break;
+
+          case Status::MODE_TESTPILOT:
+            Status::sayTestpilot($test, 'not_relevant', $stime, $etime);
+            break;
+
+          case Status::MODE_RECORD_FAILURES:
+            break;
+        }
+        break;
+
+      case Status::MSG_TEST_FAIL:
+        self::$failed++;
+        list($test, $time, $stime, $etime) = $message;
+        switch (Status::getMode()) {
+          case Status::MODE_NORMAL:
+            if (Status::hasCursorControl()) {
+              print "\033[2K\033[1G";
+            }
+            $diff = (string)@file_get_contents($test.'.diff');
+            Status::sayColor(Status::RED, "\nFAILED",
+                             ": $test\n$diff\n");
+            break;
+
+          case Status::MODE_VERBOSE:
+            Status::sayColor("$test ", Status::RED,
+                             sprintf("FAILED (%.2fs)\n", $time));
+            break;
+
+          case Status::MODE_TESTPILOT:
+            Status::sayTestpilot($test, 'failed', $stime, $etime);
+            break;
+
+          case Status::MODE_RECORD_FAILURES:
+            break;
+        }
+        break;
+
+      default:
+        error("Unknown message $type");
+    }
+    return true;
+  }
+
   private static function send($type, $msg) {
     if (self::$killed) {
+      return;
+    }
+    if (self::$nofork) {
+      self::handle_message($type, $msg);
       return;
     }
     msg_send(self::getQueue(), $type, $msg);
@@ -1605,15 +1603,8 @@ function clean_intermediate_files($test, $options) {
     'diff',
     // repo mode tests
     'repo',
-    // tests in --hhas-round-trip or --compare-hh-codegen mode
+    // tests in --hhas-round-trip mode
     'round_trip.hhas',
-    // tests in --compare-hh-codegen mode
-    'hhcodegen_output.hhas',
-    'hhcodegen_messages',
-    'hhcodegen_config.json',
-    'hhcodegen_output.hhas.round_trip.hhas',
-    'semdiff',
-    'semdiff_messages',
     // tests in --hhbbc2 mode
     'before.round_trip.hhas',
     'after.round_trip.hhas',
@@ -1871,26 +1862,8 @@ function generate_diff($wanted, $wanted_re, $output)
   return implode("\r\n", $diff);
 }
 
-function dump_repo_to_hhas_file($test, $program, $hhas_target) {
-  $repo = "$test.repo/$program.hhbbc";
-  $dump_cmd = implode(" ", array(
-    hhvm_path(),
-    '-vRepo.Authoritative=true',
-    '-vRepo.Commit=false',
-    '-vEval.HackCompilerExtractPath='.bin_root().'/hackc_%{schema}',
-    '-vRepo.Central.Path=' . escapeshellarg($repo),
-    '-vEval.DumpHhas=1',
-    '-vEval.DumpHhasToFile=' . escapeshellarg($hhas_target),
-    '--file',
-    escapeshellarg($test),
-  ));
-  system("$dump_cmd &> /dev/null", &$ret);
-  return $ret === 0 ? $hhas_target : false;
-}
-
 function dump_hhas_cmd($hhvm_cmd, $test, $hhas_file) {
   $dump_flags = implode(' ', array(
-    '-vEval.HackCompilerDefault=false',
     '-vEval.AllowHhas=true',
     '-vEval.DumpHhas=1',
     '-vEval.DumpHhasToFile='.escapeshellarg($hhas_file),
@@ -1906,102 +1879,6 @@ function dump_hhas_to_temp($hhvm_cmd, $test) {
   $cmd = dump_hhas_cmd($hhvm_cmd, $test, $temp_file);
   system("$cmd &> /dev/null", &$ret);
   return $ret === 0 ? $temp_file : false;
-}
-
-function dump_hh_codegen($options, $test, $test_config) {
-  $temp_file = $test.'.hhcodegen_output.hhas';
-  $disable_hphpc_opts = suppress_opts_for_codegen_test($test);
-  $msgs_file = $test.'.hhcodegen_messages';
-  if ($test_config) {
-    $test_config_file = $test.'.hhcodegen_config.json';
-    file_put_contents($test_config_file, $test_config);
-    $cmd = hh_codegen_cmd($options, $test_config_file, $disable_hphpc_opts);
-  }
-  else {
-    $cmd = hh_codegen_cmd($options, null, $disable_hphpc_opts);
-  }
-  system(
-    implode(' ', array(
-      "/usr/bin/timeout",
-      TIMEOUT_SECONDS,
-      $cmd,
-      escapeshellarg($test),
-      ">",
-      escapeshellarg($temp_file),
-      "2>",
-      escapeshellarg($msgs_file),
-    )),
-    &$ret
-  );
-  return $ret === 0 ? $temp_file : false;
-}
-
-function semdiff_output($options, $test) {
-  $temp_file = $test.'.diff';
-  $msgs_file = $test.'.semdiff_messages';
-  $hhcodegen_output = $test.'.hhcodegen_output.hhas';
-  $hhvm_output = $test.'.round_trip.hhas';
-  $cmd = hh_semdiff_cmd($options);
-  $ret = false;
-  system(
-    implode(' ', array(
-      "/usr/bin/timeout",
-      TIMEOUT_SECONDS,
-      $cmd,
-      escapeshellarg($hhcodegen_output),
-      escapeshellarg($hhvm_output),
-      ">",
-      escapeshellarg($temp_file),
-      "2>",
-      escapeshellarg($msgs_file),
-    )),
-    &$ret
-  );
-  return array($ret, $temp_file);
-}
-
-function strip_hhas_file($file) {
-  $h = fopen($file, "r");
-  $buf = "";
-  while (($s = fgets($h)) !== false) {
-    if (strpos($s, "HackCNYI") !== false) {
-      fclose($h);
-      return false;
-    }
-    if ($s === "" || $s[0] === "#" || substr($s, 0, 10) === ".filepath ") {
-      continue;
-    }
-    // We have separate tests for srclocs, skip over them here
-    if (substr(trim($s), 0, 7) === '.srcloc') continue;
-    $buf .= $s;
-  }
-  fclose($h);
-  file_put_contents($file, $buf);
-}
-
-function contains_nyi_line($file) {
-  $h = fopen($file, "r");
-  while (($s = fgets($h)) !== false) {
-    if (strpos($s, "HackCNYI") !== false) {
-      fclose($h);
-      return true;
-    }
-  }
-  fclose($h);
-  return false;
-}
-
-const ASM_ERROR = "  String \"Assembler Error: ";
-function is_assembler_fail($file) {
-  $h = fopen($file, "r");
-  while (($s = fgets($h)) !== false) {
-    if (substr($s, 0, strlen(ASM_ERROR)) === ASM_ERROR) {
-      fclose($h);
-      return true;
-    }
-  }
-  fclose($h);
-  return false;
 }
 
 const HHAS_EXT = '.hhas';
@@ -2357,52 +2234,9 @@ function run_typechecker_test($options, $test) {
   return $result;
 }
 
-function get_hhvm_ini_values($test, $options) {
-  // prepare script to setting values from HHVM
-  $get_ini_file = tempnam(dirname($test), "get_ini");
-  $tmp_file = tempnam(sys_get_temp_dir(), "output");
-  file_put_contents($get_ini_file, "<?php echo json_encode(ini_get_all());");
-  list($hhvm_get_ini_cmd, $_) = hhvm_cmd($options, $test, $get_ini_file, true);
-  return exec("$hhvm_get_ini_cmd 2> /dev/null");
-}
-
-function get_hhvm_compiler_frontend($options, $test) {
-  // run the check in non-repo mode to avoid having to build a repo for it
-  $options_without_repo = $options;
-  unset($options_without_repo['repo']);
-
-  $get_fe_script = tempnam(sys_get_temp_dir(), "get_frontend");
-  file_put_contents(
-    $get_fe_script,
-    '<?php echo __COMPILER_FRONTEND__, "\n";'
-  );
-  list ($hhvm, $_) = hhvm_cmd(
-    $options_without_repo,
-    $test,
-    $get_fe_script,
-    true
-  );
-  if (is_array($hhvm)) $hhvm = $hhvm[0];
-  $res = exec($hhvm);
-  @unlink($get_fe_script);
-  return $res;
-}
-
 function run_test($options, $test) {
   $skip_reason = skip_test($options, $test);
   if ($skip_reason !== false) return $skip_reason;
-
-  // Skip any tests that would require HPHPC for HackC-only features
-  // If the test_name.onlyhackc exists or the folder has .onlyhackc
-  $only_hackc_tag = '.onlyhackc';
-  $only_hackc = file_exists($test.$only_hackc_tag) ||
-                file_exists(dirname($test).'/'.$only_hackc_tag);
-  if ($only_hackc) {
-    if (isset($options['compare-hh-codegen']) ||
-        get_hhvm_compiler_frontend($options, $test) !== 'hackc') {
-      return 'skip-onlyhackc';
-    }
-  }
 
   // Skip tests that don't make sense in modes where we dump/compare hhas
   $no_hhas_tag = '.nodumphhas';
@@ -2410,8 +2244,7 @@ function run_test($options, $test) {
              file_exists(dirname($test).'/'.$no_hhas_tag);
   if ($no_hhas && (
     isset($options['hhbbc2']) ||
-    isset($options['hhas-round-trip']) ||
-    isset($options['compare-hh-codegen'])
+    isset($options['hhas-round-trip'])
   )) {
     return 'skip-nodumphhas';
   }
@@ -2446,58 +2279,51 @@ function run_test($options, $test) {
     $hhbbc_hackc_repo = "$test.repo/hackc.hhbbc";
     shell_exec("rm -f \"$hphp_hhvm_repo\" \"$hhbbc_hhvm_repo\" \"$hphp_hackc_repo\" \"$hhbbc_hackc_repo\" ");
 
-    if (isset($options['compare-hh-codegen'])) {
-      if (!repo_mode_compile($options, $test, 'hhvm') ||
-          !repo_mode_compile($options, $test, 'hackc')) {
-        return false;
-      }
-    } else {
-      $program = isset($options['hackc']) ? "hackc" : "hhvm";
-      if (!repo_mode_compile($options, $test, $program)) {
-        return false;
-      }
-
-      if (isset($options['hhbbc2'])) {
-        $hhas_temp1 = dump_hhas_to_temp($hhvm, "$test.before");
-        if ($hhas_temp1 === false) {
-          file_put_contents(
-            "$test.diff",
-            "dumping hhas after first hhbbc pass failed"
-          );
-          return false;
-        }
-        shell_exec("mv $test.repo/$program.hhbbc $test.repo/$program.hhbc");
-        $hhbbc = hhbbc_cmd($options, $test, $program);
-        $result = exec_with_stack($hhbbc);
-        if ($result !== true) {
-          file_put_contents("$test.diff", $result);
-          return false;
-        }
-        $hhas_temp2 = dump_hhas_to_temp($hhvm, "$test.after");
-        if ($hhas_temp2 === false) {
-          file_put_contents(
-            "$test.diff",
-            "dumping hhas after second hhbbc pass failed"
-          );
-          return false;
-        }
-        $diff = shell_exec("diff $hhas_temp1 $hhas_temp2 | wc -l");
-        if (trim($diff) != '0') {
-          shell_exec("diff $hhas_temp1 $hhas_temp2 > $test.diff");
-          return false;
-        }
-      }
-
-      if (isset($options['jit-serialize'])) {
-        $cmd = timeout_prefix() .
-          jit_serialize_option($hhvm, $test, $options, true);
-        $outputs = run_config_cli($options, $test, $cmd, $hhvm_env);
-        if ($outputs === false) return false;
-        $hhvm = jit_serialize_option($hhvm, $test, $options, false);
-      }
-
-      return run_one_config($options, $test, $hhvm, $hhvm_env);
+    $program = isset($options['hackc']) ? "hackc" : "hhvm";
+    if (!repo_mode_compile($options, $test, $program)) {
+      return false;
     }
+
+    if (isset($options['hhbbc2'])) {
+      $hhas_temp1 = dump_hhas_to_temp($hhvm, "$test.before");
+      if ($hhas_temp1 === false) {
+        file_put_contents(
+          "$test.diff",
+          "dumping hhas after first hhbbc pass failed"
+        );
+        return false;
+      }
+      shell_exec("mv $test.repo/$program.hhbbc $test.repo/$program.hhbc");
+      $hhbbc = hhbbc_cmd($options, $test, $program);
+      $result = exec_with_stack($hhbbc);
+      if ($result !== true) {
+        file_put_contents("$test.diff", $result);
+        return false;
+      }
+      $hhas_temp2 = dump_hhas_to_temp($hhvm, "$test.after");
+      if ($hhas_temp2 === false) {
+        file_put_contents(
+          "$test.diff",
+          "dumping hhas after second hhbbc pass failed"
+        );
+        return false;
+      }
+      $diff = shell_exec("diff $hhas_temp1 $hhas_temp2 | wc -l");
+      if (trim($diff) != '0') {
+        shell_exec("diff $hhas_temp1 $hhas_temp2 > $test.diff");
+        return false;
+      }
+    }
+
+    if (isset($options['jit-serialize'])) {
+      $cmd = timeout_prefix() .
+        jit_serialize_option($hhvm, $test, $options, true);
+      $outputs = run_config_cli($options, $test, $cmd, $hhvm_env);
+      if ($outputs === false) return false;
+      $hhvm = jit_serialize_option($hhvm, $test, $options, false);
+    }
+
+    return run_one_config($options, $test, $hhvm, $hhvm_env);
   }
 
   if (file_exists($test.'.onlyrepo')) {
@@ -2515,121 +2341,6 @@ function run_test($options, $test) {
       return false;
     }
     list($hhvm, $hhvm_env) = hhvm_cmd($options, $test, $hhas_temp);
-  }
-
-  // Compare the output of Hack code gen with that of HHVM
-  if (isset($options['compare-hh-codegen'])) {
-    if (substr($test, -5) === ".hhas") return 'skip-hhas';
-
-    $diff = $test.'.diff';
-
-    if (isset($options['repo'])) {
-      $hhas = dump_repo_to_hhas_file(
-        $test,
-        'hhvm',
-        "$test.round_trip.hhas"
-      );
-      if ($hhas === false) {
-        file_put_contents($diff, "HPHPC REPO DUMP FAILED");
-        return false;
-      }
-
-      $hhcg = dump_repo_to_hhas_file(
-        $test,
-        'hackc',
-        "$test.hhcodegen_output.hhas"
-      );
-      if ($hhcg === false) {
-        file_put_contents($diff, "HACK REPO DUMP FAILED");
-        return false;
-      }
-    } else {
-      $hhas = dump_hhas_to_temp($hhvm, $test);
-      if ($hhas === false) {
-        file_put_contents($diff, "HPHPC CODEGEN FAILED");
-        return false;
-      }
-
-      $test_config = get_hhvm_ini_values($test, $options);
-      $hhcg = dump_hh_codegen($options, $test, $test_config);
-      if (!$hhcg || file_get_contents($hhcg) === "") {
-        file_put_contents($diff, "HACK CODEGEN FAILED");
-        return false;
-      }
-      if (contains_nyi_line($hhcg) === true) {
-        file_put_contents($test.'.diff', "CODEGEN FAILED: NYI");
-        return false;
-      }
-    }
-
-    if (!isset($options['no-semdiff'])) {
-      if (file_exists($test.'.nosemdiff')) {
-        return 'skip-nosemdiff';
-      }
-      // Run semantic diff on outputs first
-      list($rc, $out_file) = semdiff_output($options, $test);
-      if ($rc === 0) {
-        unlink($out_file);
-        unlink($test . '.semdiff_messages');
-        return true;
-      } else if ($rc === 1) {
-        return false;
-      }
-      rename($out_file, $test.".semdiff"); // preserve the output as it may be useful?
-    }
-    // so either semdiff went wrong, or we have no-semdiff set. So we try ordinary diffing
-    strip_hhas_file($hhas);
-    strip_hhas_file($hhcg);
-
-    system(
-      implode(' ', array(
-        "diff",
-        "-B",
-        escapeshellarg($hhcg),
-        escapeshellarg($hhas),
-        ">",
-        escapeshellarg($diff),
-      )),
-      &$ret
-    );
-
-    // If identical, don't bother dropping through to roundtrip stage
-    if ($ret === 0) {
-      unlink($diff);
-      return true;
-    }
-
-    // If it failed, do a round-trip through HHVM and try again
-    list($hhvm2, $hhvm2_env) = hhvm_cmd($options, $test, $hhcg);
-    $hhcg2 = dump_hhas_to_temp($hhvm2, $hhcg);
-    $rv = true;
-    if (
-      !$hhcg2 ||
-      file_get_contents($hhcg2) === "" ||
-      is_assembler_fail($hhcg2)
-    ) {
-      $rv = false;
-      $hhcg2 = $hhcg;
-    }
-
-    strip_hhas_file($hhcg2);
-
-    system(
-      implode(' ', array(
-        "diff",
-        escapeshellarg($hhcg2),
-        escapeshellarg($hhas),
-        ">",
-        escapeshellarg($diff),
-      )),
-      &$ret
-    );
-
-    if ($ret === 0) {
-      if ($rv) unlink($diff);
-      return $rv;
-    }
-    return false;
   }
 
   if ($outputs = run_config_server($options, $test)) {
@@ -2708,11 +2419,6 @@ function print_commands($tests, $options) {
 }
 
 function msg_loop($num_tests, $queue) {
-  $passed = 0;
-  $skipped = 0;
-  $skip_reasons = array();
-  $failed = 0;
-
   $do_progress =
     (
       Status::getMode() === Status::MODE_NORMAL ||
@@ -2739,130 +2445,15 @@ function msg_loop($num_tests, $queue) {
       error("msg_receive failed");
     }
 
-    switch ($type) {
-      case Status::MSG_STARTED:
-        break;
-
-      case Status::MSG_FINISHED:
-        break 2;
-
-      case Status::MSG_SERVER_RESTARTED:
-        switch (Status::getMode()) {
-          case Status::MODE_NORMAL:
-            if (!Status::hasCursorControl()) {
-              Status::sayColor(Status::RED, 'x');
-            }
-            break;
-
-          case Status::MODE_VERBOSE:
-            Status::sayColor("$test ", Status::YELLOW, "failed",
-                             " to talk to server\n");
-            break;
-
-          case Status::MODE_TESTPILOT:
-            break;
-
-          case Status::MODE_RECORD_FAILURES:
-            break;
-        }
-
-      case Status::MSG_TEST_PASS:
-        $passed++;
-        list($test, $how, $time, $stime, $etime) = $message;
-        switch (Status::getMode()) {
-          case Status::MODE_NORMAL:
-            if (!Status::hasCursorControl()) {
-              if ($how == Status::SKIP_SERVER) {
-                Status::sayColor(Status::RED, '.');
-              } else {
-                Status::sayColor(Status::GREEN,
-                                 $how == Status::PASS_SERVER ? ',' : '.');
-              }
-            }
-            break;
-
-          case Status::MODE_VERBOSE:
-            Status::sayColor("$test ", Status::GREEN,
-                             sprintf("passed (%.2fs)\n", $time));
-            break;
-
-          case Status::MODE_TESTPILOT:
-            Status::sayTestpilot($test, 'passed', $stime, $etime);
-            break;
-
-          case Status::MODE_RECORD_FAILURES:
-            break;
-        }
-        break;
-
-      case Status::MSG_TEST_SKIP:
-        $skipped++;
-        list($test, $reason, $time, $stime, $etime) = $message;
-        $skip_reasons[$reason]++;
-
-        switch (Status::getMode()) {
-          case Status::MODE_NORMAL:
-            if (!Status::hasCursorControl()) {
-              Status::sayColor(Status::YELLOW, 's');
-            }
-            break;
-
-          case Status::MODE_VERBOSE:
-            Status::sayColor("$test ", Status::YELLOW, "skipped");
-
-            if ($reason !== null) {
-              Status::sayColor(" - $reason");
-            }
-            Status::sayColor(sprintf(" (%.2fs)\n", $time));
-            break;
-
-          case Status::MODE_TESTPILOT:
-            Status::sayTestpilot($test, 'not_relevant', $stime, $etime);
-            break;
-
-          case Status::MODE_RECORD_FAILURES:
-            break;
-        }
-        break;
-
-      case Status::MSG_TEST_FAIL:
-        $failed++;
-        list($test, $time, $stime, $etime) = $message;
-        switch (Status::getMode()) {
-          case Status::MODE_NORMAL:
-            if (Status::hasCursorControl()) {
-              print "\033[2K\033[1G";
-            }
-            $diff = (string)@file_get_contents($test.'.diff');
-            Status::sayColor(Status::RED, "\nFAILED",
-                             ": $test\n$diff\n");
-            break;
-
-          case Status::MODE_VERBOSE:
-            Status::sayColor("$test ", Status::RED,
-                             sprintf("FAILED (%.2fs)\n", $time));
-            break;
-
-          case Status::MODE_TESTPILOT:
-            Status::sayTestpilot($test, 'failed', $stime, $etime);
-            break;
-
-          case Status::MODE_RECORD_FAILURES:
-            break;
-        }
-        break;
-
-      default:
-        error("Unknown message $type");
-    }
+    if (!Status::handle_message($type, $message)) break;
 
     if ($do_progress) {
-      $total_run = ($skipped + $failed + $passed);
+      $total_run = (Status::$skipped + Status::$failed + Status::$passed);
       $bar_cols = ($cols - 45);
 
-      $passed_ticks  = round($bar_cols * ($passed  / $num_tests));
-      $skipped_ticks = round($bar_cols * ($skipped / $num_tests));
-      $failed_ticks  = round($bar_cols * ($failed  / $num_tests));
+      $passed_ticks  = round($bar_cols * (Status::$passed  / $num_tests));
+      $skipped_ticks = round($bar_cols * (Status::$skipped / $num_tests));
+      $failed_ticks  = round($bar_cols * (Status::$failed  / $num_tests));
 
       $fill = $bar_cols - ($passed_ticks + $skipped_ticks + $failed_ticks);
       if ($fill < 0) $fill = 0;
@@ -2873,21 +2464,22 @@ function msg_loop($num_tests, $queue) {
       $skipped_ticks = str_repeat('#', $skipped_ticks);
       $failed_ticks = str_repeat('#',  $failed_ticks);
 
-      print "\033[2K\033[1G[".
-        "\033[0;32m$passed_ticks".
-        "\033[33m$skipped_ticks".
-        "\033[31m$failed_ticks".
-        "\033[0m$fill] ($total_run/$num_tests) ".
-        "($skipped skipped, $failed failed)";
+      echo
+        "\033[2K\033[1G[",
+        "\033[0;32m$passed_ticks",
+        "\033[33m$skipped_ticks",
+        "\033[31m$failed_ticks",
+        "\033[0m$fill] ($total_run/$num_tests) ",
+        "(", Status::$skipped, " skipped,", Status::$failed, " failed)";
     }
   }
 
   if ($do_progress) {
     print "\033[2K\033[1G";
-    if ($skipped > 0) {
-      print "$skipped tests \033[1;33mskipped\033[0m\n";
-      arsort(&$skip_reasons);
-      foreach ($skip_reasons as $reason => $count) {
+    if (Status::$skipped > 0) {
+      print Status::$skipped ." tests \033[1;33mskipped\033[0m\n";
+      arsort(&Status::$skip_reasons);
+      foreach (Status::$skip_reasons as $reason => $count) {
         printf("%12s: %d\n", $reason, $count);
       }
     }
@@ -2972,6 +2564,9 @@ SKIPPER
          ^^^^      ^^^
 SHIP
       ."\n";
+  }
+  if (!empty($options['failure-file'])) {
+    @unlink($options['failure-file']);
   }
   if (isset($options['verbose'])) {
     print_commands($tests, $options);
@@ -3065,29 +2660,11 @@ function print_failure($argv, $results, $options) {
 
     print_commands($failed, $options);
 
-    $rerun = make_header("Re-run just the failing tests:") .
-      str_replace("run.php", "run", $argv[0]);
-    foreach ($options as $option => $value) {
-      if ($option === "servers") continue;
-      if ($option === "threads") {
-        // e.g., For a small number of failed tests, we don't need max threads.
-        $rerun .= " --" . $option . ' ' . get_num_threads($options, $failed);
-      } else if ($option === "typechecker" ||
-                 $option === "verbose" ||
-                 $option === "repo" ||
-                 $option === "server" ||
-                 $option === "cli-server" ||
-                 $option === "compare-hh-codegen" ||
-                 $option === "no-semdiff") {
-        // The escapeshellarg($value) of these is 1, but there is no real value
-        // associated with these options.
-        $rerun .= " --" . $option;
-      } else {
-        $rerun .= " --" . $option . ' ' . escapeshellarg($value);
-      }
-    }
-    $rerun .= sprintf(' $(cat %s)%s', $failing_tests_file, "\n");
-    print $rerun;
+    print
+      make_header("Re-run just the failing tests:") .
+      str_replace("run.php", "run", $argv[0]) . ' ' .
+      implode(' ', $GLOBALS['recorded_options']) .
+      sprintf(' $(cat %s)%s', $failing_tests_file, "\n");
   }
 }
 
@@ -3118,7 +2695,6 @@ function start_server_proc($options, $config, $port) {
     : '-vServer.ThreadCount='.$threads;
   $command = hhvm_cmd_impl(
     $options,
-    true, /*$disable_hphpc_opts*/
     $config,
     '-m', 'server',
     "-vServer.Port=$port",
@@ -3272,10 +2848,6 @@ function main($argv) {
 
   if (isset($options['repo']) && isset($options['typechecker'])) {
     error("Repo mode and typechecker mode are not compatible");
-  }
-
-  if (isset($options['hhbbc2']) && isset($options['compare-hh-codegen'])) {
-    error("hhbbc2 mode and compare-hh-codegen mode are not compatible");
   }
 
   if (isset($options['hhvm-binary-path']) &&
@@ -3442,71 +3014,80 @@ function main($argv) {
   Status::setUseColor(isset($options['color']) ? true : posix_isatty(STDOUT));
 
   Status::$key = rand();
-  $queue = Status::getQueue();
-  drain_queue($queue);
+  Status::$nofork = count($tests) == 1 && !$servers;
+  if (!Status::$nofork) {
+    $queue = Status::getQueue();
+    drain_queue($queue);
+  }
 
   Status::started();
   // Spawn off worker threads.
   $children = array();
   // A poor man's shared memory.
   $bad_test_files = array();
-  for ($i = 0; $i < $options['threads']; $i++) {
+  if (Status::$nofork) {
     $bad_test_file = tempnam('/tmp', 'test-run-');
     $bad_test_files[] = $bad_test_file;
-    $pid = pcntl_fork();
-    if ($pid == -1) {
-      error('could not fork');
-    } else if ($pid) {
-      $children[$pid] = $pid;
-    } else {
-      exit(run($options, $test_buckets[$i], $bad_test_file));
-    }
-  }
-
-  // Fork off a child to receive messages and print status, and have the parent
-  // wait for all children to exit.
-  $printer_pid = pcntl_fork();
-  if ($printer_pid == -1) {
-    error("failed to fork");
-  } else if ($printer_pid == 0) {
-    msg_loop(count($tests), $queue);
-    return 0;
-  }
-
-  // In case we exit in a crazy way, have the parent blow up the queue.
-  // Do this here so no children inherit this.
-  $kill_queue = function() { Status::killQueue(); };
-  register_shutdown_function($kill_queue);
-  pcntl_signal(SIGTERM, $kill_queue);
-  pcntl_signal(SIGINT, $kill_queue);
-
-  $return_value = 0;
-  while (count($children) && $printer_pid != 0) {
-    $pid = pcntl_wait(&$status);
-    if (!pcntl_wifexited($status) && !pcntl_wifsignaled($status)) {
-      error("Unexpected exit status from child");
-    }
-
-    if ($pid == $printer_pid) {
-      // We should be finishing up soon.
-      $printer_pid = 0;
-    } else if (isset($servers['pids'][$pid])) {
-      // A server crashed. Restart it.
-      if (getenv('HHVM_TEST_SERVER_LOG')) {
-        echo "\nServer $pid crashed. Restarting.\n";
+    $return_value = run($options, $test_buckets[$i], $bad_test_file);
+  } else {
+    for ($i = 0; $i < $options['threads']; $i++) {
+      $bad_test_file = tempnam('/tmp', 'test-run-');
+      $bad_test_files[] = $bad_test_file;
+      $pid = pcntl_fork();
+      if ($pid == -1) {
+        error('could not fork');
+      } else if ($pid) {
+        $children[$pid] = $pid;
+      } else {
+        exit(run($options, $test_buckets[$i], $bad_test_file));
       }
-      Status::serverRestarted();
-      $server =& $servers['pids'][$pid];
-      $server = start_server_proc($options, $server['config'], $server['port']);
+    }
 
-      // Unset the old $pid entry and insert the new one.
-      unset($servers['pids'][$pid]);
-      $servers['pids'][$server['pid']] =& $server;
-      unset($server);
-    } elseif (isset($children[$pid])) {
-      unset($children[$pid]);
-      $return_value |= pcntl_wexitstatus($status);
-    } // Else, ignorable signal
+    // Fork off a child to receive messages and print status, and have the parent
+    // wait for all children to exit.
+    $printer_pid = pcntl_fork();
+    if ($printer_pid == -1) {
+      error("failed to fork");
+    } else if ($printer_pid == 0) {
+      msg_loop(count($tests), $queue);
+      return 0;
+    }
+
+    // In case we exit in a crazy way, have the parent blow up the queue.
+    // Do this here so no children inherit this.
+    $kill_queue = function() { Status::killQueue(); };
+    register_shutdown_function($kill_queue);
+    pcntl_signal(SIGTERM, $kill_queue);
+    pcntl_signal(SIGINT, $kill_queue);
+
+    $return_value = 0;
+    while (count($children) && $printer_pid != 0) {
+      $pid = pcntl_wait(&$status);
+      if (!pcntl_wifexited($status) && !pcntl_wifsignaled($status)) {
+        error("Unexpected exit status from child");
+      }
+
+      if ($pid == $printer_pid) {
+        // We should be finishing up soon.
+        $printer_pid = 0;
+      } else if (isset($servers['pids'][$pid])) {
+        // A server crashed. Restart it.
+        if (getenv('HHVM_TEST_SERVER_LOG')) {
+          echo "\nServer $pid crashed. Restarting.\n";
+        }
+        Status::serverRestarted();
+        $server =& $servers['pids'][$pid];
+        $server = start_server_proc($options, $server['config'], $server['port']);
+
+        // Unset the old $pid entry and insert the new one.
+        unset($servers['pids'][$pid]);
+        $servers['pids'][$server['pid']] =& $server;
+        unset($server);
+      } elseif (isset($children[$pid])) {
+        unset($children[$pid]);
+        $return_value |= pcntl_wexitstatus($status);
+      } // Else, ignorable signal
+    }
   }
 
   Status::finished();
@@ -3565,6 +3146,7 @@ function main($argv) {
     file_put_contents($fail_file, implode("\n", $failed_tests));
   } else if (isset($options['testpilot'])) {
     Status::say(array('op' => 'all_done', 'results' => $results));
+    return $return_value;
   } else if (!$return_value) {
     print_success($tests, $results, $options);
   } else {

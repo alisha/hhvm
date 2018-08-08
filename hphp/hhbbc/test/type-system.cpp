@@ -421,13 +421,13 @@ std::vector<Type> all_with_waithandles(const Index& index) {
 
 TEST(Type, Top) {
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
 
   // Everything is a subtype of Top, couldBe Top, and the union of Top
   // with anything is Top.
   for (auto& t : all_with_waithandles(index)) {
-    EXPECT_TRUE(t.subtypeOf(TTop));
-    EXPECT_TRUE(t.couldBe(TTop));
+    EXPECT_TRUE(t.subtypeOf(BTop));
+    EXPECT_TRUE(t.couldBe(BTop));
     EXPECT_TRUE(union_of(t, TTop) == TTop);
     EXPECT_TRUE(union_of(TTop, t) == TTop);
   }
@@ -435,7 +435,7 @@ TEST(Type, Top) {
 
 TEST(Type, Bottom) {
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
 
   // Bottom is a subtype of everything, nothing couldBe Bottom, and
   // the union_of anything with Bottom is itself.
@@ -449,7 +449,7 @@ TEST(Type, Bottom) {
 
 TEST(Type, Prims) {
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
 
   // All pairs of non-equivalent primitives are not related by either
   // subtypeOf or couldBe, including if you wrap them in wait handles.
@@ -472,7 +472,7 @@ TEST(Type, Prims) {
 
 TEST(Type, Relations) {
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
 
   // couldBe is symmetric and reflexive
   for (auto& t1 : all_with_waithandles(index)) {
@@ -604,11 +604,11 @@ TEST(Type, CouldBeValues) {
 }
 
 TEST(Type, Unc) {
-  EXPECT_TRUE(TInt.subtypeOf(TInitUnc));
-  EXPECT_TRUE(TInt.subtypeOf(TUnc));
-  EXPECT_TRUE(TDbl.subtypeOf(TInitUnc));
-  EXPECT_TRUE(TDbl.subtypeOf(TUnc));
-  EXPECT_TRUE(dval(3.0).subtypeOf(TInitUnc));
+  EXPECT_TRUE(TInt.subtypeOf(BInitUnc));
+  EXPECT_TRUE(TInt.subtypeOf(BUnc));
+  EXPECT_TRUE(TDbl.subtypeOf(BInitUnc));
+  EXPECT_TRUE(TDbl.subtypeOf(BUnc));
+  EXPECT_TRUE(dval(3.0).subtypeOf(BInitUnc));
 
   const std::initializer_list<std::pair<Type, Type>> pairs{
     { TUnc, TInitUnc },
@@ -639,64 +639,64 @@ TEST(Type, DblNan) {
 
 TEST(Type, Option) {
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
 
-  EXPECT_TRUE(TTrue.subtypeOf(TOptTrue));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptTrue));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptTrue));
+  EXPECT_TRUE(TTrue.subtypeOf(BOptTrue));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptTrue));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptTrue));
 
-  EXPECT_TRUE(TFalse.subtypeOf(TOptFalse));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptFalse));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptFalse));
+  EXPECT_TRUE(TFalse.subtypeOf(BOptFalse));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptFalse));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptFalse));
 
-  EXPECT_TRUE(TFalse.subtypeOf(TOptBool));
-  EXPECT_TRUE(TTrue.subtypeOf(TOptBool));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptBool));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptBool));
+  EXPECT_TRUE(TFalse.subtypeOf(BOptBool));
+  EXPECT_TRUE(TTrue.subtypeOf(BOptBool));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptBool));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptBool));
 
-  EXPECT_TRUE(ival(3).subtypeOf(TOptInt));
-  EXPECT_TRUE(TInt.subtypeOf(TOptInt));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptInt));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptInt));
+  EXPECT_TRUE(ival(3).subtypeOf(BOptInt));
+  EXPECT_TRUE(TInt.subtypeOf(BOptInt));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptInt));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptInt));
 
-  EXPECT_TRUE(TDbl.subtypeOf(TOptDbl));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptDbl));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptDbl));
-  EXPECT_TRUE(dval(3.0).subtypeOf(TOptDbl));
+  EXPECT_TRUE(TDbl.subtypeOf(BOptDbl));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptDbl));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptDbl));
+  EXPECT_TRUE(dval(3.0).subtypeOf(BOptDbl));
 
-  EXPECT_TRUE(sval(s_test.get()).subtypeOf(TOptSStr));
-  EXPECT_TRUE(TSStr.subtypeOf(TOptSStr));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptSStr));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptSStr));
-  EXPECT_TRUE(!TStr.subtypeOf(TOptSStr));
-  EXPECT_TRUE(TStr.couldBe(TOptSStr));
+  EXPECT_TRUE(sval(s_test.get()).subtypeOf(BOptSStr));
+  EXPECT_TRUE(TSStr.subtypeOf(BOptSStr));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptSStr));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptSStr));
+  EXPECT_TRUE(!TStr.subtypeOf(BOptSStr));
+  EXPECT_TRUE(TStr.couldBe(BOptSStr));
 
-  EXPECT_TRUE(TStr.subtypeOf(TOptStr));
-  EXPECT_TRUE(TSStr.subtypeOf(TOptStr));
-  EXPECT_TRUE(sval(s_test.get()).subtypeOf(TOptStr));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptStr));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptStr));
+  EXPECT_TRUE(TStr.subtypeOf(BOptStr));
+  EXPECT_TRUE(TSStr.subtypeOf(BOptStr));
+  EXPECT_TRUE(sval(s_test.get()).subtypeOf(BOptStr));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptStr));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptStr));
 
-  EXPECT_TRUE(TSArr.subtypeOf(TOptSArr));
-  EXPECT_TRUE(!TArr.subtypeOf(TOptSArr));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptSArr));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptSArr));
+  EXPECT_TRUE(TSArr.subtypeOf(BOptSArr));
+  EXPECT_TRUE(!TArr.subtypeOf(BOptSArr));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptSArr));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptSArr));
 
-  EXPECT_TRUE(TArr.subtypeOf(TOptArr));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptArr));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptArr));
+  EXPECT_TRUE(TArr.subtypeOf(BOptArr));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptArr));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptArr));
 
-  EXPECT_TRUE(TObj.subtypeOf(TOptObj));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptObj));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptObj));
+  EXPECT_TRUE(TObj.subtypeOf(BOptObj));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptObj));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptObj));
 
-  EXPECT_TRUE(TRes.subtypeOf(TOptRes));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptRes));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptRes));
+  EXPECT_TRUE(TRes.subtypeOf(BOptRes));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptRes));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptRes));
 
-  EXPECT_TRUE(TArrKey.subtypeOf(TOptArrKey));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptArrKey));
-  EXPECT_TRUE(!TUninit.subtypeOf(TOptArrKey));
+  EXPECT_TRUE(TArrKey.subtypeOf(BOptArrKey));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptArrKey));
+  EXPECT_TRUE(!TUninit.subtypeOf(BOptArrKey));
 
   for (auto& t : optionals()) EXPECT_EQ(t, opt(unopt(t)));
   for (auto& t : optionals()) EXPECT_TRUE(is_opt(t));
@@ -750,7 +750,7 @@ TEST(Type, OptUnionOf) {
   EXPECT_EQ(TOptNum, union_of(TInitNull, union_of(dval(1), ival(0))));
 
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
   auto const rcls = index.builtin_class(s_Awaitable.get());
 
   EXPECT_TRUE(union_of(TObj, opt(objExact(rcls))) == TOptObj);
@@ -846,8 +846,8 @@ TEST(Type, OptCouldBe) {
 
   for (auto& x : optionals()) {
     EXPECT_TRUE(x.couldBe(unopt(x)));
-    EXPECT_TRUE(x.couldBe(TInitNull));
-    EXPECT_TRUE(!x.couldBe(TUninit));
+    EXPECT_TRUE(x.couldBe(BInitNull));
+    EXPECT_TRUE(!x.couldBe(BUninit));
     for (auto& y : optionals()) {
       EXPECT_TRUE(x.couldBe(y));
     }
@@ -861,12 +861,12 @@ TEST(Type, Ref) {
   EXPECT_TRUE(ref_to(TInt) != ref_to(TOptInt));
 
   EXPECT_TRUE(TRef.couldBe(ref_to(TInt)));
-  EXPECT_TRUE(ref_to(TInt).couldBe(TRef));
+  EXPECT_TRUE(ref_to(TInt).couldBe(BRef));
   EXPECT_TRUE(!ref_to(TInt).couldBe(ref_to(TObj)));
   EXPECT_TRUE(ref_to(TOptInt).couldBe(ref_to(TInt)));
 
   EXPECT_TRUE(!TRef.subtypeOf(ref_to(TInt)));
-  EXPECT_TRUE(ref_to(TInt).subtypeOf(TRef));
+  EXPECT_TRUE(ref_to(TInt).subtypeOf(BRef));
   EXPECT_TRUE(ref_to(TInt).subtypeOf(ref_to(TOptInt)));
   EXPECT_TRUE(!ref_to(TOptInt).subtypeOf(ref_to(TInt)));
   EXPECT_TRUE(!ref_to(TObj).subtypeOf(ref_to(TInt)));
@@ -883,25 +883,25 @@ TEST(Type, SpecificExamples) {
   EXPECT_TRUE(!TInt.subtypeOf(ival(1)));
 
   EXPECT_TRUE(TInitCell.couldBe(ival(1)));
-  EXPECT_TRUE(TInitCell.subtypeOf(TGen));
-  EXPECT_TRUE(ival(2).subtypeOf(TInt));
-  EXPECT_TRUE(!ival(2).subtypeOf(TBool));
-  EXPECT_TRUE(ival(3).subtypeOf(TOptInt));
-  EXPECT_TRUE(TInt.subtypeOf(TOptInt));
-  EXPECT_TRUE(!TBool.subtypeOf(TOptInt));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptInt));
-  EXPECT_TRUE(!TNull.subtypeOf(TOptInt));
-  EXPECT_TRUE(TNull.couldBe(TOptInt));
-  EXPECT_TRUE(TNull.couldBe(TOptBool));
+  EXPECT_TRUE(TInitCell.subtypeOf(BGen));
+  EXPECT_TRUE(ival(2).subtypeOf(BInt));
+  EXPECT_TRUE(!ival(2).subtypeOf(BBool));
+  EXPECT_TRUE(ival(3).subtypeOrNull(BInt));
+  EXPECT_TRUE(TInt.subtypeOrNull(BInt));
+  EXPECT_TRUE(!TBool.subtypeOrNull(BInt));
+  EXPECT_TRUE(TInitNull.subtypeOf(BOptInt));
+  EXPECT_TRUE(!TNull.subtypeOf(BOptInt));
+  EXPECT_TRUE(TNull.couldBe(BOptInt));
+  EXPECT_TRUE(TNull.couldBe(BOptBool));
 
-  EXPECT_TRUE(TInitNull.subtypeOf(TInitCell));
-  EXPECT_TRUE(TInitNull.subtypeOf(TCell));
-  EXPECT_TRUE(!TUninit.subtypeOf(TInitNull));
+  EXPECT_TRUE(TInitNull.subtypeOf(BInitCell));
+  EXPECT_TRUE(TInitNull.subtypeOf(BCell));
+  EXPECT_TRUE(!TUninit.subtypeOf(BInitNull));
 
-  EXPECT_TRUE(ival(3).subtypeOf(TOptInt));
+  EXPECT_TRUE(ival(3).subtypeOrNull(BInt));
   EXPECT_TRUE(ival(3).subtypeOf(opt(ival(3))));
   EXPECT_TRUE(ival(3).couldBe(opt(ival(3))));
-  EXPECT_TRUE(ival(3).couldBe(TInt));
+  EXPECT_TRUE(ival(3).couldBe(BInt));
   EXPECT_TRUE(TInitNull.couldBe(opt(ival(3))));
   EXPECT_TRUE(TNull.couldBe(opt(ival(3))));
   EXPECT_TRUE(TInitNull.subtypeOf(opt(ival(3))));
@@ -912,17 +912,17 @@ TEST(Type, SpecificExamples) {
 
 TEST(Type, IndexBased) {
   auto const program = make_program();
-  auto const unit = borrow(program->units.back());
-  auto const func = [&]() -> borrowed_ptr<php::Func> {
+  auto const unit = program->units.back().get();
+  auto const func = [&]() -> php::Func* {
     for (auto& f : unit->funcs) {
-      if (f->name->isame(s_test.get())) return borrow(f);
+      if (f->name->isame(s_test.get())) return f.get();
     }
     return nullptr;
   }();
   EXPECT_TRUE(func != nullptr);
 
   auto const ctx = Context { unit, func };
-  Index idx{borrow(program)};
+  Index idx{program.get()};
 
   auto const cls = idx.resolve_class(ctx, s_TestClass.get());
   if (!cls) ADD_FAILURE();
@@ -954,28 +954,28 @@ TEST(Type, IndexBased) {
   EXPECT_TRUE(subClsTy.couldBe(clsExactTy));
 
   // Foo= and Foo<= are both subtypes of Foo, and couldBe Foo.
-  EXPECT_TRUE(objExactTy.subtypeOf(TObj));
-  EXPECT_TRUE(subObjTy.subtypeOf(TObj));
-  EXPECT_TRUE(objExactTy.couldBe(TObj));
-  EXPECT_TRUE(subObjTy.couldBe(TObj));
+  EXPECT_TRUE(objExactTy.subtypeOf(BObj));
+  EXPECT_TRUE(subObjTy.subtypeOf(BObj));
+  EXPECT_TRUE(objExactTy.couldBe(BObj));
+  EXPECT_TRUE(subObjTy.couldBe(BObj));
   EXPECT_TRUE(TObj.couldBe(objExactTy));
   EXPECT_TRUE(TObj.couldBe(subObjTy));
-  EXPECT_TRUE(clsExactTy.subtypeOf(TCls));
-  EXPECT_TRUE(subClsTy.subtypeOf(TCls));
-  EXPECT_TRUE(clsExactTy.couldBe(TCls));
-  EXPECT_TRUE(subClsTy.couldBe(TCls));
+  EXPECT_TRUE(clsExactTy.subtypeOf(BCls));
+  EXPECT_TRUE(subClsTy.subtypeOf(BCls));
+  EXPECT_TRUE(clsExactTy.couldBe(BCls));
+  EXPECT_TRUE(subClsTy.couldBe(BCls));
   EXPECT_TRUE(TCls.couldBe(clsExactTy));
   EXPECT_TRUE(TCls.couldBe(subClsTy));
 
   // Obj= and Obj<= both couldBe ?Obj, and vice versa.
-  EXPECT_TRUE(objExactTy.couldBe(TOptObj));
-  EXPECT_TRUE(subObjTy.couldBe(TOptObj));
+  EXPECT_TRUE(objExactTy.couldBe(BOptObj));
+  EXPECT_TRUE(subObjTy.couldBe(BOptObj));
   EXPECT_TRUE(TOptObj.couldBe(objExactTy));
   EXPECT_TRUE(TOptObj.couldBe(subObjTy));
 
   // Obj= and Obj<= are subtypes of ?Obj.
-  EXPECT_TRUE(objExactTy.subtypeOf(TOptObj));
-  EXPECT_TRUE(subObjTy.subtypeOf(TOptObj));
+  EXPECT_TRUE(objExactTy.subtypeOrNull(BObj));
+  EXPECT_TRUE(subObjTy.subtypeOrNull(BObj));
 
   // Obj= is a subtype of ?Obj=, and also ?Obj<=.
   EXPECT_TRUE(objExactTy.subtypeOf(opt(objExactTy)));
@@ -1012,17 +1012,17 @@ TEST(Type, IndexBased) {
 
 TEST(Type, Hierarchies) {
   auto const program = make_program();
-  auto const unit = borrow(program->units.back());
-  auto const func = [&]() -> borrowed_ptr<php::Func> {
+  auto const unit = program->units.back().get();
+  auto const func = [&]() -> php::Func* {
     for (auto& f : unit->funcs) {
-      if (f->name->isame(s_test.get())) return borrow(f);
+      if (f->name->isame(s_test.get())) return f.get();
     }
     return nullptr;
   }();
   EXPECT_TRUE(func != nullptr);
 
   auto const ctx = Context { unit, func };
-  Index idx{borrow(program)};
+  Index idx{program.get()};
 
   // load classes in hierarchy
   auto const clsBase = idx.resolve_class(ctx, s_Base.get());
@@ -1368,17 +1368,17 @@ TEST(Type, Hierarchies) {
 
 TEST(Type, Interface) {
   auto const program = make_program();
-  auto const unit = borrow(program->units.back());
-  auto const func = [&]() -> borrowed_ptr<php::Func> {
+  auto const unit = program->units.back().get();
+  auto const func = [&]() -> php::Func* {
     for (auto& f : unit->funcs) {
-      if (f->name->isame(s_test.get())) return borrow(f);
+      if (f->name->isame(s_test.get())) return f.get();
     }
     return nullptr;
   }();
   EXPECT_TRUE(func != nullptr);
 
   auto const ctx = Context { unit, func };
-  Index idx{borrow(program)};
+  Index idx{program.get()};
 
   // load classes in hierarchy
   auto const clsIA = idx.resolve_class(ctx, s_IA.get());
@@ -1436,17 +1436,17 @@ TEST(Type, Interface) {
 
 TEST(Type, NonUnique) {
   auto const program = make_program();
-  auto const unit = borrow(program->units.back());
-  auto const func = [&]() -> borrowed_ptr<php::Func> {
+  auto const unit = program->units.back().get();
+  auto const func = [&]() -> php::Func* {
     for (auto& f : unit->funcs) {
-      if (f->name->isame(s_test.get())) return borrow(f);
+      if (f->name->isame(s_test.get())) return f.get();
     }
     return nullptr;
   }();
   EXPECT_TRUE(func != nullptr);
 
   auto const ctx = Context { unit, func };
-  Index idx{borrow(program)};
+  Index idx{program.get()};
 
   auto const clsA = idx.resolve_class(ctx, s_A.get());
   if (!clsA) ADD_FAILURE();
@@ -1472,7 +1472,7 @@ TEST(Type, NonUnique) {
 
 TEST(Type, WaitH) {
   auto const program = make_program();
-  Index index { borrow(program) };
+  Index index { program.get() };
 
   for (auto& t : wait_handles_of(index, all())) {
     EXPECT_TRUE(is_specialized_wait_handle(t));
@@ -1509,7 +1509,7 @@ TEST(Type, WaitH) {
   auto const optWH = opt(wait_handle(index, ival(2)));
   EXPECT_TRUE(is_opt(optWH));
   EXPECT_TRUE(TInitNull.subtypeOf(optWH));
-  EXPECT_TRUE(optWH.subtypeOf(TOptObj));
+  EXPECT_TRUE(optWH.subtypeOrNull(BObj));
   EXPECT_TRUE(optWH.subtypeOf(opt(twhobj)));
   EXPECT_TRUE(wait_handle(index, ival(2)).subtypeOf(optWH));
   EXPECT_FALSE(optWH.subtypeOf(wait_handle(index, ival(2))));
@@ -1583,18 +1583,18 @@ TEST(Type, ArrPacked1) {
   auto const s2 = sarr_packed({TInt,    TStr,  TInitCell});
 
   for (auto& a : { a1, s1, a2, s2 }) {
-    EXPECT_TRUE(a.subtypeOf(TArr));
+    EXPECT_TRUE(a.subtypeOf(BArr));
     EXPECT_TRUE(a.subtypeOf(a));
     EXPECT_EQ(a, a);
   }
 
   // Subtype stuff.
 
-  EXPECT_TRUE(a1.subtypeOf(TArr));
-  EXPECT_FALSE(a1.subtypeOf(TSArr));
+  EXPECT_TRUE(a1.subtypeOf(BArr));
+  EXPECT_FALSE(a1.subtypeOf(BSArr));
 
-  EXPECT_TRUE(s1.subtypeOf(TArr));
-  EXPECT_TRUE(s1.subtypeOf(TSArr));
+  EXPECT_TRUE(s1.subtypeOf(BArr));
+  EXPECT_TRUE(s1.subtypeOf(BSArr));
 
   EXPECT_TRUE(a1.subtypeOf(a2));
   EXPECT_TRUE(s1.subtypeOf(s2));
@@ -1621,18 +1621,18 @@ TEST(Type, OptArrPacked1) {
   auto const s2 = opt(sarr_packed({TInt,    TStr,  TInitCell}));
 
   for (auto& a : { a1, s1, a2, s2 }) {
-    EXPECT_TRUE(a.subtypeOf(TOptArr));
+    EXPECT_TRUE(a.subtypeOrNull(BArr));
     EXPECT_TRUE(a.subtypeOf(a));
     EXPECT_EQ(a, a);
   }
 
   // Subtype stuff.
 
-  EXPECT_TRUE(a1.subtypeOf(TOptArr));
-  EXPECT_FALSE(a1.subtypeOf(TOptSArr));
+  EXPECT_TRUE(a1.subtypeOrNull(BArr));
+  EXPECT_FALSE(a1.subtypeOrNull(BSArr));
 
-  EXPECT_TRUE(s1.subtypeOf(TOptArr));
-  EXPECT_TRUE(s1.subtypeOf(TOptSArr));
+  EXPECT_TRUE(s1.subtypeOrNull(BArr));
+  EXPECT_TRUE(s1.subtypeOrNull(BSArr));
 
   EXPECT_TRUE(a1.subtypeOf(a2));
   EXPECT_TRUE(s1.subtypeOf(s2));
@@ -1805,9 +1805,9 @@ TEST(Type, ArrStruct) {
   EXPECT_FALSE(tc.couldBe(ta));
   EXPECT_FALSE(tc.couldBe(tb));
 
-  EXPECT_TRUE(ta.subtypeOf(TArr));
-  EXPECT_TRUE(tb.subtypeOf(TArr));
-  EXPECT_TRUE(tc.subtypeOf(TArr));
+  EXPECT_TRUE(ta.subtypeOf(BArr));
+  EXPECT_TRUE(tb.subtypeOf(BArr));
+  EXPECT_TRUE(tc.subtypeOf(BArr));
 
   auto const sa = sarr_map(test_map_a);
   auto const sb = sarr_map(test_map_b);
@@ -1822,9 +1822,9 @@ TEST(Type, ArrStruct) {
   EXPECT_FALSE(sc.couldBe(sa));
   EXPECT_FALSE(sc.couldBe(sb));
 
-  EXPECT_TRUE(sa.subtypeOf(TSArr));
-  EXPECT_TRUE(sb.subtypeOf(TSArr));
-  EXPECT_TRUE(sc.subtypeOf(TSArr));
+  EXPECT_TRUE(sa.subtypeOf(BSArr));
+  EXPECT_TRUE(sb.subtypeOf(BSArr));
+  EXPECT_TRUE(sc.subtypeOf(BSArr));
 
   auto test_map_d          = MapElems{};
   test_map_d[tv(s_A)]      = sval(s_B.get());
@@ -2012,19 +2012,19 @@ TEST(Type, EmptyArray) {
     EXPECT_TRUE(estat.couldBe(aempty()));
     EXPECT_TRUE(estat.couldBe(sarr_packedn(TInt)));
     EXPECT_FALSE(estat.subtypeOf(sarr_packedn(TInt)));
-    EXPECT_FALSE(estat.subtypeOf(TSArrE));
-    EXPECT_TRUE(estat.couldBe(TSArrE));
+    EXPECT_FALSE(estat.subtypeOf(BSArrE));
+    EXPECT_TRUE(estat.couldBe(BSArrE));
   }
 
   EXPECT_EQ(array_newelem(aempty(), ival(142)).first, arr_packed({ival(142)}));
 }
 
 TEST(Type, BasicArrays) {
-  EXPECT_TRUE(TSArr.subtypeOf(TArr));
-  EXPECT_TRUE(TArrE.subtypeOf(TArr));
-  EXPECT_TRUE(TArrN.subtypeOf(TArr));
-  EXPECT_TRUE(TSArrE.subtypeOf(TArr));
-  EXPECT_TRUE(TSArrN.subtypeOf(TArr));
+  EXPECT_TRUE(TSArr.subtypeOf(BArr));
+  EXPECT_TRUE(TArrE.subtypeOf(BArr));
+  EXPECT_TRUE(TArrN.subtypeOf(BArr));
+  EXPECT_TRUE(TSArrE.subtypeOf(BArr));
+  EXPECT_TRUE(TSArrN.subtypeOf(BArr));
 
   EXPECT_EQ(union_of(TArrN, TArrE), TArr);
 
@@ -2081,53 +2081,53 @@ TEST(Type, BasicArrays) {
  */
 TEST(Type, ArrBitCombos) {
   auto const u1 = union_of(sarr_packedn(TInt), TArrE);
-  EXPECT_TRUE(u1.couldBe(TArrE));
-  EXPECT_TRUE(u1.couldBe(TSArrE));
+  EXPECT_TRUE(u1.couldBe(BArrE));
+  EXPECT_TRUE(u1.couldBe(BSArrE));
   EXPECT_TRUE(u1.couldBe(sarr_packedn(TInt)));
   EXPECT_EQ(array_elem(u1, ival(0)).first, TOptInt);
 
   auto const u2 = union_of(TSArrE, arr_packedn(TInt));
-  EXPECT_TRUE(u2.couldBe(TArrE));
-  EXPECT_TRUE(u2.couldBe(TSArrE));
+  EXPECT_TRUE(u2.couldBe(BArrE));
+  EXPECT_TRUE(u2.couldBe(BSArrE));
   EXPECT_TRUE(u2.couldBe(arr_packedn(TInt)));
   EXPECT_EQ(array_elem(u2, ival(0)).first, TOptInt);
 }
 
 TEST(Type, ArrKey) {
-  EXPECT_TRUE(TInt.subtypeOf(TArrKey));
-  EXPECT_TRUE(TStr.subtypeOf(TArrKey));
-  EXPECT_TRUE(ival(0).subtypeOf(TArrKey));
-  EXPECT_TRUE(sval(s_test.get()).subtypeOf(TArrKey));
+  EXPECT_TRUE(TInt.subtypeOf(BArrKey));
+  EXPECT_TRUE(TStr.subtypeOf(BArrKey));
+  EXPECT_TRUE(ival(0).subtypeOf(BArrKey));
+  EXPECT_TRUE(sval(s_test.get()).subtypeOf(BArrKey));
 
-  EXPECT_TRUE(TInt.subtypeOf(TOptArrKey));
-  EXPECT_TRUE(TStr.subtypeOf(TOptArrKey));
-  EXPECT_TRUE(ival(0).subtypeOf(TOptArrKey));
-  EXPECT_TRUE(sval(s_test.get()).subtypeOf(TOptArrKey));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptArrKey));
+  EXPECT_TRUE(TInt.subtypeOrNull(BArrKey));
+  EXPECT_TRUE(TStr.subtypeOrNull(BArrKey));
+  EXPECT_TRUE(ival(0).subtypeOrNull(BArrKey));
+  EXPECT_TRUE(sval(s_test.get()).subtypeOrNull(BArrKey));
+  EXPECT_TRUE(TInitNull.subtypeOrNull(BArrKey));
 
-  EXPECT_TRUE(TInt.subtypeOf(TUncArrKey));
-  EXPECT_TRUE(TSStr.subtypeOf(TUncArrKey));
-  EXPECT_TRUE(ival(0).subtypeOf(TUncArrKey));
-  EXPECT_TRUE(sval(s_test.get()).subtypeOf(TUncArrKey));
+  EXPECT_TRUE(TInt.subtypeOf(BUncArrKey));
+  EXPECT_TRUE(TSStr.subtypeOf(BUncArrKey));
+  EXPECT_TRUE(ival(0).subtypeOf(BUncArrKey));
+  EXPECT_TRUE(sval(s_test.get()).subtypeOf(BUncArrKey));
 
-  EXPECT_TRUE(TInt.subtypeOf(TOptUncArrKey));
-  EXPECT_TRUE(TSStr.subtypeOf(TOptUncArrKey));
-  EXPECT_TRUE(ival(0).subtypeOf(TOptUncArrKey));
-  EXPECT_TRUE(sval(s_test.get()).subtypeOf(TOptUncArrKey));
-  EXPECT_TRUE(TInitNull.subtypeOf(TOptUncArrKey));
+  EXPECT_TRUE(TInt.subtypeOrNull(BUncArrKey));
+  EXPECT_TRUE(TSStr.subtypeOrNull(BUncArrKey));
+  EXPECT_TRUE(ival(0).subtypeOrNull(BUncArrKey));
+  EXPECT_TRUE(sval(s_test.get()).subtypeOrNull(BUncArrKey));
+  EXPECT_TRUE(TInitNull.subtypeOrNull(BUncArrKey));
 
-  EXPECT_TRUE(TArrKey.subtypeOf(TOptArrKey));
-  EXPECT_TRUE(TUncArrKey.subtypeOf(TOptUncArrKey));
-  EXPECT_TRUE(TUncArrKey.subtypeOf(TArrKey));
-  EXPECT_TRUE(TOptUncArrKey.subtypeOf(TOptArrKey));
+  EXPECT_TRUE(TArrKey.subtypeOrNull(BArrKey));
+  EXPECT_TRUE(TUncArrKey.subtypeOrNull(BUncArrKey));
+  EXPECT_TRUE(TUncArrKey.subtypeOf(BArrKey));
+  EXPECT_TRUE(TOptUncArrKey.subtypeOrNull(BArrKey));
 
-  EXPECT_TRUE(TArrKey.subtypeOf(TInitCell));
-  EXPECT_TRUE(TUncArrKey.subtypeOf(TInitCell));
-  EXPECT_TRUE(TOptArrKey.subtypeOf(TInitCell));
-  EXPECT_TRUE(TOptUncArrKey.subtypeOf(TInitCell));
+  EXPECT_TRUE(TArrKey.subtypeOf(BInitCell));
+  EXPECT_TRUE(TUncArrKey.subtypeOf(BInitCell));
+  EXPECT_TRUE(TOptArrKey.subtypeOf(BInitCell));
+  EXPECT_TRUE(TOptUncArrKey.subtypeOf(BInitCell));
 
-  EXPECT_TRUE(TUncArrKey.subtypeOf(TInitUnc));
-  EXPECT_TRUE(TOptUncArrKey.subtypeOf(TInitUnc));
+  EXPECT_TRUE(TUncArrKey.subtypeOf(BInitUnc));
+  EXPECT_TRUE(TOptUncArrKey.subtypeOf(BInitUnc));
 
   EXPECT_TRUE(union_of(TInt, TStr) == TArrKey);
   EXPECT_TRUE(union_of(TInt, TSStr) == TUncArrKey);
@@ -2144,18 +2144,29 @@ TEST(Type, ArrKey) {
 
 TEST(Type, LoosenStaticness) {
   auto const program = make_program();
-  Index index{ borrow(program) };
+  Index index{ program.get() };
 
-  for (auto const& t : all_with_waithandles(index)) {
+  for (auto const& t : all()) {
     if (t == TUncArrKey || t == TOptUncArrKey ||
         t == TInitUnc || t == TUnc ||
-        (t.subtypeOfAny(TOptSArr,
-                        TOptSVec,
-                        TOptSDict,
-                        TOptSKeyset,
+        (t.subtypeOfAny(TOptArr,
+                        TOptVec,
+                        TOptDict,
+                        TOptKeyset,
                         TOptSStr) &&
          t != TInitNull)) continue;
     EXPECT_EQ(loosen_staticness(t), t);
+  }
+
+  for (auto const& t : all()) {
+    EXPECT_EQ(loosen_staticness(wait_handle(index, t)),
+              wait_handle(index, loosen_staticness(t)));
+    if (t.subtypeOf(TInitGen)) {
+      EXPECT_EQ(loosen_staticness(arr_packedn(t)),
+                arr_packedn(loosen_staticness(t)));
+      EXPECT_EQ(loosen_staticness(sarr_packedn(t)),
+                arr_packedn(loosen_staticness(t)));
+    }
   }
 
   auto test_map          = MapElems{};
@@ -2189,19 +2200,26 @@ TEST(Type, LoosenStaticness) {
     { sval(s_test.get()), TStr },
     { sarr_packedn(TInt), arr_packedn(TInt) },
     { sarr_packed({TInt, TBool}), arr_packed({TInt, TBool}) },
-    { sarr_mapn(TSStr, TInt), arr_mapn(TSStr, TInt) },
+    { sarr_mapn(TSStr, TInt), arr_mapn(TStr, TInt) },
+    { sarr_mapn(TInt, TSDictN), arr_mapn(TInt, TDictN) },
     { sarr_map(test_map), arr_map(test_map) },
   };
   for (auto const& p : tests) {
     EXPECT_EQ(loosen_staticness(p.first), p.second);
     if (p.first == TUnc || p.first == TInitUnc) continue;
     EXPECT_EQ(loosen_staticness(opt(p.first)), opt(p.second));
+    EXPECT_EQ(loosen_staticness(wait_handle(index, p.first)),
+              wait_handle(index, p.second));
+    EXPECT_EQ(loosen_staticness(arr_packedn(p.first)),
+              arr_packedn(p.second));
+    EXPECT_EQ(loosen_staticness(sarr_packedn(p.first)),
+              arr_packedn(p.second));
   }
 }
 
 TEST(Type, LoosenEmptiness) {
   auto const program = make_program();
-  Index index{ borrow(program) };
+  Index index{ program.get() };
 
   for (auto const& t : all_with_waithandles(index)) {
     if (t.subtypeOfAny(TOptArrE, TOptArrN,
@@ -2256,17 +2274,17 @@ TEST(Type, LoosenEmptiness) {
 
 TEST(Type, LoosenValues) {
   auto const program = make_program();
-  auto const unit = borrow(program->units.back());
-    auto const func = [&]() -> borrowed_ptr<php::Func> {
+  auto const unit = program->units.back().get();
+    auto const func = [&]() -> php::Func* {
     for (auto& f : unit->funcs) {
-      if (f->name->isame(s_test.get())) return borrow(f);
+      if (f->name->isame(s_test.get())) return f.get();
     }
     return nullptr;
   }();
   EXPECT_TRUE(func != nullptr);
 
   auto const ctx = Context { unit, func };
-  Index index{ borrow(program) };
+  Index index{ program.get() };
 
   for (auto const& t : all_no_data_with_waithandles(index)) {
     if (t == TTrue || t == TFalse) continue;
@@ -2295,12 +2313,12 @@ TEST(Type, LoosenValues) {
   };
   for (auto const& p : tests) {
     EXPECT_EQ(loosen_values(p.first), p.second);
-    if (p.first.subtypeOf(TRef)) continue;
+    if (p.first.subtypeOf(BRef)) continue;
     EXPECT_EQ(loosen_values(opt(p.first)), opt(p.second));
   }
 
   auto const cls = index.resolve_class(ctx, s_TestClass.get());
-  if (!cls) EXPECT_TRUE(false);
+  EXPECT_TRUE(!!cls);
 
   EXPECT_TRUE(loosen_values(objExact(*cls)) == objExact(*cls));
   EXPECT_TRUE(loosen_values(subObj(*cls)) == subObj(*cls));
@@ -2313,7 +2331,7 @@ TEST(Type, LoosenValues) {
 
 TEST(Type, AddNonEmptiness) {
   auto const program = make_program();
-  Index index{ borrow(program) };
+  Index index{ program.get() };
 
   for (auto const& t : all_with_waithandles(index)) {
     if (t.subtypeOfAny(TOptArrE, TOptVecE, TOptDictE, TOptKeysetE)
@@ -2345,7 +2363,7 @@ TEST(Type, AddNonEmptiness) {
 
 TEST(Type, LoosenDVArrayness) {
   auto const program = make_program();
-  Index index{ borrow(program) };
+  Index index{ program.get() };
 
   for (auto const& t : all_with_waithandles(index)) {
     if (t.subtypeOfAny(TOptPArr, TOptVArr, TOptDArr) && t != TInitNull) {
@@ -2386,17 +2404,17 @@ TEST(Type, ContextDependent) {
   // This only covers basic cases involving objects.  More testing should
   // be added for non object types, and nested types.
   auto const program = make_program();
-  auto const unit = borrow(program->units.back());
-  auto const func = [&]() -> borrowed_ptr<php::Func> {
+  auto const unit = program->units.back().get();
+  auto const func = [&]() -> php::Func* {
     for (auto& f : unit->funcs) {
-      if (f->name->isame(s_test.get())) return borrow(f);
+      if (f->name->isame(s_test.get())) return f.get();
     }
     return nullptr;
   }();
   EXPECT_TRUE(func != nullptr);
 
   auto const ctx = Context { unit, func };
-  Index idx{borrow(program)};
+  Index idx{program.get()};
 
   // load classes in hierarchy  Base -> B -> BB
   auto const clsBase = idx.resolve_class(ctx, s_Base.get());

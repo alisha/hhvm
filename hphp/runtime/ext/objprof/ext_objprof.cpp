@@ -299,6 +299,8 @@ std::pair<int, double> sizeOfArray(
         case KindOfRef:
         case KindOfArray:
         case KindOfKeyset:
+        case KindOfFunc:
+        case KindOfClass:
           always_assert(false);
       }
 
@@ -395,6 +397,8 @@ void stringsOfArray(
         case KindOfRef:
         case KindOfArray:
         case KindOfKeyset:
+        case KindOfFunc:
+        case KindOfClass:
           // this should be an always_assert(false), but that appears to trigger
           // a gcc-4.9 bug (t16350411); even after t16350411 is fixed, we
           // can't always_assert(false) here until we stop supporting gcc-4.9
@@ -439,7 +443,9 @@ std::pair<int, double> tvGetSize(
     case KindOfNull:
     case KindOfBoolean:
     case KindOfInt64:
-    case KindOfDouble: {
+    case KindOfDouble:
+    case KindOfFunc:
+    case KindOfClass: {
       // Counted as part sizeof(TypedValue)
       break;
     }
@@ -618,7 +624,9 @@ void tvGetStrings(
     case HPHP::KindOfNull:
     case HPHP::KindOfBoolean:
     case HPHP::KindOfInt64:
-    case HPHP::KindOfDouble: {
+    case HPHP::KindOfDouble:
+    case HPHP::KindOfFunc:
+    case HPHP::KindOfClass: {
       // Not strings
       break;
     }
@@ -975,11 +983,11 @@ Array HHVM_FUNCTION(objprof_get_strings, int min_dup) {
   });
 
   // Create response
-  ArrayInit objs(metrics.size(), ArrayInit::Map{});
+  DArrayInit objs(metrics.size());
   for (auto& it : metrics) {
     if (it.second.dups < min_dup) continue;
 
-    auto metrics_val = make_map_array(
+    auto metrics_val = make_darray(
       s_dups, Variant(it.second.dups),
       s_refs, Variant(it.second.refs),
       s_srefs, Variant(it.second.srefs),
@@ -1043,7 +1051,7 @@ Array HHVM_FUNCTION(objprof_get_data,
   });
 
   // Create response
-  ArrayInit objs(histogram.size(), ArrayInit::Map{});
+  DArrayInit objs(histogram.size());
   for (auto const& it : histogram) {
     auto c = it.first;
     auto cls = c.first;
@@ -1053,7 +1061,7 @@ Array HHVM_FUNCTION(objprof_get_data,
       key += "::" + c.second;
     }
 
-    auto metrics_val = make_map_array(
+    auto metrics_val = make_darray(
       s_instances, Variant(it.second.instances),
       s_bytes, Variant(it.second.bytes),
       s_bytes_rel, it.second.bytes_rel,
@@ -1185,21 +1193,21 @@ Array HHVM_FUNCTION(objprof_get_paths,
   });
 
   // Create response
-  ArrayInit objs(histogram.size(), ArrayInit::Map{});
+  DArrayInit objs(histogram.size());
   for (auto const& it : histogram) {
     auto c = it.first;
     auto clsPaths = pathsToClass[c.first];
-    ArrayInit pathsArr(clsPaths.size(), ArrayInit::Map{});
+    DArrayInit pathsArr(clsPaths.size());
     for (auto const& pathIt : clsPaths) {
       auto pathStr = pathIt.first;
-      auto path_metrics_val = make_map_array(
+      auto path_metrics_val = make_darray(
         s_refs, pathIt.second.refs
       );
 
       pathsArr.setValidKey(Variant(pathStr), Variant(path_metrics_val));
     }
 
-    auto metrics_val = make_map_array(
+    auto metrics_val = make_darray(
       s_instances, Variant(it.second.instances),
       s_bytes, Variant(it.second.bytes),
       s_bytes_rel, it.second.bytes_rel,

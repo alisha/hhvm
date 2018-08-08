@@ -47,14 +47,14 @@ let experimental_disallow_static_memoized =
 let experimental_disable_optional_and_unknown_shape_fields =
   GlobalOptions.tco_experimental_disable_optional_and_unknown_shape_fields
 let experimental_no_trait_reuse = GlobalOptions.tco_experimental_no_trait_reuse
-let experimental_is_expression = GlobalOptions.tco_experimental_is_expression
-let experimental_as_expression = GlobalOptions.tco_experimental_as_expression
-let experimental_decl_override_require_hint = GlobalOptions.tco_decl_override_require_hint
 let experimental_void_is_type_of_null =
   GlobalOptions.tco_experimental_void_is_type_of_null
-
 let experimental_null_coalesce_assignment =
   GlobalOptions.tco_experimental_null_coalesce_assignment
+let experimental_reified_generics =
+  GlobalOptions.tco_experimental_reified_generics
+let experimental_re_prefixed_strings =
+  GlobalOptions.tco_experimental_re_prefixed_strings
 
 let experimental_all = GlobalOptions.tco_experimental_all
 let migration_flags_all = GlobalOptions.tco_migration_flags_all
@@ -62,4 +62,6 @@ let dynamic_view = GlobalOptions.tco_dynamic_view
 let disallow_array_as_tuple = GlobalOptions.tco_disallow_array_as_tuple
 let disallow_return_by_ref = GlobalOptions.tco_disallow_return_by_ref
 let disallow_array_cell_pass_by_ref = GlobalOptions.tco_disallow_array_cell_pass_by_ref
+let disallow_implicit_returns_in_non_void_functions =
+  GlobalOptions.tco_disallow_implicit_returns_in_non_void_functions
 let forward_compatibility_level = GlobalOptions.forward_compatibility_level

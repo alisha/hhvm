@@ -340,7 +340,7 @@ module WithExpressionAndStatementAndTypeParser
     | Backslash ->
       let (parser, missing) = Make.missing parser (pos parser) in
       let (parser, backslash) = Make.token parser token in
-      let (parser, name, is_backslash) =
+      let (parser, _name, is_backslash) =
         scan_qualified_name_extended parser missing backslash
       in
       is_backslash || peek_token_kind parser = LeftBrace
@@ -886,7 +886,7 @@ module WithExpressionAndStatementAndTypeParser
         left_brace
         values
         right_brace
-    | kind -> parse_type_specifier ~allow_var:true parser
+    | _kind -> parse_type_specifier ~allow_var:true parser
 
   and parse_xhp_required_opt parser =
     (* SPEC (Draft)
@@ -1050,7 +1050,8 @@ module WithExpressionAndStatementAndTypeParser
     Make.trait_use_precedence_item parser name keyword removed_names
 
   and parse_trait_use_alias_item parser aliasing_name =
-    let (parser, keyword) = assert_token parser As in
+    let (parser, keyword) =
+      require_token parser As SyntaxError.expected_as_or_insteadof in
     let (parser, visibility, _) = parse_modifiers parser in
     let (parser, aliased_name) = parse_qualified_name_type_opt parser in
     Make.trait_use_alias_item parser aliasing_name keyword visibility
@@ -1066,12 +1067,10 @@ module WithExpressionAndStatementAndTypeParser
         Make.scope_resolution_expression parser qualifier cc_token name
       else
         (* plain qualified name case *)
-        (parser, qualifier)
-    in
-    if (peek_token_kind parser) = As then
-      parse_trait_use_alias_item parser name
-    else
-      parse_trait_use_precedence_item parser name
+        (parser, qualifier) in
+    match peek_token_kind parser with
+    | Insteadof -> parse_trait_use_precedence_item parser name
+    | As | _ -> parse_trait_use_alias_item parser name
 
   (*  SPEC:
     trait-use-conflict-resolution:
@@ -1108,7 +1107,8 @@ module WithExpressionAndStatementAndTypeParser
         SyntaxError.error1004
         parse_trait_use_conflict_resolution_item
     in
-    let (parser, right_brace) = assert_token parser RightBrace in
+    let (parser, right_brace) =
+     require_token parser RightBrace SyntaxError.error1006 in
     Make.trait_use_conflict_resolution
       parser
       use_token
@@ -1341,7 +1341,7 @@ module WithExpressionAndStatementAndTypeParser
     Make.attribute parser name left items right
 
   and parse_generic_type_parameter_list_opt parser =
-    let (parser1, open_angle) = next_token parser in
+    let (_parser1, open_angle) = next_token parser in
     let kind = Token.kind open_angle in
     if kind = LessThan then
       with_type_parser parser TypeParser.parse_generic_type_parameter_list

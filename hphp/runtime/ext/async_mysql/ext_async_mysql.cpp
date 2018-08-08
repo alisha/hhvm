@@ -24,6 +24,7 @@
 #include <squangle/mysql_client/ClientPool.h>
 
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/container-functions.h"
 #include "hphp/runtime/ext/collections/ext_collections-map.h"
 #include "hphp/runtime/ext/collections/ext_collections-vector.h"
 #include "hphp/runtime/ext/mysql/ext_mysql.h"
@@ -336,16 +337,37 @@ Object HHVM_STATIC_METHOD(
   return newAsyncMysqlConnectEvent(std::move(op), getClient());
 }
 
+static AsyncMysqlConnection::AttributeMap transformAttributes(
+    const Array& attributes) {
+  AsyncMysqlConnection::AttributeMap cppAttributes;
+  IterateKV(attributes.get(), [&](Cell k, TypedValue v) {
+    cppAttributes[tvCastToString(k).toCppString()] =
+        tvCastToString(v).toCppString();
+  });
+  return cppAttributes;
+}
+
 Object HHVM_STATIC_METHOD(
     AsyncMysqlClient,
     connectAndQuery,
-    const Array& queries,
+    const Variant& queries,
     const String& host,
     int port,
     const String& dbname,
     const String& user,
     const String& password,
-    const Object& asyncMysqlConnOpts) {
+    const Object& asyncMysqlConnOpts,
+    const Array& queryAttributes) {
+  if (UNLIKELY(!isContainer(queries))) {
+    raise_warning("AsyncMysqlClient::connectAndQuery() expects parameter 1 to "
+                  "be array, %s given",
+                  getDataTypeString(queries.getType()).c_str());
+    return Object{};
+  }
+  auto queries_as_array = queries.isArray()
+    ? queries.asCArrRef()
+    // In this codepath, queries must be a Hack collection
+    : collections::toArray(queries.getObjectData());
   am::ConnectionKey key(
       static_cast<std::string>(host),
       port,
@@ -358,9 +380,14 @@ Object HHVM_STATIC_METHOD(
   const auto& connOpts = obj->getConnectionOptions();
   connectOp->setConnectionOptions(connOpts);
   auto event = new AsyncMysqlConnectAndMultiQueryEvent(connectOp);
-  auto transformedQueries = transformQueries(queries);
+  auto transformedQueries = transformQueries(queries_as_array);
+  auto transformedAttributes = transformAttributes(queryAttributes);
   try {
-    connectOp->setCallback([clientPtr, event, transformedQueries]
+    connectOp->setCallback(
+            [clientPtr,
+            event,
+            transformedQueries,
+            transformedAttributes]
         (am::ConnectOperation& op) mutable {
 
         if (!op.ok()) {
@@ -372,6 +399,7 @@ Object HHVM_STATIC_METHOD(
 
         auto query_op = am::Connection::beginMultiQuery(
           op.releaseConnection(), std::move(transformedQueries));
+        query_op->setQueryAttributes(transformedAttributes);
         event->setQueryOp(query_op);
 
         try {
@@ -503,7 +531,7 @@ const StaticString s_created_pool_connections("created_pool_connections"),
 static Array HHVM_METHOD(AsyncMysqlConnectionPool, getPoolStats) {
   auto* data = Native::data<AsyncMysqlConnectionPool>(this_);
   auto* pool_stats = data->m_async_pool->stats();
-  Array ret = make_map_array(
+  Array ret = make_darray(
       s_created_pool_connections,
       pool_stats->numCreatedPoolConnections(),
       s_destroyed_pool_connections,
@@ -636,13 +664,15 @@ bool AsyncMysqlConnection::isValidConnection() {
 }
 
 Object AsyncMysqlConnection::query(
-  ObjectData* this_,
-  am::Query query,
-  int64_t timeout_micros /* = -1 */) {
-
+    ObjectData* this_,
+    am::Query query,
+    int64_t timeout_micros /* = -1 */,
+    const AttributeMap& queryAttributes /*  = AttributeMap() */) {
   verifyValidConnection();
   auto* clientPtr = static_cast<am::AsyncMysqlClient*>(m_conn->client());
   auto op = am::Connection::beginQuery(std::move(m_conn), query);
+
+  op->setQueryAttributes(queryAttributes);
   op->setTimeout(am::Duration(getQueryTimeout(timeout_micros)));
 
   auto event = new AsyncMysqlQueryEvent(this_, op);
@@ -678,13 +708,15 @@ static Object HHVM_METHOD(
     AsyncMysqlConnection,
     query,
     const String& query,
-    int64_t timeout_micros /* = -1 */) {
+    int64_t timeout_micros /* = -1 */,
+    const Array& queryAttributes) {
   auto* data = Native::data<AsyncMysqlConnection>(this_);
 
   return data->query(
       this_,
       am::Query::unsafe(static_cast<std::string>(query)),
-      timeout_micros);
+      timeout_micros,
+      transformAttributes(queryAttributes));
 }
 
 static Object HHVM_METHOD(
@@ -760,13 +792,26 @@ static Object HHVM_METHOD(
 static Object HHVM_METHOD(
     AsyncMysqlConnection,
     multiQuery,
-    const Array& queries,
-    int64_t timeout_micros /* = -1 */) {
+    const Variant& queries,
+    int64_t timeout_micros /* = -1 */,
+    const Array& queryAttributes) {
+  if (UNLIKELY(!isContainer(queries))) {
+    raise_warning("AsyncMysqlConnection::multiQuery() expects parameter 1 to "
+                  "be array, %s given",
+                  getDataTypeString(queries.getType()).c_str());
+    return Object{};
+  }
+  auto queries_as_array = queries.isArray()
+    ? queries.asCArrRef()
+    // In this codepath, queries must be a Hack collection
+    : collections::toArray(queries.getObjectData());
   auto* data = Native::data<AsyncMysqlConnection>(this_);
   data->verifyValidConnection();
   auto* clientPtr = static_cast<am::AsyncMysqlClient*>(data->m_conn->client());
   auto op = am::Connection::beginMultiQuery(std::move(data->m_conn),
-                                            transformQueries(queries));
+                                            transformQueries(queries_as_array));
+
+  op->setQueryAttributes(transformAttributes(queryAttributes));
   op->setTimeout(am::Duration(getQueryTimeout(timeout_micros)));
 
   auto event = new AsyncMysqlMultiQueryEvent(this_, op);
@@ -1229,11 +1274,13 @@ Object AsyncMysqlQueryResult::buildRows(bool as_maps, bool typed_values) {
 FieldIndex::FieldIndex(const am::RowFields* row_fields) {
   if (row_fields == nullptr)
     return;
-  field_names_.reserve(row_fields->numFields());
-  for (int i = 0; i < row_fields->numFields(); ++i) {
+  auto n = row_fields->numFields();
+  field_names_.reserve(n);
+  field_name_map_.reserve(n);
+  for (int i = 0; i < n; ++i) {
     auto name = String(row_fields->fieldName(i).str());
     field_names_.push_back(name);
-    field_name_map_[name] = i;
+    field_name_map_[name] = i; // last duplicate field name wins
   }
 }
 

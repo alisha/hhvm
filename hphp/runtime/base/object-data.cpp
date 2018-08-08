@@ -23,7 +23,6 @@
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/base/req-containers.h"
 #include "hphp/runtime/base/tv-refcount.h"
 #include "hphp/runtime/base/tv-type.h"
 #include "hphp/runtime/base/variable-serializer.h"
@@ -319,13 +318,24 @@ Array& ObjectData::dynPropArray() const {
   return g_context->dynPropTable[this].arr();
 }
 
+void ObjectData::setDynProps(const Array& newArr) {
+  // don't expose the ref returned by setDynPropArr
+  (void)setDynPropArray(newArr);
+}
+
+void ObjectData::reserveDynProps(int numDynamic) {
+  // don't expose the ref returned by reserveProperties()
+  (void)reserveProperties(numDynamic);
+}
+
 Array& ObjectData::reserveProperties(int numDynamic /* = 2 */) {
   if (getAttribute(HasDynPropArr)) {
     return dynPropArray();
   }
 
-  return
-    setDynPropArray(Array::attach(MixedArray::MakeReserveMixed(numDynamic)));
+  return setDynPropArray(
+      Array::attach(MixedArray::MakeReserveMixed(numDynamic))
+  );
 }
 
 Array& ObjectData::setDynPropArray(const Array& newArr) {
@@ -343,6 +353,7 @@ Array& ObjectData::setDynPropArray(const Array& newArr) {
     });
   }
 
+  // newArr can have refcount 2 or higher
   auto& arr = g_context->dynPropTable[this].arr();
   assertx(arr.isPHPArray());
   arr = newArr;
@@ -426,12 +437,12 @@ void ObjectData::o_set(const String& propName, const Variant& v,
 
   bool useSet = m_cls->rtAttribute(Class::UseSet);
 
-  auto const lookup = getPropImpl<true>(ctx, propName.get());
-  auto prop = lookup.prop;
+  auto const lookup = getPropImpl<true, false>(ctx, propName.get());
+  auto prop = lookup.val;
   if (prop && lookup.accessible) {
     if (!useSet || type(prop) != KindOfUninit) {
       if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-        throwMutateImmutable(prop);
+        throwMutateImmutable(lookup.slot);
       }
       tvSet(tvToInitCell(*v.asTypedValue()), prop);
       return;
@@ -478,6 +489,12 @@ void ObjectData::o_getArray(Array& props, bool pubOnly /* = false */) const {
   // Fast path for classes with no declared properties
   if (!m_cls->numDeclProperties() && getAttribute(HasDynPropArr)) {
     props = dynPropArray();
+    if (RuntimeOption::EvalNoticeOnReadDynamicProp) {
+      IterateKV(props.get(), [&](Cell k, TypedValue) {
+        auto const key = tvCastToString(k);
+        raiseReadDynamicProp(key.get());
+      });
+    }
     return;
   }
   // The declared properties in the resultant array should be a permutation of
@@ -503,11 +520,13 @@ void ObjectData::o_getArray(Array& props, bool pubOnly /* = false */) const {
   // Iterate over dynamic properties and insert {name --> prop} pairs.
   if (UNLIKELY(getAttribute(HasDynPropArr))) {
     auto& dynProps = dynPropArray();
-    if (!dynProps.empty()) {
-      for (ArrayIter it(dynProps.get()); !it.end(); it.next()) {
-        props.setWithRef(it.first(), it.secondVal(), true);
+    IterateKV(dynProps.get(), [&](Cell k, TypedValue v) {
+      props.setWithRef(k, v, true);
+      if (RuntimeOption::EvalNoticeOnReadDynamicProp) {
+        auto const key = tvCastToString(k);
+        raiseReadDynamicProp(key.get());
       }
-    }
+    });
   }
 }
 
@@ -585,16 +604,24 @@ size_t getPropertyIfAccessible(ObjectData* obj,
 
 Array ObjectData::o_toIterArray(const String& context, IterMode mode) {
   if (mode == PreserveRefs && !m_cls->numDeclProperties()) {
-    if (getAttribute(HasDynPropArr)) return dynPropArray();
+    if (getAttribute(HasDynPropArr)) {
+      auto const props = dynPropArray();
+      if (RuntimeOption::EvalNoticeOnReadDynamicProp) {
+        IterateKV(props.get(), [&](Cell k, TypedValue) {
+          auto const key = tvCastToString(k);
+          raiseReadDynamicProp(key.get());
+        });
+      }
+      // not returning Array&; makes a copy
+      return props;
+    }
     return Array::Create();
   }
 
-  Array* dynProps = nullptr;
   size_t accessibleProps = m_cls->declPropNumAccessible();
   size_t size = accessibleProps;
   if (getAttribute(HasDynPropArr)) {
-    dynProps = &dynPropArray();
-    size += dynProps->size();
+    size += dynPropArray().size();
   }
   Array retArray { Array::attach(MixedArray::MakeReserveMixed(size)) };
 
@@ -630,13 +657,20 @@ Array ObjectData::o_toIterArray(const String& context, IterMode mode) {
   }
 
   // Now get dynamic properties.
-  if (dynProps) {
-    auto ad = dynProps->get();
+  if (getAttribute(HasDynPropArr)) {
+    auto& dynProps = dynPropArray();
+    auto ad = dynProps.get();
     ssize_t iter = ad->iter_begin();
     auto pos_limit = ad->iter_end();
     while (iter != pos_limit) {
-      auto const key = dynProps->get()->nvGetKey(iter);
-      iter = dynProps->get()->iter_advance(iter);
+      ad = dynProps.get();
+      auto const key = ad->nvGetKey(iter);
+      iter = ad->iter_advance(iter);
+
+      if (RuntimeOption::EvalNoticeOnReadDynamicProp) {
+        auto const k = tvCastToString(key);
+        raiseReadDynamicProp(k.get());
+      }
 
       // You can get this if you cast an array to object. These
       // properties must be dynamic because you can't declare a
@@ -645,17 +679,17 @@ Array ObjectData::o_toIterArray(const String& context, IterMode mode) {
         assertx(key.m_type == KindOfInt64);
         switch (mode) {
         case CreateRefs: {
-          auto const lval = dynProps->lvalAt(key.m_data.num);
+          auto const lval = dynProps.lvalAt(key.m_data.num);
           retArray.setRef(key.m_data.num, lval);
           break;
         }
         case EraseRefs: {
-          auto const val = dynProps->get()->at(key.m_data.num);
+          auto const val = dynProps.get()->at(key.m_data.num);
           retArray.set(key.m_data.num, val);
           break;
         }
         case PreserveRefs: {
-          auto const val = dynProps->get()->at(key.m_data.num);
+          auto const val = dynProps.get()->at(key.m_data.num);
           retArray.setWithRef(key.m_data.num, val);
           break;
         }
@@ -666,17 +700,17 @@ Array ObjectData::o_toIterArray(const String& context, IterMode mode) {
       auto const strKey = key.m_data.pstr;
       switch (mode) {
       case CreateRefs: {
-        auto const lval = dynProps->lvalAt(StrNR(strKey), AccessFlags::Key);
+        auto const lval = dynProps.lvalAt(StrNR(strKey), AccessFlags::Key);
         retArray.setRef(StrNR(strKey), lval, true /* isKey */);
         break;
       }
       case EraseRefs: {
-        auto const val = dynProps->get()->at(strKey);
+        auto const val = dynProps.get()->at(strKey);
         retArray.set(StrNR(strKey), val, true /* isKey */);
         break;
       }
       case PreserveRefs: {
-        auto const val = dynProps->get()->at(strKey);
+        auto const val = dynProps.get()->at(strKey);
         retArray.setWithRef(make_tv<KindOfString>(strKey),
                             val, true /* isKey */);
         break;
@@ -1081,45 +1115,30 @@ Object ObjectData::FromArray(ArrayData* properties) {
   return retval;
 }
 
-Slot ObjectData::declPropInd(tv_rval rval) const {
-  // Do an address range check to determine whether prop physically resides in
-  // propVec. This will have to change if propVec() ever stops being a
-  // TypedValue[].
-  auto const vec = reinterpret_cast<const char*>(&propVec()->m_data);
-  auto const prop = reinterpret_cast<const char*>(&val(rval));
-  if (prop >= vec &&
-      prop < (vec + m_cls->numDeclProperties() * sizeof(TypedValue))) {
-    return (prop - vec) / sizeof(TypedValue);
-  }
-  return kInvalidSlot;
-}
-
 NEVER_INLINE
-void ObjectData::throwMutateImmutable(tv_rval prop) const {
-  auto const propIdx = declPropInd(prop);
+void ObjectData::throwMutateImmutable(Slot prop) const {
   throw_cannot_modify_immutable_prop(
     getClassName().data(),
-    m_cls->declProperties()[propIdx].name->data()
+    m_cls->declProperties()[prop].name->data()
   );
 }
 
 NEVER_INLINE
-void ObjectData::throwBindImmutable(tv_rval prop) const {
-  auto const propIdx = declPropInd(prop);
+void ObjectData::throwBindImmutable(Slot prop) const {
   throw_cannot_bind_immutable_prop(
     getClassName().data(),
-    m_cls->declProperties()[propIdx].name->data()
+    m_cls->declProperties()[prop].name->data()
   );
 }
 
-template <bool forWrite>
+template <bool forWrite, bool forRead>
 ALWAYS_INLINE
 ObjectData::PropLookup ObjectData::getPropImpl(
   const Class* ctx,
   const StringData* key
 ) {
   auto const lookup = m_cls->getDeclPropIndex(ctx, key);
-  auto const propIdx = lookup.prop;
+  auto const propIdx = lookup.slot;
 
   if (LIKELY(propIdx != kInvalidSlot)) {
     // We found a visible property, but it might not be accessible.  No need to
@@ -1135,6 +1154,8 @@ ObjectData::PropLookup ObjectData::getPropImpl(
 
     return {
      const_cast<TypedValue*>(prop),
+     &m_cls->declProperties()[propIdx],
+     propIdx,
      lookup.accessible,
      // we always return true in the !forWrite case; this way the compiler
      // may optimize away this value, and if a caller intends to write but
@@ -1148,40 +1169,43 @@ ObjectData::PropLookup ObjectData::getPropImpl(
   // We could not find a visible declared property. We need to check for a
   // dynamic property with this name.
   if (UNLIKELY(getAttribute(HasDynPropArr))) {
-    if (auto const rval = dynPropArray()->rval(key)) {
+    auto& arr = dynPropArray();
+    if (auto const rval = arr->rval(key)) {
+      if (forRead && RuntimeOption::EvalNoticeOnReadDynamicProp) {
+        raiseReadDynamicProp(key);
+      }
       // Returning a non-declared property. We know that it is accessible and
       // not immutable since all dynamic properties are. If we may write to
       // the property we need to allow the array to escalate.
       if (forWrite) {
-        auto const lval = dynPropArray().lvalAt(StrNR(key), AccessFlags::Key);
-        return { lval, true, false };
-      } else {
-        return  { rval.as_lval(), true, true };
+        auto const lval = arr.lvalAt(StrNR(key), AccessFlags::Key);
+        return { lval, nullptr, kInvalidSlot, true, false };
       }
+      return { rval.as_lval(), nullptr, kInvalidSlot, true, true };
     }
   }
 
-  return { nullptr, false, forWrite ? false : true };
+  return { nullptr, nullptr, kInvalidSlot, false, forWrite ? false : true };
 }
 
 tv_lval ObjectData::getPropLval(const Class* ctx, const StringData* key) {
-  auto const lookup = getPropImpl<true>(ctx, key);
+  auto const lookup = getPropImpl<true, false>(ctx, key);
   if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-    throwMutateImmutable(lookup.prop);
+    throwMutateImmutable(lookup.slot);
   }
-  return lookup.prop && lookup.accessible ? lookup.prop : nullptr;
+  return lookup.val && lookup.accessible ? lookup.val : nullptr;
 }
 
 tv_rval ObjectData::getProp(const Class* ctx, const StringData* key) const {
   auto const lookup = const_cast<ObjectData*>(this)
-    ->getPropImpl<false>(ctx, key);
-  return lookup.prop && lookup.accessible ? lookup.prop : nullptr;
+    ->getPropImpl<false, true>(ctx, key);
+  return lookup.val && lookup.accessible ? lookup.val : nullptr;
 }
 
 tv_lval ObjectData::vGetProp(const Class* ctx, const StringData* key) {
-  auto const lookup = getPropImpl<true>(ctx, key);
-  auto prop = lookup.prop;
-  if (UNLIKELY(lookup.immutable)) throwBindImmutable(prop);
+  auto const lookup = getPropImpl<true, true>(ctx, key);
+  auto prop = lookup.val;
+  if (UNLIKELY(lookup.immutable)) throwBindImmutable(lookup.slot);
   if (lookup.accessible && prop && type(prop) != KindOfUninit) {
     tvBoxIfNeeded(prop);
     return prop;
@@ -1190,9 +1214,9 @@ tv_lval ObjectData::vGetProp(const Class* ctx, const StringData* key) {
 }
 
 tv_lval ObjectData::vGetPropIgnoreAccessibility(const StringData* key) {
-  auto const lookup = getPropImpl<true>(nullptr, key);
-  auto prop = lookup.prop;
-  if (UNLIKELY(lookup.immutable)) throwBindImmutable(prop);
+  auto const lookup = getPropImpl<true, true>(nullptr, key);
+  auto prop = lookup.val;
+  if (UNLIKELY(lookup.immutable)) throwBindImmutable(lookup.slot);
   if (prop && type(prop) != KindOfUninit) {
     tvBoxIfNeeded(prop);
     return prop;
@@ -1229,9 +1253,12 @@ struct PropAccessInfo::Hash {
 };
 
 struct PropRecurInfo {
-  using RecurSet = req::hash_set<PropAccessInfo, PropAccessInfo::Hash>;
+  using RecurSet = req::fast_set<PropAccessInfo, PropAccessInfo::Hash>;
+  // activePropInfo optimizes the common non-recursive case, when our activeSet
+  // would only contain one entry. When we add a second entry, we start using
+  // activeSet.
   const PropAccessInfo* activePropInfo{nullptr};
-  RecurSet* activeSet{nullptr};
+  RecurSet activeSet;
 };
 
 namespace {
@@ -1262,18 +1289,16 @@ magic_prop_impl(const StringData* /*key*/, const PropAccessInfo& info,
                 Invoker invoker) {
   auto recur_info = propRecurInfo.get();
   if (UNLIKELY(recur_info->activePropInfo != nullptr)) {
-    auto activeSet = recur_info->activeSet;
-    if (!activeSet) {
-      activeSet = req::make_raw<PropRecurInfo::RecurSet>();
-      activeSet->insert(*recur_info->activePropInfo);
-      recur_info->activeSet = activeSet;
+    auto& activeSet = recur_info->activeSet;
+    if (activeSet.empty()) {
+      activeSet.insert(*recur_info->activePropInfo);
     }
-    if (!activeSet->insert(info).second) {
+    if (!activeSet.insert(info).second) {
       // We're already running a magic method on the same type here.
       return {false, make_tv<KindOfUninit>()};
     }
     SCOPE_EXIT {
-      activeSet->erase(info);
+      activeSet.erase(info);
     };
 
     return {true, invoker()};
@@ -1282,11 +1307,7 @@ magic_prop_impl(const StringData* /*key*/, const PropAccessInfo& info,
   recur_info->activePropInfo = &info;
   SCOPE_EXIT {
     recur_info->activePropInfo = nullptr;
-    auto activeSet = recur_info->activeSet;
-    if (UNLIKELY(activeSet != nullptr)) {
-      req::destroy_raw(activeSet);
-      recur_info->activeSet = nullptr;
-    }
+    PropRecurInfo::RecurSet{}.swap(recur_info->activeSet);
   };
 
   return {true, invoker()};
@@ -1387,23 +1408,29 @@ bool ObjectData::invokeNativeUnsetProp(const StringData* key) {
 //////////////////////////////////////////////////////////////////////
 
 template<ObjectData::PropMode mode>
+ALWAYS_INLINE
 tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
-                             const StringData* key) {
+                             const StringData* key, MInstrPropState* pState) {
   auto constexpr write = (mode == PropMode::DimForWrite) ||
                          (mode == PropMode::Bind);
-  auto const lookup = getPropImpl<write>(ctx, key);
-  auto const prop = lookup.prop;
+  auto constexpr read = (mode == PropMode::ReadNoWarn) ||
+                        (mode == PropMode::ReadWarn);
+  auto const lookup = getPropImpl<write, read>(ctx, key);
+  auto const prop = lookup.val;
 
   if (prop) {
     if (lookup.accessible) {
       auto const checkImmutable = [&]() {
         if (mode == PropMode::Bind) {
-          if (UNLIKELY(lookup.immutable)) throwBindImmutable(prop);
+          if (UNLIKELY(lookup.immutable)) throwBindImmutable(lookup.slot);
         }
         if (mode == PropMode::DimForWrite) {
           if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-            throwMutateImmutable(prop);
+            throwMutateImmutable(lookup.slot);
           }
+        }
+        if (write && pState) {
+          *pState = MInstrPropState{m_cls, lookup.slot, false};
         }
         return prop;
       };
@@ -1415,6 +1442,7 @@ tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
       if (m_cls->rtAttribute(Class::UseGet)) {
         if (auto r = invokeGet(key)) {
           tvCopy(r.val, *tvRef);
+          if (write && pState) *pState = MInstrPropState{};
           return tvRef;
         }
       }
@@ -1428,6 +1456,7 @@ tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
     if (m_cls->rtAttribute(Class::UseGet)) {
       if (auto r = invokeGet(key)) {
         tvCopy(r.val, *tvRef);
+        if (write && pState) *pState = MInstrPropState{};
         return tvRef;
       }
     }
@@ -1450,6 +1479,7 @@ tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
   if (m_cls->rtAttribute(Class::HasNativePropHandler)) {
     if (auto r = invokeNativeGetProp(key)) {
       tvCopy(r.val, *tvRef);
+      if (write && pState) *pState = MInstrPropState{};
       return tvRef;
     }
   }
@@ -1458,6 +1488,7 @@ tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
   if (m_cls->rtAttribute(Class::UseGet)) {
     if (auto r = invokeGet(key)) {
       tvCopy(r.val, *tvRef);
+      if (write && pState) *pState = MInstrPropState{};
       return tvRef;
     }
   }
@@ -1467,7 +1498,10 @@ tv_lval ObjectData::propImpl(TypedValue* tvRef, const Class* ctx,
   }
 
   if (mode == PropMode::ReadWarn) raiseUndefProp(key);
-  if (write) return makeDynProp(key);
+  if (write) {
+    if (pState) *pState = MInstrPropState{};
+    return makeDynProp(key);
+  }
   return const_cast<TypedValue*>(&immutable_null_base);
 }
 
@@ -1476,7 +1510,7 @@ tv_lval ObjectData::prop(
   const Class* ctx,
   const StringData* key
 ) {
-  return propImpl<PropMode::ReadNoWarn>(tvRef, ctx, key);
+  return propImpl<PropMode::ReadNoWarn>(tvRef, ctx, key, nullptr);
 }
 
 tv_lval ObjectData::propW(
@@ -1484,23 +1518,33 @@ tv_lval ObjectData::propW(
   const Class* ctx,
   const StringData* key
 ) {
-  return propImpl<PropMode::ReadWarn>(tvRef, ctx, key);
+  return propImpl<PropMode::ReadWarn>(tvRef, ctx, key, nullptr);
+}
+
+tv_lval ObjectData::propU(
+  TypedValue* tvRef,
+  const Class* ctx,
+  const StringData* key
+) {
+  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key, nullptr);
 }
 
 tv_lval ObjectData::propD(
   TypedValue* tvRef,
   const Class* ctx,
-  const StringData* key
+  const StringData* key,
+  MInstrPropState* pState
 ) {
-  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key);
+  return propImpl<PropMode::DimForWrite>(tvRef, ctx, key, pState);
 }
 
 tv_lval ObjectData::propB(
   TypedValue* tvRef,
   const Class* ctx,
-  const StringData* key
+  const StringData* key,
+  MInstrPropState* pState
 ) {
-  return propImpl<PropMode::Bind>(tvRef, ctx, key);
+  return propImpl<PropMode::Bind>(tvRef, ctx, key, pState);
 }
 
 bool ObjectData::propIsset(const Class* ctx, const StringData* key) {
@@ -1571,15 +1615,15 @@ bool ObjectData::propEmpty(const Class* ctx, const StringData* key) {
 }
 
 void ObjectData::setProp(Class* ctx, const StringData* key, Cell val) {
-  auto const lookup = getPropImpl<true>(ctx, key);
-  auto const prop = lookup.prop;
+  auto const lookup = getPropImpl<true, false>(ctx, key);
+  auto const prop = lookup.val;
 
   if (prop && lookup.accessible) {
     if (type(prop) != KindOfUninit ||
         !m_cls->rtAttribute(Class::UseSet) ||
         !invokeSet(key, val)) {
       if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-        throwMutateImmutable(prop);
+        throwMutateImmutable(lookup.slot);
       }
       tvSet(val, prop);
     }
@@ -1615,8 +1659,8 @@ tv_lval ObjectData::setOpProp(TypedValue& tvRef,
                               SetOpOp op,
                               const StringData* key,
                               Cell* val) {
-  auto const lookup = getPropImpl<true>(ctx, key);
-  auto prop = lookup.prop;
+  auto const lookup = getPropImpl<true, true>(ctx, key);
+  auto prop = lookup.val;
 
   if (prop && lookup.accessible) {
     if (type(prop) == KindOfUninit && m_cls->rtAttribute(Class::UseGet)) {
@@ -1633,14 +1677,14 @@ tv_lval ObjectData::setOpProp(TypedValue& tvRef,
           tvRef.m_type = KindOfUninit;
         }
         if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-          throwMutateImmutable(prop);
+          throwMutateImmutable(lookup.slot);
         }
         cellDup(tvAssertCell(r.val), prop);
         return prop;
       }
     }
     if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-      throwMutateImmutable(prop);
+      throwMutateImmutable(lookup.slot);
     }
     prop = tvToCell(prop);
     setopBody(prop, op, val);
@@ -1711,8 +1755,8 @@ tv_lval ObjectData::setOpProp(TypedValue& tvRef,
 }
 
 Cell ObjectData::incDecProp(Class* ctx, IncDecOp op, const StringData* key) {
-  auto const lookup = getPropImpl<true>(ctx, key);
-  auto prop = lookup.prop;
+  auto const lookup = getPropImpl<true, true>(ctx, key);
+  auto prop = lookup.val;
 
   if (prop && lookup.accessible) {
     if (type(prop) == KindOfUninit && m_cls->rtAttribute(Class::UseGet)) {
@@ -1725,7 +1769,7 @@ Cell ObjectData::incDecProp(Class* ctx, IncDecOp op, const StringData* key) {
           return dest;
         }
         if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-          throwMutateImmutable(prop);
+          throwMutateImmutable(lookup.slot);
         }
         cellCopy(tvAssertCell(r.val), prop);
         tvWriteNull(r.val); // suppress decref
@@ -1733,7 +1777,7 @@ Cell ObjectData::incDecProp(Class* ctx, IncDecOp op, const StringData* key) {
       }
     }
     if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-      throwMutateImmutable(prop);
+      throwMutateImmutable(lookup.slot);
     }
     if (type(prop) == KindOfUninit) {
       tvWriteNull(prop);
@@ -1798,14 +1842,14 @@ Cell ObjectData::incDecProp(Class* ctx, IncDecOp op, const StringData* key) {
 }
 
 void ObjectData::unsetProp(Class* ctx, const StringData* key) {
-  auto const lookup = getPropImpl<true>(ctx, key);
-  auto const prop = lookup.prop;
+  auto const lookup = getPropImpl<true, false>(ctx, key);
+  auto const prop = lookup.val;
 
   if (prop && lookup.accessible && type(prop) != KindOfUninit) {
-    if (declPropInd(prop) != kInvalidSlot) {
+    if (lookup.slot != kInvalidSlot) {
       // Declared property.
       if (UNLIKELY(lookup.immutable) && !isBeingConstructed()) {
-        throwMutateImmutable(prop);
+        throwMutateImmutable(lookup.slot);
       }
       tvSetIgnoreRef(*uninit_variant.asTypedValue(), prop);
     } else {
@@ -1853,12 +1897,12 @@ void ObjectData::raiseAbstractClassError(Class* cls) {
               cls->preClass()->name()->data());
 }
 
-void ObjectData::raiseUndefProp(const StringData* key) {
+void ObjectData::raiseUndefProp(const StringData* key) const {
   raise_notice("Undefined property: %s::$%s",
                m_cls->name()->data(), key->data());
 }
 
-void ObjectData::raiseCreateDynamicProp(const StringData* key) {
+void ObjectData::raiseCreateDynamicProp(const StringData* key) const {
   if (m_cls == SystemLib::s_stdclassClass ||
       m_cls == SystemLib::s___PHP_Incomplete_ClassClass) {
     // these classes (but not classes derived from them) don't get notices
@@ -1869,6 +1913,21 @@ void ObjectData::raiseCreateDynamicProp(const StringData* key) {
                  m_cls->name()->data(), key->data());
   } else {
     raise_notice("Created dynamic property with dynamic name %s::%s",
+                 m_cls->name()->data(), key->data());
+  }
+}
+
+void ObjectData::raiseReadDynamicProp(const StringData* key) const {
+  if (m_cls == SystemLib::s_stdclassClass ||
+      m_cls == SystemLib::s___PHP_Incomplete_ClassClass) {
+    // these classes (but not classes derived from them) don't get notices
+    return;
+  }
+  if (key->isStatic()) {
+    raise_notice("Read dynamic property with static name %s::%s",
+                 m_cls->name()->data(), key->data());
+  } else {
+    raise_notice("Read dynamic property with dynamic name %s::%s",
                  m_cls->name()->data(), key->data());
   }
 }

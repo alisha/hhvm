@@ -144,7 +144,7 @@ let check_only_rx_if_rx_func env pos reason caller_r arg_ty param_ty =
 
 let bind o ~f = Option.bind o f
 
-let try_get_reactivity_from_condition_type env receiver_info =
+let try_get_method_from_condition_type env receiver_info =
   receiver_info
   |> bind ~f:begin
       fun { receiver_type; receiver_is_self = is_self; is_static; method_name; _ } ->
@@ -157,14 +157,18 @@ let try_get_reactivity_from_condition_type env receiver_info =
       end
   |> bind ~f:begin
       function
-      | { ce_type = lazy (_, Typing_defs.Tfun f); _  } ->
-        (* convert reactivity from condition type to MaybeReactive flavor *)
-        begin match f.ft_reactive with
-        | MaybeReactive _ -> Some f.ft_reactive
-        | r ->  Some (MaybeReactive r)
-        end
+      | { ce_type = lazy (_, Typing_defs.Tfun f); _  } -> Some f
       | _ -> None
       end
+
+let try_get_reactivity_from_condition_type env receiver_info =
+  try_get_method_from_condition_type env receiver_info
+  |> Option.map ~f:begin
+    function
+    | { ft_reactive = Nonreactive; _ } -> Nonreactive
+    | { ft_reactive = MaybeReactive _ as r; _ } -> r
+    | { ft_reactive = r; _ } -> MaybeReactive r
+    end
 
 let check_reactivity_matches env pos reason caller_reactivity callee_reactivity =
   let callee_reactivity = strip_conditional_reactivity callee_reactivity in
@@ -187,6 +191,9 @@ let check_reactivity_matches env pos reason caller_reactivity callee_reactivity 
   end
 
 let check_call env method_info pos reason ft arg_types =
+  (* do nothing if unsafe_rx is set *)
+  if TypecheckerOptions.unsafe_rx (Env.get_options env) then ()
+  else
   match Env.env_reactivity env with
   (* non reactive and locally reactive functions can call pretty much anything
      - do nothing *)
@@ -272,6 +279,32 @@ let disallow_static_or_global_in_reactive_context ~is_static env el =
       else Errors.global_in_reactive_context p name)
   end
 
+let rxTraversableType =
+  Reason.none,
+  Tclass ((Pos.none, Naming_special_names.Rx.cTraversable), [(Reason.Rnone, Tany)])
+
+let check_foreach_collection env p t =
+  (* do nothing if unsafe_rx is set *)
+  if TypecheckerOptions.unsafe_rx (Env.get_options env) then ()
+  else
+  match Env.env_reactivity env with
+  | Nonreactive | Local _ -> ()
+  | _ ->
+  let rec check t =
+    let env, t = Env.expand_type env t in
+    match t with
+    | _, Tunresolved l -> Core_list.for_all l ~f:check
+    | t ->
+      (* collection type should be subtype or conditioned to Rx\Traversable *)
+      if not (SubType.is_sub_type env t rxTraversableType ||
+              condition_type_matches ~is_self:false env t rxTraversableType)
+      then begin
+        Errors.invalid_traversable_in_rx p;
+        false
+      end
+      else true in
+  ignore (check t)
+
 let disallow_onlyrx_if_rxfunc_on_non_functions env param param_ty =
   let module UA = Naming_special_names.UserAttributes in
   if Attributes.mem UA.uaOnlyRxIfRxFunc param.Nast.param_user_attributes
@@ -294,6 +327,8 @@ let generate_fresh_name_for_target_of_condition_type env target_type condition_t
   | _, Tapply ((_, cond_name), []) ->
     (* only if condition type is a Tapply with no type parameters *)
     Some ((Typing_print.full env target_type) ^ "#" ^ cond_name)
+  | _, Taccess _ ->
+    Some ((Typing_print.full env target_type) ^ "#" ^ (Typing_print.full env condition_type))
   | _ -> None
 
 let verify_void_return_to_rx ~is_expr_statement p env ft =
@@ -301,3 +336,28 @@ let verify_void_return_to_rx ~is_expr_statement p env ft =
   then Env.error_if_reactive_context env @@ begin fun () ->
     Errors.returns_void_to_rx_function_as_non_expression_statement p ft.ft_pos
   end
+
+let try_substitute_type_with_condition env cond_ty ty =
+  generate_fresh_name_for_target_of_condition_type env ty cond_ty
+  |> Option.map ~f:begin fun fresh_type_argument_name ->
+    let param_ty = Reason.none, Tabstract ((AKgeneric fresh_type_argument_name), None) in
+    (* if generic type is already registered this means we already saw
+       parameter with the same pair (declared type * condition type) so there
+       is no need to add condition type to env again  *)
+    if Env.is_generic_parameter env fresh_type_argument_name
+    then env, param_ty
+    else begin
+      (* constraint type argument to hint *)
+      let env = Env.add_upper_bound_global env fresh_type_argument_name ty in
+      (* link type argument name to condition type *)
+      let env = Env.set_condition_type env fresh_type_argument_name cond_ty in
+      env, param_ty
+    end
+  end
+
+let get_adjusted_return_type env receiver_info ret_ty =
+  match try_get_method_from_condition_type env receiver_info with
+  | None -> env, ret_ty
+  | Some cond_fty ->
+    try_substitute_type_with_condition env cond_fty.ft_ret ret_ty
+    |> Option.value ~default:(env, ret_ty)

@@ -34,6 +34,7 @@
 #include "hphp/util/process.h"
 
 #include <folly/portability/Unistd.h>
+#include <folly/system/ThreadName.h>
 #include <proxygen/lib/http/codec/HTTP2Constants.h>
 
 namespace HPHP {
@@ -109,6 +110,13 @@ ProxygenTransportTraits::~ProxygenTransportTraits() {
 void HPHPWorkerThread::setup() {
   WorkerThread::setup();
   hphp_thread_init();
+  folly::setThreadName("ProxygenWorker");
+#ifdef __linux__
+  // Bump scheduling priority to avoid starving the IO thread.
+  setpriority(PRIO_PROCESS /* actually just one thread */,
+              0 /* self */,
+              -20 /* highest priority */);
+#endif
 }
 
 void HPHPWorkerThread::cleanup() {
@@ -131,7 +139,9 @@ ProxygenServer::ProxygenServer(
                    RuntimeOption::ServerThreadJobMaxQueuingMilliSeconds,
                    kNumPriorities,
                    options.m_hugeThreads,
-                   options.m_initThreads) {
+                   options.m_initThreads,
+                   options.m_hugeStackKb,
+                   options.m_extraKb) {
   SocketAddress address;
   if (options.m_address.empty()) {
     address.setFromLocalPort(options.m_port);
@@ -775,7 +785,7 @@ wangle::SSLContextConfig ProxygenServer::createContextConfig() {
 }
 
 void ProxygenServer::onRequest(std::shared_ptr<ProxygenTransport> transport) {
-  if (IsCrashing) {
+  if (CrashingThread.load(std::memory_order_relaxed) != 0) {
     Logger::Error("Discarding request while crashing");
     if (m_shutdownState == ShutdownState::SHUTDOWN_NONE) {
       m_shutdownState = ShutdownState::DRAINING_READS;

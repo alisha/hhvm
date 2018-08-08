@@ -26,7 +26,7 @@ and call_type =
   | Cuser_func [@visitors.name "call_type_Cuser_func"] (* when the call looks like call_user_func(...) *)
 
 and is_coroutine = bool
-and is_reactive = bool
+and func_reactive = FReactive | FLocal | FShallow | FNonreactive
 
 and hint = pos * hint_
 and variadic_hint =
@@ -34,7 +34,7 @@ and variadic_hint =
   | Hnon_variadic
 and hint_ =
   | Hoption of hint
-  | Hfun of is_reactive * is_coroutine * hint list * Ast.param_kind option list * variadic_hint * hint
+  | Hfun of func_reactive * is_coroutine * hint list * Ast.param_kind option list * variadic_hint * hint
   | Htuple of hint list
   | Happly of sid * hint list
   | Hshape of nast_shape_info
@@ -113,7 +113,8 @@ and vc_kind = [
   | `Keyset ]
   [@visitors.opaque]
 
-and tparam = Ast.variance * sid * (Ast.constraint_kind * hint) list
+and tparam =
+  Ast.variance * sid * (Ast.constraint_kind * hint) list * Ast.reified
 
 and visibility =
   | Private [@visitors.name "visibility_Private"]

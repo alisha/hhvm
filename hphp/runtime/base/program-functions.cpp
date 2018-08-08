@@ -71,11 +71,12 @@
 #include "hphp/runtime/vm/jit/tc.h"
 #include "hphp/runtime/vm/jit/mcgen.h"
 #include "hphp/runtime/vm/jit/mcgen-translate.h"
+#include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/prof-data-serialize.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/extern-compiler.h"
 #include "hphp/runtime/vm/repo.h"
-#include "hphp/runtime/vm/runtime.h"
+#include "hphp/runtime/vm/runtime-compiler.h"
 #include "hphp/runtime/vm/treadmill.h"
 
 #include "hphp/util/abi-cxx.h"
@@ -118,6 +119,11 @@
 #include <boost/program_options/positional_options.hpp>
 #include <boost/program_options/variables_map.hpp>
 #include <boost/filesystem.hpp>
+
+#ifndef FACEBOOK
+// Needed on libevent2
+#include <event2/thread.h>
+#endif
 
 #include <oniguruma.h>
 // Onigurama defines UChar to unsigned char, but ICU4C defines it to signed
@@ -756,6 +762,7 @@ void execute_command_line_begin(int argc, char **argv, int xhprof) {
 void execute_command_line_end(int xhprof, bool coverage, const char *program) {
   if (RuntimeOption::EvalDumpTC ||
       RuntimeOption::EvalDumpIR ||
+      RuntimeOption::EvalDumpInlRefuse ||
       RuntimeOption::EvalDumpRegion) {
     jit::mcgen::joinWorkerThreads();
     jit::tc::dump();
@@ -1440,57 +1447,6 @@ std::string get_right_option_name(const basic_parsed_options<char>& opts,
 }
 #endif
 
-namespace {
-
-std::string get_username() {
-  auto const pwbuflen = sysconf(_SC_GETPW_R_SIZE_MAX);
-  if (pwbuflen < 1) return {};
-  passwd pwd;
-  passwd* retpwptr = nullptr;
-  std::unique_ptr<char[]> pwbuf(new char[pwbuflen]);
-  if (!getpwuid_r(getuid(), &pwd, pwbuf.get(), pwbuflen, &retpwptr)) {
-    return pwd.pw_name;
-  }
-  return {};
-}
-
-struct HphpInvokeInfo {
-  std::string cmd;
-  std::string mode;
-  std::string file;
-};
-
-HphpInvokeInfo s_invoke_info;
-std::atomic<bool> s_logged_hphpc{false};
-
-}
-
-void log_hphpc_invoke(const char* target) {
-  if (!facebook || s_logged_hphpc.exchange(true, std::memory_order_relaxed)) {
-    return;
-  }
-
-  // We know that there are hphpc tests that run on diffs, don't bother logging
-  // them, they can be disabled when hphpc is removed.
-#ifdef HHVM_NO_DEFAULT_HACKC
-  return;
-#endif
-
-  auto const username = get_username();
-
-  StructuredLogEntry ent;
-  ent.setStr("target", target);
-  ent.setStr("user", username);
-  ent.setStr("cmdline", s_invoke_info.cmd);
-  ent.setStr("mode", s_invoke_info.mode);
-  ent.setStr("file", s_invoke_info.file);
-
-  // Ensure that logs are generated even for scripts
-  ent.force_init = true;
-
-  StructuredLog::log("hhvm_hphpc_invoke", ent);
-}
-
 static int execute_program_impl(int argc, char** argv) {
   std::string usage = "Usage:\n\n   ";
   usage += argv[0];
@@ -1741,8 +1697,13 @@ static int execute_program_impl(int argc, char** argv) {
     RuntimeOption::VSDebuggerNoWait = po.vsDebugNoWait;
   }
 
-  // we need to initialize pcre cache table very early
+  // we need to to initialize these very early
   pcre_init();
+  // this is needed for libevent2 to be thread-safe, which backs Hack ASIO.
+  #ifndef FACEBOOK
+  // FB uses a custom libevent 1
+  evthread_use_pthreads();
+  #endif
 
   tl_heap.getCheck();
   if (RuntimeOption::ServerExecutionMode()) {
@@ -1774,10 +1735,6 @@ static int execute_program_impl(int argc, char** argv) {
       !po.file.empty() ? po.file :
       !po.args.empty() ? po.args[0] :
       std::string("");
-
-    s_invoke_info.cmd = folly::join(" ", &argv[0], &argv[argc]);
-    s_invoke_info.file = scriptFilePath;
-    s_invoke_info.mode = po.mode;
 
     // Now, take care of CLI options and then officially load and bind things
     s_ini_strings = po.iniStrings;
@@ -1926,10 +1883,37 @@ static int execute_program_impl(int argc, char** argv) {
     RuntimeOption::EvalArenaMetadataReservedSize
   );
 #endif
-  // We want to do this as early as possible because any allocations before-hand
-  // will get a generic unknown type type-index.
+
+  auto const addTypeToEmbeddedPath = [&](std::string path, const char* type) {
+    auto const typePlaceholder = "%{type}";
+    assertx(strstr(type, typePlaceholder) == nullptr);
+    size_t idx;
+    if ((idx = path.find(typePlaceholder)) != std::string::npos) {
+      path.replace(idx, strlen(typePlaceholder), type);
+    }
+    return path;
+  };
+
+  // We want to initialize the type-scanners as early as possible
+  // because any allocations before-hand will get a generic unknown
+  // type type-index.
+  SCOPE_EXIT {
+    // this would be handled by hphp_process_exit, but some paths
+    // short circuit before getting there.
+    embedded_data_cleanup();
+  };
   try {
-    type_scan::init();
+    type_scan::init(
+      addTypeToEmbeddedPath(
+        RuntimeOption::EvalEmbeddedDataExtractPath,
+        "type_scanners"
+      ),
+      addTypeToEmbeddedPath(
+        RuntimeOption::EvalEmbeddedDataFallbackPath,
+        "type_scanners"
+      ),
+      RuntimeOption::EvalEmbeddedDataTrustExtract
+    );
   } catch (const type_scan::InitException& exn) {
     Logger::Error("Unable to initialize GC type-scanners: %s", exn.what());
     exit(HPHP_EXIT_FAILURE);
@@ -1937,7 +1921,17 @@ static int execute_program_impl(int argc, char** argv) {
   ThreadLocalManager::GetManager().initTypeIndices();
 
   // It's okay if this fails.
-  init_member_reflection();
+  init_member_reflection(
+    addTypeToEmbeddedPath(
+      RuntimeOption::EvalEmbeddedDataExtractPath,
+      "member_reflection"
+    ),
+    addTypeToEmbeddedPath(
+      RuntimeOption::EvalEmbeddedDataFallbackPath,
+      "member_reflection"
+    ),
+    RuntimeOption::EvalEmbeddedDataTrustExtract
+  );
 
   if (!ShmCounters::initialize(true, Logger::Error)) {
     exit(HPHP_EXIT_FAILURE);
@@ -2359,6 +2353,8 @@ void hphp_process_init() {
     InitFiniNode::ProcessInitConcurrentWaitForEnd();
     BootStats::mark("extra_process_init_concurrent_wait");
   };
+  jit::mcgen::processInit();
+  jit::processInitProfData();
   g_vmProcessInit();
   BootStats::mark("g_vmProcessInit");
 
@@ -2397,11 +2393,13 @@ void hphp_process_init() {
   if (RuntimeOption::RepoAuthoritative &&
       !RuntimeOption::EvalJitSerdesFile.empty() &&
       jit::mcgen::retranslateAllEnabled()) {
+    auto const mode = RuntimeOption::EvalJitSerdesMode;
+
     if (RuntimeOption::EvalJitWorkerThreadsForSerdes) {
       RuntimeOption::EvalJitWorkerThreads =
         RuntimeOption::EvalJitWorkerThreadsForSerdes;
     }
-    switch (RuntimeOption::EvalJitSerdesMode) {
+    switch (mode) {
       case JitSerdesMode::Off:
       case JitSerdesMode::Serialize:
       case JitSerdesMode::SerializeAndExit:
@@ -2409,44 +2407,56 @@ void hphp_process_init() {
       case JitSerdesMode::Deserialize:
       case JitSerdesMode::DeserializeOrFail:
       case JitSerdesMode::DeserializeOrGenerate:
+      case JitSerdesMode::DeserializeAndExit:
       if (RuntimeOption::ServerExecutionMode()) {
         Logger::FInfo("JitDeserializeFrom: {}",
                       RuntimeOption::EvalJitSerdesFile);
       }
       auto const numWorkers = RuntimeOption::EvalJitWorkerThreadsForSerdes ?
         RuntimeOption::EvalJitWorkerThreadsForSerdes : Process::GetCPUCount();
-      if (jit::deserializeProfData(RuntimeOption::EvalJitSerdesFile,
-                                   numWorkers)) {
+      auto const errMsg =
+        jit::deserializeProfData(RuntimeOption::EvalJitSerdesFile, numWorkers);
+      if (errMsg.empty()) {
         if (RuntimeOption::ServerExecutionMode()) {
-          Logger::FInfo("JitDeserialize: Loaded {} Units",
-                        numLoadedUnits());
+          Logger::FInfo("JitDeserialize: Loaded {} Units with {} workers",
+                        numLoadedUnits(), numWorkers);
         }
         BootStats::mark("jit::deserializeProfData");
         StructuredLog::log("", {});
-        RuntimeOption::EvalNumSingleJitRequests=0;
-        RuntimeOption::EvalJitProfileInterpRequests=0;
-        RuntimeOption::EvalJitProfileRequests=0;
-        RuntimeOption::EvalJitWorkerThreads=numWorkers;
+        RuntimeOption::EvalNumSingleJitRequests = 0;
+        RuntimeOption::EvalJitProfileInterpRequests = 0;
+        RuntimeOption::EvalJitProfileRequests = 0;
+        RuntimeOption::EvalJitWorkerThreads = numWorkers;
+        RuntimeOption::ServerWarmupThrottleRequestCount /= 4;
 
         jit::mcgen::checkRetranslateAll(true);
         BootStats::mark("mcgen::retranslateAll");
-      } else {
-        if (RuntimeOption::EvalJitSerdesMode ==
-            JitSerdesMode::DeserializeOrFail) {
-          Logger::Error("Failed to deserialize jit profile.");
+        if (mode == JitSerdesMode::DeserializeAndExit) {
+          if (RuntimeOption::ServerExecutionMode()) {
+            Logger::Info("JitDeserialize finished; exiting");
+          }
+          if (RuntimeOption::EvalDumpTC ||
+              RuntimeOption::EvalDumpIR ||
+              RuntimeOption::EvalDumpRegion) {
+            jit::mcgen::joinWorkerThreads();
+            jit::tc::dump();
+          }
+          hphp_process_exit();
+          exit(0);
+        }
+      } else {                          // failed to deserialize
+        if (mode == JitSerdesMode::DeserializeOrFail ||
+            mode == JitSerdesMode::DeserializeAndExit) {
+          Logger::Error(errMsg);
           hphp_process_exit();
           exit(1);
         }
-        if (RuntimeOption::EvalJitSerdesMode ==
-            JitSerdesMode::DeserializeOrGenerate) {
-          Logger::FInfo("JitDeserialize: `{}' was not valid, "
-                        "scheduling one time serialization and restart",
-                        RuntimeOption::EvalJitSerdesFile);
+        if (mode == JitSerdesMode::DeserializeOrGenerate) {
+          Logger::Info(errMsg +
+                       ", scheduling one time serialization and restart");
           RuntimeOption::EvalJitSerdesMode = JitSerdesMode::SerializeAndExit;
         } else {
-          Logger::FInfo("JitDeserialize: `{}' was not valid, "
-                        "will profile then retranslateAll",
-                        RuntimeOption::EvalJitSerdesFile);
+          Logger::Info(errMsg + ", will profile then retranslateAll");
         }
       }
     }
@@ -2637,7 +2647,7 @@ bool hphp_invoke(ExecutionContext *context, const std::string &cmd,
         funcRet.assignIfRef(invoke(cmd.c_str(), funcParams));
       } else {
         if (isServer) hphp_chdir_file(cmd);
-        include_impl_invoke(cmd.c_str(), once);
+        include_impl_invoke(cmd.c_str(), once, "", true);
       }
       if (!RuntimeOption::AutoAppendFile.empty() &&
           RuntimeOption::AutoAppendFile != "none") {
@@ -2725,7 +2735,7 @@ void hphp_memory_cleanup() {
   mm.resetCouldOOM();
 }
 
-void hphp_session_exit(const Transport* transport) {
+void hphp_session_exit(Transport* transport) {
   assertx(s_sessionInitialized);
   // Server note and INI have to live long enough for the access log to fire.
   // RequestLocal is too early.
@@ -2747,9 +2757,12 @@ void hphp_session_exit(const Transport* transport) {
   perf_event_consume(record_perf_mem_event);
   perf_event_disable();
 
+  // Get some memory-related counters before tearing down the MemoryManager.
+  auto entry = transport ? transport->getStructuredLogEntry() : nullptr;
+  if (entry) tl_heap->recordStats(*entry);
+
   {
     ServerStatsHelper ssh("rollback");
-
     hphp_memory_cleanup();
   }
 
@@ -2759,16 +2772,15 @@ void hphp_session_exit(const Transport* transport) {
   s_extra_request_nanoseconds = 0;
 
   if (transport) {
-    std::unique_ptr<StructuredLogEntry> entry;
-    if (RuntimeOption::EvalProfileHWStructLog) {
-      entry = std::make_unique<StructuredLogEntry>();
-      entry->setInt("response_code", transport->getResponseCode());
-    }
     HardwareCounter::UpdateServiceData(transport->getCpuTime(),
                                        transport->getWallTime(),
-                                       entry.get(),
+                                       entry,
                                        true /*psp*/);
-    if (entry) StructuredLog::log("hhvm_request_perf", *entry);
+    if (entry) {
+      entry->setInt("response_code", transport->getResponseCode());
+      StructuredLog::log("hhvm_request_perf", *entry);
+      transport->resetStructuredLogEntry();
+    }
   }
 }
 
@@ -2795,6 +2807,7 @@ void hphp_process_exit() noexcept {
   LOG_AND_IGNORE(InitFiniNode::ProcessFini())
   LOG_AND_IGNORE(folly::SingletonVault::singleton()->destroyInstances())
   LOG_AND_IGNORE(embedded_data_cleanup())
+  LOG_AND_IGNORE(Debug::destroyDebugInfo())
 #undef LOG_AND_IGNORE
 }
 

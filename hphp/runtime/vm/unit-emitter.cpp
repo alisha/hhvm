@@ -88,7 +88,7 @@ size_t hhbc_arena_capacity() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-UnitEmitter::UnitEmitter(const MD5& md5)
+UnitEmitter::UnitEmitter(const MD5& md5, const Native::FuncTable& nativeFuncs)
   : m_mainReturn(make_tv<KindOfUninit>())
   , m_md5(md5)
   , m_bc((unsigned char*)malloc(BCMaxInit))
@@ -96,6 +96,7 @@ UnitEmitter::UnitEmitter(const MD5& md5)
   , m_bcmax(BCMaxInit)
   , m_nextFuncSn(0)
   , m_allClassesHoistable(true)
+  , m_nativeFuncs(nativeFuncs)
 {}
 
 UnitEmitter::~UnitEmitter() {
@@ -542,8 +543,53 @@ allocateBCRegion(const unsigned char* bc, size_t bclen) {
   return mem;
 }
 
+bool UnitEmitter::check(bool verbose) const {
+  return Verifier::checkUnit(
+    this,
+    verbose ? Verifier::kVerbose : Verifier::kStderr
+  );
+}
+
 std::unique_ptr<Unit> UnitEmitter::create(bool saveLineTable) {
   INC_TPC(unit_load);
+
+  static const bool kVerify = debug || RuntimeOption::EvalVerify ||
+    RuntimeOption::EvalVerifyOnly || RuntimeOption::EvalFatalOnVerifyError;
+  static const bool kVerifyVerboseSystem =
+    getenv("HHVM_VERIFY_VERBOSE_SYSTEM");
+  static const bool kVerifyVerbose =
+    kVerifyVerboseSystem || getenv("HHVM_VERIFY_VERBOSE");
+
+  const bool isSystemLib =
+    boost::starts_with(m_filepath->data(), "/:systemlib");
+  const bool doVerify =
+    kVerify || boost::ends_with(m_filepath->data(), ".hhas");
+  if (doVerify) {
+    auto const verbose = isSystemLib ? kVerifyVerboseSystem : kVerifyVerbose;
+    if (!check(verbose)) {
+      if (!verbose) {
+        std::cerr << folly::format(
+          "Verification failed for unit {}. Re-run with "
+          "HHVM_VERIFY_VERBOSE{}=1 to see more details.\n",
+          m_filepath->data(), isSystemLib ? "_SYSTEM" : ""
+        );
+      }
+      if (!RuntimeOption::EvalVerifyOnly &&
+          RuntimeOption::EvalFatalOnVerifyError) {
+        return createFatalUnit(
+          const_cast<StringData*>(m_filepath),
+          m_md5,
+          FatalOp::Parse,
+          makeStaticString("A bytecode verification error was detected")
+        )->create(saveLineTable);
+      }
+    }
+    if (!isSystemLib && RuntimeOption::EvalVerifyOnly) {
+      std::fflush(stdout);
+      _Exit(0);
+    }
+  }
+
   std::unique_ptr<Unit> u {
     RuntimeOption::RepoAuthoritative && !RuntimeOption::SandboxMode &&
       m_litstrs.empty() && m_arrayTypeTable.empty() ?
@@ -712,38 +758,6 @@ std::unique_ptr<Unit> UnitEmitter::create(bool saveLineTable) {
     assertx(m_arrayTypeTable.empty());
   }
 
-  static const bool kVerify = debug || RuntimeOption::EvalVerify ||
-    RuntimeOption::EvalVerifyOnly;
-  static const bool kVerifyVerboseSystem =
-    getenv("HHVM_VERIFY_VERBOSE_SYSTEM");
-  static const bool kVerifyVerbose =
-    kVerifyVerboseSystem || getenv("HHVM_VERIFY_VERBOSE");
-
-  const bool isSystemLib = u->filepath()->empty() ||
-    boost::contains(u->filepath()->data(), "systemlib");
-  const bool doVerify =
-    kVerify || boost::ends_with(u->filepath()->data(), "hhas");
-  if (doVerify) {
-    auto const verbose = isSystemLib ? kVerifyVerboseSystem : kVerifyVerbose;
-    auto const ok = Verifier::checkUnit(
-      u.get(),
-      verbose ? Verifier::kVerbose : Verifier::kStderr
-    );
-
-    if (!ok && !verbose) {
-      std::cerr << folly::format(
-        "Verification failed for unit {}. Re-run with HHVM_VERIFY_VERBOSE{}=1 "
-        "to see more details.\n",
-        u->filepath()->data(), isSystemLib ? "_SYSTEM" : ""
-      );
-    }
-  }
-
-  if (RuntimeOption::EvalVerifyOnly) {
-    std::fflush(stdout);
-    _Exit(0);
-  }
-
   if (RuntimeOption::EvalDumpHhas > 1 ||
     (SystemLib::s_inited && RuntimeOption::EvalDumpHhas == 1)) {
     auto const& hhaspath = RuntimeOption::EvalDumpHhasToFile;
@@ -899,14 +913,14 @@ RepoStatus UnitRepoProxy::loadHelper(UnitEmitter& ue,
 
 std::unique_ptr<UnitEmitter>
 UnitRepoProxy::loadEmitter(const std::string& name, const MD5& md5) {
-  auto ue = std::make_unique<UnitEmitter>(md5);
+  auto ue = std::make_unique<UnitEmitter>(md5, Native::s_builtinNativeFuncs);
   if (loadHelper(*ue, name, md5) == RepoStatus::error) ue.reset();
   return ue;
 }
 
 std::unique_ptr<Unit>
 UnitRepoProxy::load(const std::string& name, const MD5& md5) {
-  UnitEmitter ue(md5);
+  UnitEmitter ue(md5, Native::s_builtinNativeFuncs);
   if (loadHelper(ue, name, md5) == RepoStatus::error) return nullptr;
 
   if (RuntimeOption::XenonTraceUnitLoad) {
@@ -1319,7 +1333,7 @@ UnitRepoProxy::GetSourceLocTabStmt::get(int64_t unitSn,
 std::unique_ptr<UnitEmitter>
 createFatalUnit(StringData* filename, const MD5& md5, FatalOp /*op*/,
                 StringData* err) {
-  auto ue = std::make_unique<UnitEmitter>(md5);
+  auto ue = std::make_unique<UnitEmitter>(md5, Native::s_noNativeFuncs);
   ue->m_filepath = filename;
   ue->initMain(1, 1);
   ue->emitOp(OpString);

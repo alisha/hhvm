@@ -125,6 +125,10 @@ APCHandle::Pair APCHandle::Create(const Variant& source,
       // which does not match Zend behavior. We should fix this.
       return APCArray::MakeSharedEmptyArray();
 
+    case KindOfFunc:
+    case KindOfClass:
+      always_assert(false);
+
     case KindOfRef:
       return {nullptr, 0};
   }

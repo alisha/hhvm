@@ -94,6 +94,8 @@ class EditableSyntax
       return SimpleTypeSpecifier.from_json(json, position, source);
     case 'literal':
       return LiteralExpression.from_json(json, position, source);
+    case 'prefixed_string':
+      return PrefixedStringExpression.from_json(json, position, source);
     case 'variable':
       return VariableExpression.from_json(json, position, source);
     case 'pipe_variable':
@@ -408,6 +410,8 @@ class EditableSyntax
       return NullableTypeSpecifier.from_json(json, position, source);
     case 'soft_type_specifier':
       return SoftTypeSpecifier.from_json(json, position, source);
+    case 'reified_type_argument':
+      return ReifiedTypeArgument.from_json(json, position, source);
     case 'type_arguments':
       return TypeArguments.from_json(json, position, source);
     case 'type_parameters':
@@ -875,6 +879,8 @@ class EditableToken extends EditableSyntax
        return new PublicToken(leading, trailing);
     case 'real':
        return new RealToken(leading, trailing);
+    case 'reified':
+       return new ReifiedToken(leading, trailing);
     case 'require':
        return new RequireToken(leading, trailing);
     case 'require_once':
@@ -1782,6 +1788,13 @@ class RealToken extends EditableToken
   constructor(leading, trailing)
   {
     super('real', leading, trailing, 'real');
+  }
+}
+class ReifiedToken extends EditableToken
+{
+  constructor(leading, trailing)
+  {
+    super('reified', leading, trailing, 'reified');
   }
 }
 class RequireToken extends EditableToken
@@ -3234,6 +3247,70 @@ class LiteralExpression extends EditableSyntax
       LiteralExpression._children_keys = [
         'expression'];
     return LiteralExpression._children_keys;
+  }
+}
+class PrefixedStringExpression extends EditableSyntax
+{
+  constructor(
+    name,
+    str)
+  {
+    super('prefixed_string', {
+      name: name,
+      str: str });
+  }
+  get name() { return this.children.name; }
+  get str() { return this.children.str; }
+  with_name(name){
+    return new PrefixedStringExpression(
+      name,
+      this.str);
+  }
+  with_str(str){
+    return new PrefixedStringExpression(
+      this.name,
+      str);
+  }
+  rewrite(rewriter, parents)
+  {
+    if (parents == undefined)
+      parents = [];
+    let new_parents = parents.slice();
+    new_parents.push(this);
+    var name = this.name.rewrite(rewriter, new_parents);
+    var str = this.str.rewrite(rewriter, new_parents);
+    if (
+      name === this.name &&
+      str === this.str)
+    {
+      return rewriter(this, parents);
+    }
+    else
+    {
+      return rewriter(new PrefixedStringExpression(
+        name,
+        str), parents);
+    }
+  }
+  static from_json(json, position, source)
+  {
+    let name = EditableSyntax.from_json(
+      json.prefixed_string_name, position, source);
+    position += name.width;
+    let str = EditableSyntax.from_json(
+      json.prefixed_string_str, position, source);
+    position += str.width;
+    return new PrefixedStringExpression(
+        name,
+        str);
+  }
+  get children_keys()
+  {
+    if (PrefixedStringExpression._children_keys == null)
+      PrefixedStringExpression._children_keys = [
+        'name',
+        'str'];
+    return PrefixedStringExpression._children_keys;
   }
 }
 class VariableExpression extends EditableSyntax
@@ -19037,32 +19114,45 @@ class VectorArrayTypeSpecifier extends EditableSyntax
 class TypeParameter extends EditableSyntax
 {
   constructor(
+    reified,
     variance,
     name,
     constraints)
   {
     super('type_parameter', {
+      reified: reified,
       variance: variance,
       name: name,
       constraints: constraints });
   }
+  get reified() { return this.children.reified; }
   get variance() { return this.children.variance; }
   get name() { return this.children.name; }
   get constraints() { return this.children.constraints; }
+  with_reified(reified){
+    return new TypeParameter(
+      reified,
+      this.variance,
+      this.name,
+      this.constraints);
+  }
   with_variance(variance){
     return new TypeParameter(
+      this.reified,
       variance,
       this.name,
       this.constraints);
   }
   with_name(name){
     return new TypeParameter(
+      this.reified,
       this.variance,
       name,
       this.constraints);
   }
   with_constraints(constraints){
     return new TypeParameter(
+      this.reified,
       this.variance,
       this.name,
       constraints);
@@ -19073,10 +19163,12 @@ class TypeParameter extends EditableSyntax
       parents = [];
     let new_parents = parents.slice();
     new_parents.push(this);
+    var reified = this.reified.rewrite(rewriter, new_parents);
     var variance = this.variance.rewrite(rewriter, new_parents);
     var name = this.name.rewrite(rewriter, new_parents);
     var constraints = this.constraints.rewrite(rewriter, new_parents);
     if (
+      reified === this.reified &&
       variance === this.variance &&
       name === this.name &&
       constraints === this.constraints)
@@ -19086,6 +19178,7 @@ class TypeParameter extends EditableSyntax
     else
     {
       return rewriter(new TypeParameter(
+        reified,
         variance,
         name,
         constraints), parents);
@@ -19093,6 +19186,9 @@ class TypeParameter extends EditableSyntax
   }
   static from_json(json, position, source)
   {
+    let reified = EditableSyntax.from_json(
+      json.type_reified, position, source);
+    position += reified.width;
     let variance = EditableSyntax.from_json(
       json.type_variance, position, source);
     position += variance.width;
@@ -19103,6 +19199,7 @@ class TypeParameter extends EditableSyntax
       json.type_constraints, position, source);
     position += constraints.width;
     return new TypeParameter(
+        reified,
         variance,
         name,
         constraints);
@@ -19111,6 +19208,7 @@ class TypeParameter extends EditableSyntax
   {
     if (TypeParameter._children_keys == null)
       TypeParameter._children_keys = [
+        'reified',
         'variance',
         'name',
         'constraints'];
@@ -20760,6 +20858,70 @@ class SoftTypeSpecifier extends EditableSyntax
     return SoftTypeSpecifier._children_keys;
   }
 }
+class ReifiedTypeArgument extends EditableSyntax
+{
+  constructor(
+    reified,
+    type)
+  {
+    super('reified_type_argument', {
+      reified: reified,
+      type: type });
+  }
+  get reified() { return this.children.reified; }
+  get type() { return this.children.type; }
+  with_reified(reified){
+    return new ReifiedTypeArgument(
+      reified,
+      this.type);
+  }
+  with_type(type){
+    return new ReifiedTypeArgument(
+      this.reified,
+      type);
+  }
+  rewrite(rewriter, parents)
+  {
+    if (parents == undefined)
+      parents = [];
+    let new_parents = parents.slice();
+    new_parents.push(this);
+    var reified = this.reified.rewrite(rewriter, new_parents);
+    var type = this.type.rewrite(rewriter, new_parents);
+    if (
+      reified === this.reified &&
+      type === this.type)
+    {
+      return rewriter(this, parents);
+    }
+    else
+    {
+      return rewriter(new ReifiedTypeArgument(
+        reified,
+        type), parents);
+    }
+  }
+  static from_json(json, position, source)
+  {
+    let reified = EditableSyntax.from_json(
+      json.reified_type_argument_reified, position, source);
+    position += reified.width;
+    let type = EditableSyntax.from_json(
+      json.reified_type_argument_type, position, source);
+    position += type.width;
+    return new ReifiedTypeArgument(
+        reified,
+        type);
+  }
+  get children_keys()
+  {
+    if (ReifiedTypeArgument._children_keys == null)
+      ReifiedTypeArgument._children_keys = [
+        'reified',
+        'type'];
+    return ReifiedTypeArgument._children_keys;
+  }
+}
 class TypeArguments extends EditableSyntax
 {
   constructor(
@@ -21217,6 +21379,7 @@ exports.PrivateToken = PrivateToken;
 exports.ProtectedToken = ProtectedToken;
 exports.PublicToken = PublicToken;
 exports.RealToken = RealToken;
+exports.ReifiedToken = ReifiedToken;
 exports.RequireToken = RequireToken;
 exports.Require_onceToken = Require_onceToken;
 exports.RequiredToken = RequiredToken;
@@ -21365,6 +21528,7 @@ exports.Script = Script;
 exports.QualifiedName = QualifiedName;
 exports.SimpleTypeSpecifier = SimpleTypeSpecifier;
 exports.LiteralExpression = LiteralExpression;
+exports.PrefixedStringExpression = PrefixedStringExpression;
 exports.VariableExpression = VariableExpression;
 exports.PipeVariableExpression = PipeVariableExpression;
 exports.EnumDeclaration = EnumDeclaration;
@@ -21522,6 +21686,7 @@ exports.TupleExpression = TupleExpression;
 exports.GenericTypeSpecifier = GenericTypeSpecifier;
 exports.NullableTypeSpecifier = NullableTypeSpecifier;
 exports.SoftTypeSpecifier = SoftTypeSpecifier;
+exports.ReifiedTypeArgument = ReifiedTypeArgument;
 exports.TypeArguments = TypeArguments;
 exports.TypeParameters = TypeParameters;
 exports.TupleTypeSpecifier = TupleTypeSpecifier;

@@ -9,10 +9,12 @@
 
 open Instruction_sequence
 open Hhbc_ast
+open Hhbc_string_utils
 open Hh_core
 module A = Ast
 module SN = Naming_special_names
 module SU = Hhbc_string_utils
+module TC = Hhas_type_constraint
 
 (* Follow HHVM rules here: see EmitterVisitor::requiresDeepInit *)
 let rec expr_requires_deep_init (_, expr_) =
@@ -42,7 +44,7 @@ and class_const_requires_deep_init s p =
 
 and shape_field_requires_deep_init (n, v) =
   match n with
-  | A.SFlit _ ->
+  | A.SFlit_int _ | A.SFlit_str _ ->
     expr_requires_deep_init v
   | A.SFclass_const ((_, s), (_, p)) ->
     class_const_requires_deep_init s p ||
@@ -56,6 +58,15 @@ and aexpr_requires_deep_init aexpr =
   | A.AFvalue expr -> expr_requires_deep_init expr
   | A.AFkvalue (expr1, expr2) ->
     expr_requires_deep_init expr1 || expr_requires_deep_init expr2
+
+let valid_tc_for_prop tc =
+  match (TC.name tc) with
+  | None -> true
+  | Some name ->
+     not (is_self name) &&
+     not (is_parent name) &&
+     not (String.lowercase_ascii name = "callable") &&
+     not (String.lowercase_ascii name = "hh\\noreturn")
 
 let from_ast
     ast_class
@@ -73,6 +84,7 @@ let from_ast
   let attributes = Emit_attribute.from_asts namespace cv_user_attributes in
   let is_immutable = class_is_immutable ||
     Hhas_attribute.has_const attributes in
+  let is_lsb = Hhas_attribute.has_lsb attributes in
   let is_private = Hh_core.List.mem cv_kind_list Ast.Private in
   let is_protected = Hh_core.List.mem cv_kind_list Ast.Protected in
   let is_public =
@@ -91,13 +103,22 @@ let from_ast
     | None ->
       Hhas_type_info.make (Some "") (Hhas_type_constraint.make None [])
     | Some h ->
-      Emit_type_hint.(hint_to_type_info
-        ~kind:Property ~nullable:false
-        ~skipawaitable:false ~tparams ~namespace h) in
+       let tc =
+         Emit_type_hint.(hint_to_type_info
+                         ~kind:Property ~nullable:false
+                         ~skipawaitable:false ~tparams ~namespace h)
+       in
+       if not (valid_tc_for_prop (Hhas_type_info.type_constraint tc))
+       then Emit_fatal.raise_fatal_parse pos
+         (Printf.sprintf "Invalid property type hint for '%s::$%s'"
+                         (Utils.strip_ns (snd ast_class.Ast.c_name))
+                         (Hhbc_id.Prop.to_raw_string pid))
+       else tc
+  in
   let env = Emit_env.make_class_env ast_class in
-  let initial_value, is_deep_init, initializer_instrs =
+  let initial_value, is_deep_init, has_system_initial, initializer_instrs =
     match initial_value with
-    | None -> None, false, None
+    | None -> None, false, true, None
     | Some expr ->
       let is_collection_map =
         match snd expr with
@@ -108,7 +129,7 @@ let from_ast
       match Ast_constant_folder.expr_to_opt_typed_value
         ast_class.Ast.c_namespace expr with
       | Some v when not deep_init && not is_collection_map ->
-        Some v, false, None
+        Some v, false, false, None
       | _ ->
         let label = Label.next_regular () in
         let prolog, epilog =
@@ -129,7 +150,7 @@ let from_ast
               instr (IMutator (InitProp (pid, NonStatic)));
               instr_label label;
             ] in
-        Some Typed_value.Uninit, deep_init,
+        Some Typed_value.Uninit, deep_init, false,
           Some (gather [
             prolog;
             Emit_expression.emit_expr ~need_ref:false env expr;
@@ -143,6 +164,11 @@ let from_ast
     is_deep_init
     false (*no_serialize*)
     is_immutable
+    is_lsb
+    false (*no_bad_redeclare*)
+    has_system_initial
+    false (*no_implicit_null*)
+    false (*initial_satisfies_tc*)
     pid
     initial_value
     initializer_instrs

@@ -35,7 +35,8 @@
 #include "hphp/runtime/vm/unit.h"
 
 #include "hphp/util/functional.h"
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
+#include "hphp/util/hash-set.h"
 #include "hphp/util/md5.h"
 
 namespace HPHP {
@@ -44,6 +45,10 @@ namespace HPHP {
 struct FuncEmitter;
 struct PreClassEmitter;
 struct StringData;
+
+namespace Native {
+struct FuncTable;
+}
 
 /*
  * Report capacity of RepoAuthoritative mode bytecode arena.
@@ -64,7 +69,7 @@ struct UnitEmitter {
   /////////////////////////////////////////////////////////////////////////////
   // Initialization and execution.
 
-  explicit UnitEmitter(const MD5& md5);
+  explicit UnitEmitter(const MD5& md5, const Native::FuncTable&);
   ~UnitEmitter();
 
   /*
@@ -83,6 +88,11 @@ struct UnitEmitter {
   std::unique_ptr<Unit> create(bool saveLineTable = false);
 
   template<class SerDe> void serdeMetaData(SerDe&);
+
+  /*
+   * Run the verifier on this unit.
+   */
+  bool check(bool verbose) const;
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -119,6 +129,9 @@ struct UnitEmitter {
   const ArrayData* lookupArray(Id id) const;
   const RepoAuthType::Array* lookupArrayType(Id id) const;
 
+  Id numArrays() const { return m_arrays.size(); }
+  Id numLitstrs() const { return m_litstrs.size(); }
+
   /*
    * Merge a literal string into either the global LitstrTable or the table for
    * the Unit.
@@ -146,7 +159,7 @@ struct UnitEmitter {
   /*
    * The Unit's pseudomain emitter.
    */
-  FuncEmitter* getMain();
+  FuncEmitter* getMain() const;
 
   /*
    * Const reference to all of the Unit's FuncEmitters.
@@ -461,6 +474,11 @@ private:
   std::vector<std::pair<Offset,SourceLoc>> m_sourceLocTab;
   std::vector<const FuncEmitter*> m_feTab;
   LineTable m_lineTable;
+
+  /*
+   * name=>NativeFuncInfo for native funcs in this unit
+   */
+  const Native::FuncTable& m_nativeFuncs;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

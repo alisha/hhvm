@@ -30,7 +30,7 @@
 #include "hphp/runtime/base/config.h"
 #include "hphp/runtime/base/typed-value.h"
 #include "hphp/util/compilation-flags.h"
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
 #include "hphp/util/functional.h"
 
 namespace HPHP {
@@ -54,6 +54,7 @@ enum class JitSerdesMode {
   Deserialize,
   DeserializeOrFail,
   DeserializeOrGenerate,
+  DeserializeAndExit,
 };
 
 /**
@@ -153,6 +154,7 @@ struct RuntimeOption {
   static int ServerQueueCount;
   // Number of worker threads with stack partially on huge pages.
   static int ServerHugeThreadCount;
+  static int ServerHugeStackKb;
   static int ServerWarmupThrottleRequestCount;
   static int ServerThreadDropCacheTimeoutSeconds;
   static int ServerThreadJobLIFOSwitchThreshold;
@@ -378,6 +380,7 @@ struct RuntimeOption {
   static int StackTraceTimeout;
   static std::string RemoteTraceOutputDir;
   static std::set<std::string, stdltistr> TraceFunctions;
+  static uint32_t TraceFuncId;
 
   static bool EnableStats;
   static bool EnableAPCStats;
@@ -396,9 +399,6 @@ struct RuntimeOption {
   static double ProfilerTraceExpansion;
   static int32_t ProfilerMaxTraceBuffer;
 
-  static int64_t MaxRSS;
-  static int64_t MaxRSSPollingCycle;
-  static int64_t DropCacheCycle;
   static int64_t MaxSQLRowCount;
   static int64_t SocketDefaultTimeout;
   static bool LockCodeMemory;
@@ -445,7 +445,6 @@ struct RuntimeOption {
   static bool LookForTypechecker;
   static bool AutoTypecheck;
   static bool AutoprimeGenerators;
-  static bool EnableHackcOnlyFeature;
   static bool EnableIsExprPrimitiveMigration;
   static bool EnableCoroutines;
   static bool Hacksperimental;
@@ -520,12 +519,14 @@ struct RuntimeOption {
   F(bool, RecordSubprocessTimes,       false)                           \
   F(bool, AllowHhas,                   false)                           \
   F(bool, DisassemblerSourceMapping,   true)                            \
+  F(bool, DisableReturnByReference,    false)                           \
   F(bool, GenerateDocComments,         true)                            \
   F(bool, DisassemblerDocComments,     true)                            \
   F(bool, DisassemblerPropDocComments, true)                            \
   F(bool, LoadFilepathFromUnitCache,   false)                           \
   F(bool, ThrowOnCallByRefAnnotationMismatch, false)                    \
   F(bool, WarnOnCallByRefAnnotationMismatch, true)                      \
+  F(bool, WarnOnCoerceBuiltinParams, false)                             \
   /* Whether to use the embedded hackc binary */                        \
   F(bool, HackCompilerUseEmbedded,     facebook)                        \
   /* Whether to trust existing versions of the extracted compiler */    \
@@ -536,8 +537,6 @@ struct RuntimeOption {
   F(string, HackCompilerFallbackPath,  "/tmp/hackc_%{schema}_XXXXXX")   \
   /* Arguments to run embedded hackc binary with */                     \
   F(string, HackCompilerArgs,          hackCompilerArgsDefault())       \
-  /* Whether to use hh_single_compile by default if available. */       \
-  F(bool, HackCompilerDefault,         hackCompilerEnableDefault())     \
   /* The command to invoke to spawn hh_single_compile in server mode. */\
   F(string, HackCompilerCommand,       hackCompilerCommandDefault())    \
   /* The number of hh_single_compile daemons to keep alive. */          \
@@ -545,16 +544,8 @@ struct RuntimeOption {
   /* The number of times to retry after an infra failure communicating
      with a compiler process. */                                        \
   F(uint64_t, HackCompilerMaxRetries,  0)                               \
-  /* The number of times to reuse a single hh_single_compile daemons
-     before forcing a restart */                                        \
-  F(uint32_t, HackCompilerReset,       0)                               \
-  /* Whether to use an extern compiler to build systemlib */            \
-  F(bool, UseExternCompilerForSystemLib, true)                          \
   /* Whether to log extern compiler performance */                      \
   F(bool, LogExternCompilerPerf,       false)                           \
-  /* Whether or not to fallback to hphpc if hh_single_compile fails for
-     any reason. */                                                     \
-  F(bool, HackCompilerFallback,        false)                           \
   /* Whether to write verbose log messages to the error log and include
      the hhas from failing units in the fatal error messages produced by
      bad hh_single_compile units. */                                    \
@@ -562,10 +553,26 @@ struct RuntimeOption {
   /* Whether the HackC compiler should inherit the compiler config of the
      HHVM process that launches it. */                                  \
   F(bool, HackCompilerInheritConfig,   true)                            \
+  /* When using embedded data, extract it to the ExtractPath or the
+   * ExtractFallback. */                                                \
+  F(string, EmbeddedDataExtractPath,   "/var/run/hhvm_%{type}_%{buildid}") \
+  F(string, EmbeddedDataFallbackPath,  "/tmp/hhvm_%{type}_%{buildid}_XXXXXX") \
+  /* Whether to trust existing versions of extracted embedded data. */  \
+  F(bool, EmbeddedDataTrustExtract,    true)                            \
   F(bool, EmitSwitch,                  true)                            \
   F(bool, LogThreadCreateBacktraces,   false)                           \
   F(bool, FailJitPrologs,              false)                           \
   F(bool, UseHHBBC,                    !getenv("HHVM_DISABLE_HHBBC"))   \
+  /* Generate warning of side effect of the pseudomain is called by     \
+     top-level code.*/                                                  \
+  F(bool, WarnOnRealPseudomain, false)                                  \
+  /* Generate warnings of side effect on top-level code that is not     \
+   * called by pseudomain directly (include from other file)            \
+   * 0 - Nothing                                                        \
+   * 1 - Raise Warning                                                  \
+   * 2 - Throw exception                                                \
+   */                                                                   \
+  F(int32_t, WarnOnUncalledPseudomain, 0)                               \
   /* The following option enables the runtime checks for `this` typehints.
    * There are 4 possible options:
    * 0 - No checking of `this` typehints.
@@ -588,6 +595,21 @@ struct RuntimeOption {
          error handler returns something other than boolean false,
          the runtime will throw a fatal error. */                       \
   F(int32_t, CheckReturnTypeHints,     2)                               \
+  /*
+    CheckPropTypeHints:
+    0 - No checks or enforcement of property type hints.
+    1 - Raises E_WARNING if a property type hint fails.
+    2 - Raises E_RECOVERABLE_ERROR if regular property type hint fails, raises
+        E_WARNING if soft property type hint fails. If a regular property type
+        hint fails, it's possible for execution to resume normally if the user
+        error handler doesn't throw and returns something other than boolean
+        false.
+    3 - Same as 2, except if a regular property type hint fails the runtime will
+        not allow execution to resume normally; if the user error handler
+        returns something other than boolean false, the runtime will throw a
+        fatal error.
+  */                                                                    \
+  F(int32_t, CheckPropTypeHints,       0)                               \
   /* Whether or not to assume that VerifyParamType instructions must
      throw if the parameter does not match the associated type
      constraint. This changes program behavior because parameter type
@@ -599,7 +621,8 @@ struct RuntimeOption {
         to hhbbc/hhvm runtime will only load it from the GlobalData.
      2) In non-repo mode, we set this option to the runtime as usual.
      3) Both HHBBC and the runtime should query only this option
-        instead of the GlobalData. */                                   \
+        instead of the GlobalData.
+  */                                                                    \
   F(bool, HardTypeHints,               RepoAuthoritative)               \
   F(bool, PromoteEmptyObject,          !EnableHipHopSyntax)             \
   F(bool, AllowObjectDestructors,      !one_bit_refcount)               \
@@ -647,9 +670,11 @@ struct RuntimeOption {
   F(uint32_t, JitResetProfCountersRequest, resetProfCountersDefault())  \
   F(uint32_t, JitRetranslateAllRequest, retranslateAllRequestDefault()) \
   F(uint32_t, JitRetranslateAllSeconds, retranslateAllSecondsDefault()) \
+  F(bool,     JitLayoutSplitHotCold,   layoutSplitHotColdDefault())     \
   F(double,   JitLayoutHotThreshold,   0.05)                            \
   F(int32_t,  JitLayoutMainFactor,     1000)                            \
   F(int32_t,  JitLayoutColdFactor,     5)                               \
+  F(bool,     JitAHotSizeRoundUp,      true)                            \
   F(bool, JitProfileRecord,            false)                           \
   F(uint32_t, GdbSyncChunks,           128)                             \
   F(bool, JitKeepDbgFiles,             false)                           \
@@ -678,6 +703,7 @@ struct RuntimeOption {
   F(double,   HHIRInliningVasmCalleeExp, .5)                            \
   F(uint32_t, HHIRInliningMaxReturnDecRefs, 12)                         \
   F(uint32_t, HHIRInliningMaxReturnLocals, 20)                          \
+  F(bool,     HHIRInliningIgnoreHints, !debug)                          \
   F(bool, HHIRInlineFrameOpts,         true)                            \
   F(bool, HHIRPartialInlineFrameOpts,  true)                            \
   F(bool, HHIRInlineSingletons,        true)                            \
@@ -740,6 +766,7 @@ struct RuntimeOption {
   F(bool, DumpTCAnchors,               false)                           \
   F(uint32_t, DumpIR,                  0)                               \
   F(bool, DumpTCAnnotationsForAllTrans,debug)                           \
+  F(bool, DumpInlRefuse,               false)                           \
   F(uint32_t, DumpRegion,              0)                               \
   F(bool, DumpAst,                     false)                           \
   F(bool, DumpTargetProfiles,          false)                           \
@@ -768,6 +795,8 @@ struct RuntimeOption {
   F(bool, Verify,                      (getenv("HHVM_VERIFY") ||        \
     !EvalHackCompilerCommand.empty()))                                  \
   F(bool, VerifyOnly,                  false)                           \
+  F(bool, FatalOnVerifyError,          !RepoAuthoritative)              \
+  F(bool, AbortBuildOnVerifyError,     true)                            \
   F(uint32_t, StaticContentsLogRate,   100)                             \
   F(uint32_t, LogUnitLoadRate,         0)                               \
   F(uint32_t, MaxDeferredErrors,       50)                              \
@@ -819,7 +848,10 @@ struct RuntimeOption {
   F(bool, HackArrCompatCheckFalseyPromote, false)                       \
   F(bool, HackArrCompatCheckCompare, false)                             \
   F(bool, HackArrCompatCheckMisc, false)                                \
+  /* Raise notices when is_array is called with any hack array */       \
   F(bool, HackArrCompatIsArrayNotices, false)                           \
+  /* Raise notices when is_vec or is_dict  is called with a v/darray */ \
+  F(bool, HackArrCompatIsVecDictNotices, false)                         \
   F(bool, HackArrCompatPromoteNotices, false)                           \
   F(bool, HackArrCompatTypeHintNotices, false)                          \
   F(bool, HackArrCompatDVCmpNotices, false)                             \
@@ -830,10 +862,15 @@ struct RuntimeOption {
   F(bool, IsExprEnableUnresolvedWarning, false)                         \
   /* Switches on miscellaneous junk. */                                 \
   F(bool, NoticeOnCreateDynamicProp, false)                             \
+  F(bool, NoticeOnReadDynamicProp, false)                               \
   F(bool, CreateInOutWrapperFunctions, true)                            \
   F(bool, ReffinessInvariance, false)                                   \
   F(bool, NoticeOnBuiltinDynamicCalls, false)                           \
   F(bool, RxPretendIsEnabled, false)                                    \
+  /* Raise warning when function pointers are used as strings. */       \
+  F(bool, RaiseFuncConversionWarning, false)                            \
+  /* Raise warning when class pointers are used as strings. */          \
+  F(bool, RaiseClassConversionWarning, false)                           \
   /*                                                                    \
    * Control dynamic calls to functions which haven't opted into being called \
    * that way.                                                          \
@@ -846,11 +883,6 @@ struct RuntimeOption {
   F(int32_t, ForbidDynamicCalls, 0)                                     \
   F(int32_t, ServerOOMAdj, 0)                                           \
   F(std::string, PreludePath, "")                                       \
-  /* Use the CallM/RetM ABI to return multiple values via the stack for \
-     inout functions */                                                 \
-  F(bool, UseMSRVForInOut, true)                                        \
-  F(bool, HHIRGenerateCallM, true)                                      \
-  F(bool, HHIRGenerateRetM, true)                                       \
   F(uint32_t, NonSharedInstanceMemoCaches, 10)                          \
   F(std::vector<std::string>, IniGetHide, std::vector<std::string>())   \
   F(std::string, UseRemoteUnixServer, "no")                             \

@@ -20,6 +20,7 @@
 
 #include <folly/Conv.h>
 #include <folly/Range.h>
+#include <folly/lang/Launder.h>
 
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
@@ -561,7 +562,7 @@ void VariableUnserializer::unserializeProp(ObjectData* obj,
 
   auto const cls = obj->getVMClass();
   auto const lookup = cls->getDeclPropIndex(ctx, key.get());
-  auto const slot = lookup.prop;
+  auto const slot = lookup.slot;
   tv_lval t;
 
   if (slot == kInvalidSlot || !lookup.accessible) {
@@ -626,7 +627,7 @@ void VariableUnserializer::unserializeRemainingProps(
         raise_error("Cannot access empty property");
       }
       // private or protected
-      subLen = strlen(kdata + 1) + 2;
+      subLen = strlen(folly::launder(kdata) + 1) + 2;
       if (UNLIKELY(subLen >= ksize)) {
         if (subLen == ksize) {
           raise_error("Cannot access empty property");
@@ -856,6 +857,11 @@ void VariableUnserializer::unserializeVariant(
       }
     }
     return;
+  // TODO (T32282640) Currently raise an error when we are unserializing
+  // a function because no one tries to do so. But in the future we can
+  // support this after an improvement of autoloader.
+  case 'f':
+    raise_error("Unable to unserialize a function value");
   case 'S':
     if (this->type() == VariableUnserializer::Type::APCSerialize) {
       auto str = readStr(8);
@@ -1054,7 +1060,10 @@ void VariableUnserializer::unserializeVariant(
             }
             // If everything matched, all remaining properties are dynamic.
             if (!mismatch && remainingProps > 0) {
-              auto& arr = obj->reserveProperties(remainingProps);
+              // the dynPropTable can be mutated while we're deserializing
+              // the contents of this object's prop array. Don't hold a
+              // reference to this object's entry in the table while looping.
+              obj->reserveDynProps(remainingProps);
               while (remainingProps > 0) {
                 Variant v;
                 unserializeVariant(v.asTypedValue(), UnserializeMode::Key);
@@ -1064,11 +1073,28 @@ void VariableUnserializer::unserializeVariant(
                                            remainingProps--);
                   hasSerializedNativeData = true;
                 } else {
+                  auto kdata = key.data();
+                  if (kdata[0] == '\0') {
+                    auto ksize = key.size();
+                    if (UNLIKELY(ksize == 0)) {
+                      raise_error("Cannot access empty property");
+                    }
+                    // private or protected
+                    auto subLen = strlen(folly::launder(kdata) + 1) + 2;
+                    if (UNLIKELY(subLen >= ksize)) {
+                      if (subLen == ksize) {
+                        raise_error("Cannot access empty property");
+                      } else {
+                        throwMangledPrivateProperty();
+                      }
+                    }
+                  }
                   if (RuntimeOption::EvalNoticeOnCreateDynamicProp) {
                     obj->raiseCreateDynamicProp(key.get());
                   }
                   auto t = [&]() {
                     SuppressHackArrCompatNotices shacn;
+                    auto& arr = obj->dynPropArray();
                     return arr.lvalAt(key, AccessFlags::Key);
                   }();
                   if (UNLIKELY(isRefcountedType(t.type()))) {
@@ -1746,6 +1772,7 @@ void VariableUnserializer::reserialize(StringBuffer& buf) {
   case 'b':
   case 'i':
   case 'd':
+  case 'f':
     {
       buf.append(type);
       buf.append(sep);

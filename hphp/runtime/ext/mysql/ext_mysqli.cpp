@@ -437,6 +437,8 @@ static Variant HHVM_METHOD(mysqli, options, int64_t option,
         case KindOfObject:
         case KindOfResource:
         case KindOfRef:
+        case KindOfFunc:
+        case KindOfClass:
           // Impossible.
           break;
       }

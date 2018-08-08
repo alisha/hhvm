@@ -19,13 +19,16 @@
 #include "hphp/runtime/base/req-ptr.h"
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/runtime/vm/func-emitter.h"
+#include "hphp/runtime/vm/native-func-table.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/unit.h"
 
 namespace HPHP { namespace Native {
 //////////////////////////////////////////////////////////////////////////////
 
-BuiltinFunctionMap s_builtinFunctions;
+FuncTable s_builtinNativeFuncs;
+const FuncTable s_noNativeFuncs;
+std::vector<NativeFuncResolver> s_nativeFuncResolvers;
 ConstantMap s_constant_map;
 ClassConstantMapMap s_class_constant_map;
 
@@ -93,10 +96,9 @@ static void populateArgs(const Func* func,
       if (SIMD_count < kNumSIMDRegs) {
         SIMD_args[SIMD_count++] = args[-i].m_data.dbl;
 #if defined(__powerpc64__)
-      // According with ABI, the GP index must be incremented after
-      // a floating point function argument
-      if (GP_count < numGP)
-        GP_args[GP_count++] = 0;
+        // According with ABI, the GP index must be incremented after
+        // a floating point function argument
+        if (GP_count < numGP) GP_args[GP_count++] = 0;
 #endif
       } else if (GP_count < numGP) {
         // We have enough double args to hit the stack
@@ -190,7 +192,7 @@ void callFunc(const Func* func, void *ctx,
     populateArgsNoDoubles(func, args, numArgs, GP_args, GP_count);
   }
 
-  BuiltinFunction f = func->nativeFuncPtr();
+  auto const f = func->nativeFuncPtr();
 
   if (!retType) {
     // A folly::none return signifies Variant.
@@ -215,6 +217,8 @@ void callFunc(const Func* func, void *ctx,
         callFuncInt64Impl(f, GP_args, GP_count, SIMD_args, SIMD_count) & 1;
       return;
 
+    case KindOfFunc:
+    case KindOfClass:
     case KindOfInt64:
       ret.m_data.num =
         callFuncInt64Impl(f, GP_args, GP_count, SIMD_args, SIMD_count);
@@ -265,6 +269,7 @@ void callFunc(const Func* func, void *ctx,
 
 #define COERCE_OR_CAST(kind, warn_kind)                         \
   if (paramCoerceMode) {                                        \
+    auto ty = args[-i].m_type;                                  \
     if (!tvCoerceParamTo##kind##InPlace(&args[-i],              \
                                         func->isBuiltin())) {   \
       raise_param_type_warning(                                 \
@@ -274,6 +279,19 @@ void callFunc(const Func* func, void *ctx,
         args[-i].m_type                                         \
       );                                                        \
       return false;                                             \
+    } else {                                                    \
+      if (RuntimeOption::EvalWarnOnCoerceBuiltinParams &&       \
+          !equivDataTypes(ty, KindOf##warn_kind) &&             \
+          args[-i].m_type != KindOfNull) {                      \
+        raise_warning(                                          \
+          "Argument %i of type %s was passed to %s, "           \
+          "it was coerced to %s",                               \
+          i + 1,                                                \
+          getDataTypeString(ty).data(),                         \
+          func->fullDisplayName()->data(),                      \
+          getDataTypeString(KindOf##warn_kind).data()           \
+        );                                                      \
+      }                                                         \
     }                                                           \
   } else {                                                      \
     tvCastTo##kind##InPlace(&args[-i]);                         \
@@ -327,8 +345,12 @@ bool coerceFCallArgs(TypedValue* args,
         }
       }();
       if (raise) {
-        raise_hackarr_type_hint_param_notice(func, c->m_data.parr,
-                                             tc.type(), i);
+        raise_hackarr_compat_type_hint_param_notice(
+          func,
+          c->m_data.parr,
+          tc.type(),
+          i
+        );
       }
       continue;
     }
@@ -366,6 +388,8 @@ bool coerceFCallArgs(TypedValue* args,
       case KindOfPersistentKeyset:
       case KindOfPersistentArray:
       case KindOfRef:
+      case KindOfFunc:
+      case KindOfClass:
         not_reached();
     }
   }
@@ -512,17 +536,16 @@ TypedValue* unimplementedWrapper(ActRec* ar) {
   return ar->retSlot();
 }
 
-void getFunctionPointers(const BuiltinFunctionInfo& info,
-                         int nativeAttrs,
-                         BuiltinFunction& bif,
-                         BuiltinFunction& nif) {
+void getFunctionPointers(const NativeFunctionInfo& info, int nativeAttrs,
+                         ArFunction& bif, NativeFunction& nif) {
   nif = info.ptr;
   if (!nif) {
     bif = unimplementedWrapper;
     return;
   }
   if (nativeAttrs & AttrActRec) {
-    bif = nif;
+    // NativeFunction with the ArFunction signature
+    bif = reinterpret_cast<ArFunction>(nif);
     nif = nullptr;
     return;
   }
@@ -588,6 +611,8 @@ static bool tcCheckNative(const TypeConstraint& tc, const NativeSig::Type ty) {
     case KindOfNull:         return ty == T::Void;
     case KindOfRef:          return ty == T::Mixed    || ty == T::OutputArg;
     case KindOfInt64:        return ty == T::Int64    || ty == T::Int32;
+    case KindOfFunc:         return ty == T::Func;
+    case KindOfClass:        return ty == T::Class;
   }
   not_reached();
 }
@@ -605,12 +630,19 @@ const char* kInvalidActRecFuncMessage =
   "Functions declared as ActRec must return a TypedValue* and take an ActRec* "
   "as their sole argument";
 
+static const StaticString
+  s_native("__Native"),
+  s_actrec("ActRec");
+
 const char* checkTypeFunc(const NativeSig& sig,
                           const TypeConstraint& retType,
-                          const Func* func) {
+                          const FuncEmitter* func) {
   using T = NativeSig::Type;
 
-  if (!func->nativeFuncPtr()) {
+  auto dummy = HPHP::AttrNone;
+  auto nativeAttributes = func->parseNativeAttributes(dummy);
+
+  if (nativeAttributes & Native::AttrActRec) {
     return
       sig.ret == T::ARReturn &&
       sig.args.size() == 1 &&
@@ -623,27 +655,26 @@ const char* checkTypeFunc(const NativeSig& sig,
 
   auto argIt = sig.args.begin();
   auto endIt = sig.args.end();
-  if (func->preClass()) { // called from the verifier so m_cls is not set yet
+  if (func->pce()) { // called from the verifier so m_cls is not set yet
     if (argIt == endIt) return kInvalidArgCountMessage;
     auto const ctxTy = *argIt++;
-    if (func->attrs() & HPHP::AttrStatic) {
+    if (func->attrs & HPHP::AttrStatic) {
       if (ctxTy != T::Class) return kNeedStaticContextMessage;
     } else {
       if (ctxTy != T::This) return kNeedObjectContextMessage;
     }
   }
 
-  if (func->takesNumArgs()) {
+  if (nativeAttributes & Native::AttrTakesNumArgs) {
     if (*argIt++ != T::Int64) return kInvalidNumArgsMessage;
   }
 
-  int index = 0;
-  for (auto const& pInfo : func->params()) {
+  for (auto const& pInfo : func->params) {
     if (argIt == endIt) return kInvalidArgCountMessage;
 
     auto const argTy = *argIt++;
 
-    if (func->byRef(index++)) {
+    if (pInfo.byRef) {
       if (argTy != T::MixedRef &&
           argTy != T::OutputArg) {
         return kInvalidArgTypeMessage;
@@ -662,6 +693,59 @@ const char* checkTypeFunc(const NativeSig& sig,
   }
 
   return argIt == endIt ? nullptr : kInvalidArgCountMessage;
+}
+
+NativeFunctionInfo getNativeFunction(const FuncTable& nativeFuncs,
+                                     const StringData* fname,
+                                     const StringData* cname,
+                                     bool isStatic) {
+  const String name{
+    cname == nullptr
+      ? String{const_cast<StringData*>(fname)}
+      : (String{const_cast<StringData*>(cname)} + (isStatic ? "::" : "->") +
+         String{const_cast<StringData*>(fname)})
+  };
+  if (auto info = nativeFuncs.get(name.get())) {
+    return info;
+  }
+
+  // didn't find builtin native function, query each resolver
+  for (const auto& resolver : s_nativeFuncResolvers) {
+    if (auto info = resolver(name)) {
+      return *info;
+    }
+  }
+
+  // not found
+  return NativeFunctionInfo();
+}
+
+NativeFunctionInfo getNativeFunction(const FuncTable& nativeFuncs,
+                                     const char* fname,
+                                     const char* cname,
+                                     bool isStatic) {
+  return getNativeFunction(nativeFuncs,
+                           makeStaticString(fname),
+                           cname ? makeStaticString(cname) : nullptr,
+                           isStatic);
+}
+
+void registerBuiltinNativeFunc(const StringData* name,
+                               const NativeFunctionInfo& info) {
+  s_builtinNativeFuncs.insert(name, info);
+}
+
+void FuncTable::insert(const StringData* name,
+                       const NativeFunctionInfo& info) {
+  assert(name->isStatic());
+  DEBUG_ONLY auto it = m_infos.insert(std::make_pair(name, info));
+  assert(it.second || it.first->second == info);
+}
+
+NativeFunctionInfo FuncTable::get(const StringData* name) const {
+  auto const it = m_infos.find(name);
+  if (it != m_infos.end()) return it->second;
+  return NativeFunctionInfo();
 }
 
 static std::string nativeTypeString(NativeSig::Type ty) {
@@ -688,6 +772,7 @@ static std::string nativeTypeString(NativeSig::Type ty) {
   case T::This:       return "this";
   case T::Class:      return "class";
   case T::Void:       return "void";
+  case T::Func:       return "func";
   }
   not_reached();
 }

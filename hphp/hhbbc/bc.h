@@ -36,12 +36,6 @@ namespace HPHP { namespace HHBBC {
 
 struct Bytecode;
 
-namespace php {
-
-struct Func;
-
-}
-
 //////////////////////////////////////////////////////////////////////
 
 /*
@@ -515,24 +509,12 @@ namespace imm {
                       return Flavor::CVU;                     \
                     }
 
-#define POP_C_CVMANY       uint32_t numPop() const { return arg1; }  \
-                           Flavor popFlavor(uint32_t i) const {      \
-                             assert(i < numPop());                   \
-                             return i == 0 ? Flavor::C : Flavor::CV; \
-                           }
-
-#define POP_CVMANY_UMANY   uint32_t numPop() const { return arg1 + arg2 - 1; } \
-                           Flavor popFlavor(uint32_t i) const {                \
-                             assert(i < numPop());                             \
-                             return i < arg1 ? Flavor::CV : Flavor::U;         \
-                           }
-
-#define POP_C_CVMANY_UMANY uint32_t numPop() const { return arg1 + arg2 - 1; } \
-                           Flavor popFlavor(uint32_t i) const {                \
-                             assert(i < numPop());                             \
-                             if (i == 0) return Flavor::C;                     \
-                             return i < arg1 ? Flavor::CV : Flavor::U;         \
-                           }
+#define POP_FCALL   uint32_t numPop() const { return arg1 + arg2 + arg3 - 1; } \
+                    Flavor popFlavor(uint32_t i) const {                       \
+                      assert(i < numPop());                                    \
+                      if (i == 0 && arg2) return Flavor::C;                    \
+                      return i < arg1 + arg2 ? Flavor::CV : Flavor::U;         \
+                    }
 
 #define PUSH_NOV          uint32_t numPush() const { return 0; }
 
@@ -542,7 +524,7 @@ namespace imm {
 
 #define PUSH_INS_1(...)   uint32_t numPush() const { return 1; }
 
-#define PUSH_CMANY        uint32_t numPush() const { return arg2; }
+#define PUSH_FCALL        uint32_t numPush() const { return arg3; }
 
 #define FLAGS_NF
 #define FLAGS_TF
@@ -638,7 +620,7 @@ OPCODES
 #undef PUSH_ONE
 #undef PUSH_TWO
 #undef PUSH_INS_1
-#undef PUSH_CMANY
+#undef PUSH_FCALL
 
 #undef POP_UV
 #undef POP_CV
@@ -656,9 +638,7 @@ OPCODES
 #undef POP_SMANY
 #undef POP_CVMANY
 #undef POP_CVUMANY
-#undef POP_C_CVMANY
-#undef POP_CVMANY_UMANY
-#undef POP_C_CVMANY_UMANY
+#undef POP_FCALL
 
 #undef IMM_TY_MA
 #undef IMM_TY_BLA
@@ -981,14 +961,6 @@ struct WriteClsRefSlotVisitor : boost::static_visitor<ClsRefSlotId> {
   typename std::enable_if<has_caw<T>::value,ClsRefSlotId>::type
   operator()(T const& t) const { return t.slot; }
 };
-
-//////////////////////////////////////////////////////////////////////
-
-std::string show(const php::Func&, const Bytecode& bc);
-inline std::string show(borrowed_ptr<const php::Func> func,
-                        const Bytecode& bc) {
-  return show(*func, bc);
-}
 
 //////////////////////////////////////////////////////////////////////
 

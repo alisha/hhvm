@@ -372,12 +372,16 @@ let mut_imms (is : IS.t) : IS.t =
                                        mutate_mode         mode)
     | BaseL     (id,  mode) -> BaseL  (mutate_local_id id  !mag,
                                        mutate_mode         mode)
-    | BaseSC      (idx,  i) -> BaseSC         (mutate_int      idx !mag,
-                                               mutate_int      i   !mag)
-    | BaseSL      (id, idx) -> BaseSL         (mutate_local_id id  !mag,
-                                               mutate_int      idx !mag)
-    | BaseC        idx      -> BaseC    (mutate_int idx !mag)
-    | BaseR        idx      -> BaseR    (mutate_int idx !mag)
+    | BaseSC    (idx, i, mode)  -> BaseSC   (mutate_int      idx !mag,
+                                             mutate_int      i   !mag,
+                                             mutate_mode     mode)
+    | BaseSL    (id, idx, mode) -> BaseSL   (mutate_local_id id  !mag,
+                                             mutate_int      idx !mag,
+                                             mutate_mode     mode)
+    | BaseC     (idx, mode)     -> BaseC    (mutate_int idx !mag,
+                                             mutate_mode     mode)
+    | BaseR     (idx, mode)     -> BaseR    (mutate_int idx !mag,
+                                             mutate_mode     mode)
     | Dim       (mode, key) -> Dim      (mutate_mode  mode, mutate_key key !mag)
     | _ -> s in
   let mutate_ctrl_flow data s =
@@ -677,11 +681,12 @@ let mutate_metadata (input : HP.t)  =
       (body |> Hhas_body.instrs)
       (body |> Hhas_body.decl_vars)
       (body |> Hhas_body.num_iters)
-      (body |> Hhas_body.num_cls_ref_slots  |> fun n -> mutate_int n !mag)
-      (body |> Hhas_body.is_memoize_wrapper |> mutate_bool)
-      (body |> Hhas_body.params             |> delete_map mutate_param)
-      (body |> Hhas_body.return_type        |> option_lift mutate_type_info)
-      (body |> Hhas_body.static_inits       |> delete_map mutate_static_init)
+      (body |> Hhas_body.num_cls_ref_slots      |> fun n -> mutate_int n !mag)
+      (body |> Hhas_body.is_memoize_wrapper     |> mutate_bool)
+      (body |> Hhas_body.is_memoize_wrapper_lsb |> mutate_bool)
+      (body |> Hhas_body.params                 |> delete_map mutate_param)
+      (body |> Hhas_body.return_type            |> option_lift mutate_type_info)
+      (body |> Hhas_body.static_inits           |> delete_map mutate_static_init)
       (body |> Hhas_body.doc_comment)
       (body |> Hhas_body.env) in
   let mutate_class_data (ids : Hhbc_id.Class.t list) (cls : Hhas_class.t) =
@@ -719,6 +724,11 @@ let mutate_metadata (input : HP.t)  =
         (prop |> Hhas_property.is_deep_init       |> mutate_bool)
         (prop |> Hhas_property.no_serialize       |> mutate_bool)
         (prop |> Hhas_property.is_immutable       |> mutate_bool)
+        (prop |> Hhas_property.is_lsb             |> mutate_bool)
+        (prop |> Hhas_property.is_no_bad_redeclare |> mutate_bool)
+        (prop |> Hhas_property.has_system_initial |> mutate_bool)
+        (prop |> Hhas_property.no_implicit_null   |> mutate_bool)
+        (prop |> Hhas_property.initial_satisfies_tc |> mutate_bool)
         (prop |> Hhas_property.name)
         (prop |> Hhas_property.initial_value |> option_lift mutate_typed_value)
         (prop |> Hhas_property.initializer_instrs |> mutate_option)

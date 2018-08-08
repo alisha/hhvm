@@ -328,13 +328,8 @@ static const struct {
    * FCall is special. Like the Ret* instructions, its manipulation of the
    * runtime stack are outside the boundaries of the tracelet abstraction.
    */
-  { OpFCall,       {FStack,           Stack1,       OutUnknown      }},
-  { OpFCallM,      {FStack,           StackN,       OutUnknown      }},
-  { OpFCallDM,     {FStack,           StackN,       OutUnknown      }},
-  { OpFCallUnpackM,{FStack,           StackN,       OutUnknown      }},
-  { OpFCallD,      {FStack,           Stack1,       OutUnknown      }},
+  { OpFCall,       {FStack,           StackN,       OutUnknown      }},
   { OpFCallAwait,  {FStack,           Stack1,       OutUnknown      }},
-  { OpFCallUnpack, {FStack,           Stack1,       OutUnknown      }},
   { OpFCallBuiltin,{BStackN|DontGuardAny,
                                       Stack1,       OutUnknown      }},
   { OpDecodeCufIter,{Stack1,          None,         OutNone         }},
@@ -419,6 +414,11 @@ static const struct {
   { OpAssertRATStk,{None,             None,         OutNone         }},
   { OpBreakTraceHint,{None,           None,         OutNone         }},
   { OpGetMemoKeyL, {Local,            Stack1,       OutUnknown      }},
+  { OpResolveFunc, {None,             Stack1,       OutFunc         }},
+  { OpResolveObjMethod,
+                   {StackTop2,        Stack1,       OutVArray        }},
+  { OpResolveClsMethod,
+                   {StackTop2,        Stack1,       OutVArray        }},
 
   /*** 14. Generator instructions ***/
 
@@ -541,16 +541,11 @@ int64_t countOperands(uint64_t mask) {
 int64_t getStackPopped(PC pc) {
   auto const op = peek_op(pc);
   switch (op) {
-    case Op::FCall:
-    case Op::FCallD:
-    case Op::FCallUnpack:
     case Op::FCallAwait:
       return getImm(pc, 0).u_IVA + kNumActRecCells;
-
-    case Op::FCallM:
-    case Op::FCallDM:
-    case Op::FCallUnpackM:
-      return getImm(pc, 0).u_IVA + getImm(pc, 1).u_IVA + kNumActRecCells - 1;
+    case Op::FCall:
+      return getImm(pc, 0).u_IVA + getImm(pc, 1).u_IVA + getImm(pc, 2).u_IVA +
+        kNumActRecCells - 1;
 
     case Op::QueryM:
     case Op::VGetM:
@@ -590,9 +585,7 @@ int64_t getStackPopped(PC pc) {
 int64_t getStackPushed(PC pc) {
   auto const op = peek_op(pc);
   switch (op) {
-    case Op::FCallM:       return getImm(pc, 1).u_IVA;
-    case Op::FCallDM:      return getImm(pc, 1).u_IVA;
-    case Op::FCallUnpackM: return getImm(pc, 1).u_IVA;
+    case Op::FCall:        return getImm(pc, 2).u_IVA;
     default:               break;
   }
 
@@ -876,8 +869,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::Jmp:
   case Op::JmpNS:
   case Op::FCall:
-  case Op::FCallD:
-  case Op::FCallUnpack:
   case Op::FCallAwait:
   case Op::ClsCnsD:
   case Op::FIsParamByRef:
@@ -998,6 +989,9 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::FPushFuncD:
   case Op::FPushFuncU:
   case Op::FPushObjMethodD:
+  case Op::ResolveFunc:
+  case Op::ResolveClsMethod:
+  case Op::ResolveObjMethod:
   case Op::False:
   case Op::File:
   case Op::GetMemoKeyL:
@@ -1094,9 +1088,6 @@ bool dontGuardAnyInputs(const NormalizedInstruction& ni) {
   case Op::MemoGet:
   case Op::MemoSet:
   case Op::RetM:
-  case Op::FCallM:
-  case Op::FCallDM:
-  case Op::FCallUnpackM:
   case Op::Select:
     return false;
 
@@ -1284,13 +1275,12 @@ void translateInstr(irgen::IRGS& irgs, const NormalizedInstruction& ni,
   }
   auto pc = ni.pc();
   for (auto i = 0, num = instrNumPops(pc); i < num; ++i) {
-    if (ni.op() == OpFCallM || ni.op() == OpFCallDM ||
-        ni.op() == OpFCallUnpackM) {
-      // This is a hack to deal with the fact that these instructions are
-      // actually popping an ActRec in the middle of their "pops." We could
+    if (ni.op() == OpFCall && instrInputFlavor(pc, i) == UV) {
+      // This is a hack to deal with the fact that this instruction is
+      // actually popping an ActRec in the middle of its "pops." We could
       // assert on the Uninit values on the stack, but the call is going to
       // override them anyway so it's not worth guarding on them.
-      if (instrInputFlavor(pc, i) == UV) break;
+      break;
     }
     auto const type =
       !builtinFunc ? flavorToType(instrInputFlavor(pc, i)) :

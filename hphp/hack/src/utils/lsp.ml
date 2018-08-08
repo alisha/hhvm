@@ -505,7 +505,21 @@ end
 
 (* Completion request, method="textDocument/completion" *)
 module Completion = struct
-  type params = TextDocumentPositionParams.t
+  type params = completionParams
+
+  and completionParams = {
+    loc: TextDocumentPositionParams.t;
+    context: completionContext option;
+  }
+
+  and completionContext = {
+    triggerKind: completionTriggerKind;
+  }
+
+  and completionTriggerKind =
+    | Invoked (* 1 *)
+    | TriggerCharacter (* 2 *)
+    | TriggerForIncompleteCompletions (* 3 *)
 
   and result = completionList  (* wire: can also be 'completionItem list' *)
 
@@ -660,6 +674,7 @@ module FindReferences = struct
 
   and referenceContext = {
     includeDeclaration: bool;  (* include declaration of current symbol *)
+    includeIndirectReferences: bool;
   }
 end
 
@@ -936,6 +951,7 @@ type lsp_request =
   | ShowMessageRequestRequest of ShowMessageRequest.params
   | ShowStatusRequest of ShowStatus.params
   | RageRequest
+  | RenameRequest of Rename.params
   | UnknownRequest of string * Hh_json.json option
 
 type lsp_result =
@@ -956,6 +972,7 @@ type lsp_result =
   | ShowMessageRequestResult of ShowMessageRequest.result
   | ShowStatusResult of ShowStatus.result
   | RageResult of Rage.result
+  | RenameResult of Rename.result
   | ErrorResult of exn * string
 
 type lsp_notification =

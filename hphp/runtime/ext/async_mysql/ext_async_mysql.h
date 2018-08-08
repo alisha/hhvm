@@ -73,7 +73,12 @@ struct AsyncMysqlConnection {
       std::unique_ptr<am::Connection> conn,
       std::shared_ptr<am::ConnectOperation> conn_op = nullptr,
       db::ClientPerfStats clientStats = db::ClientPerfStats());
-  Object query(ObjectData* this_, am::Query query, int64_t timeout_micros = -1);
+  using AttributeMap = std::unordered_map<std::string, std::string>;
+  Object query(
+      ObjectData* this_,
+      am::Query query,
+      int64_t timeout_micros = -1,
+      const AttributeMap& queryAttributes = AttributeMap());
 
   std::unique_ptr<am::Connection> m_conn;
   String m_host;
@@ -229,12 +234,12 @@ struct FieldIndex {
   String getFieldString(size_t field_index) const;
 
  private:
+  // NB: It's possible to just use a req::vector_map<String> for names,
+  // and rely on insertion order to compute indexes, but sometimes this
+  // FieldIndex has duplicate names. last-name-wins, requiring the map.
   req::vector<String> field_names_;
-  req::hash_map<
-    String,
-    size_t,
-    hphp_string_hash,
-    hphp_string_same> field_name_map_;
+  req::fast_map<String, size_t, hphp_string_hash, hphp_string_same>
+    field_name_map_;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

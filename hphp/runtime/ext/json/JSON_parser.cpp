@@ -571,7 +571,7 @@ struct UncheckedBuffer {
   // Use given buffer with space for 'cap' chars, including '\0'.
   void setBuf(char* buf, size_t cap) {
     begin = p = buf;
-#ifdef DEBUG
+#ifndef NDEBUG
     end = begin + cap;
 #endif
   }
@@ -594,7 +594,7 @@ struct UncheckedBuffer {
 
   char* p{nullptr};
   char* begin{nullptr};
-#ifdef DEBUG
+#ifndef NDEBUG
   char* end{nullptr};
 #endif
 };
@@ -831,6 +831,8 @@ static void json_create_zval(Variant &z, UncheckedBuffer &buf, DataType type,
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    case KindOfFunc:
+    case KindOfClass:
       z = uninit_null();
       return;
   }

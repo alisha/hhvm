@@ -103,6 +103,12 @@ TypedNum numericConvHelper(Cell cell) {
     case KindOfBoolean:
       return make_int(cell.m_data.num);
 
+    case KindOfFunc:
+      return stringToNumeric(funcToStringHelper(cell.m_data.pfunc));
+
+    case KindOfClass:
+      return stringToNumeric(classToStringHelper(cell.m_data.pclass));
+
     case KindOfString:
     case KindOfPersistentString:
       return stringToNumeric(cell.m_data.pstr);
@@ -432,10 +438,9 @@ void cellBitOpEq(Op op, tv_lval c1, Cell c2) {
 
 // Op must implement the interface described for cellIncDecOp.
 template<class Op>
-void stringIncDecOp(Op op, tv_lval cell) {
-  assertx(isStringType(type(cell)));
+void stringIncDecOp(Op op, tv_lval cell, StringData* sd) {
+  assertx(isStringType(type(cell)) || isFuncType(type(cell)));
 
-  auto const sd = val(cell).pstr;
   if (sd->empty()) {
     decRefStr(sd);
     cellCopy(op.emptyString(), cell);
@@ -489,9 +494,21 @@ void cellIncDecOp(Op op, tv_lval cell) {
       op.dblCase(cell);
       return;
 
+    case KindOfFunc: {
+      auto s = funcToStringHelper(val(cell).pfunc);
+      stringIncDecOp(op, cell, const_cast<StringData*>(s));
+      return;
+    }
+
+    case KindOfClass: {
+      auto s = classToStringHelper(val(cell).pclass);
+      stringIncDecOp(op, cell, const_cast<StringData*>(s));
+      return;
+    }
+
     case KindOfPersistentString:
     case KindOfString:
-      stringIncDecOp(op, cell);
+      stringIncDecOp(op, cell, val(cell).pstr);
       return;
 
     case KindOfBoolean:
@@ -804,6 +821,8 @@ void cellBitNot(Cell& cell) {
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    case KindOfFunc:
+    case KindOfClass:
       raise_error("Unsupported operand type for ~");
   }
 }

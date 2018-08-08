@@ -49,7 +49,7 @@ type env = {
   class_kind: Ast.class_kind option;
   imm_ctrl_ctx: control_context;
   typedef_tparams : Nast.tparam list;
-  lvalue: bool; (* current expression is being used as an lvalue *)
+  is_array_append_allowed: bool;
   is_reactive: bool; (* The enclosing function is reactive *)
   tenv: Env.env;
 }
@@ -70,11 +70,19 @@ let check_coroutine_constructor name is_coroutine p =
   if name = SN.Members.__construct && is_coroutine
   then Errors.coroutine_in_constructor p
 
-let error_if_has_onlyrx_if_rxfunc_attribute attrs =
-  match Attributes.find SN.UserAttributes.uaOnlyRxIfRxFunc attrs with
-  | Some { ua_name = (p, _); _ } ->
-    Errors.onlyrx_if_rxfunc_invalid_location p;
+let error_on_attr env attrs attr f =
+  if not (TypecheckerOptions.unsafe_rx (Env.get_options env.tenv))
+  then match Attributes.find attr attrs with
+  | Some { ua_name = (p, _); _ } -> f p;
   | _ -> ()
+
+let error_if_has_rx_on_scope env attrs =
+  error_on_attr env attrs
+    SN.UserAttributes.uaRxOfScope Errors.misplaced_rx_of_scope
+
+let error_if_has_onlyrx_if_rxfunc_attribute env attrs =
+  error_on_attr env attrs
+    SN.UserAttributes.uaOnlyRxIfRxFunc Errors.onlyrx_if_rxfunc_invalid_location
 
 module CheckFunctionBody = struct
   let rec stmt f_type env st = match f_type, st with
@@ -265,6 +273,9 @@ module CheckFunctionBody = struct
         ()
     | _, True | _, False | _, Int _
     | _, Float _ | _, Null | _, String _ -> ()
+    | _, PrefixedString (_, e) ->
+        expr f_type env e;
+        ()
     | _, String2 el ->
         List.iter el (expr f_type env);
         ()
@@ -412,17 +423,17 @@ let rec fun_ tenv f named_body =
   if !auto_complete then ()
   else begin
     let env = { t_is_finally = false;
-                lvalue = false;
+                is_array_append_allowed = false;
                 class_name = None; class_kind = None;
                 imm_ctrl_ctx = Toplevel;
                 typedef_tparams = [];
                 tenv = tenv;
                 is_reactive = fun_is_reactive f.f_user_attributes
                 } in
-    func env f named_body
+    func ~is_efun:false env f named_body
   end
 
-and func env f named_body =
+and func ~is_efun env f named_body =
   let p, fname = f.f_name in
   let fname_lower = String.lowercase_ascii (strip_ns fname) in
   if fname_lower = SN.Members.__construct || fname_lower = "using"
@@ -442,17 +453,32 @@ and func env f named_body =
   (* Functions can't be mutable, only methods can *)
   if Attributes.mem SN.UserAttributes.uaMutable f.f_user_attributes then
     Errors.mutable_attribute_on_function p;
+  if Attributes.mem SN.UserAttributes.uaMaybeMutable f.f_user_attributes then
+    Errors.maybe_mutable_attribute_on_function p;
   if Attributes.mem SN.UserAttributes.uaMutableReturn f.f_user_attributes
     && not env.is_reactive then
     Errors.mutable_return_annotated_decls_must_be_reactive "function" p fname;
   if fun_is_conditionally_reactive f.f_user_attributes
   then Errors.conditionally_reactive_function p;
 
+  if is_efun
+  then begin
+    if env.is_reactive
+    then error_on_attr env
+      f.f_user_attributes SN.UserAttributes.uaRxOfScope Errors.rx_of_scope_and_explicit_rx
+  end
+  else error_if_has_rx_on_scope env f.f_user_attributes;
+
   if env.is_reactive
   then ensure_single_reactivity_attribute f.f_user_attributes;
 
-  error_if_has_onlyrx_if_rxfunc_attribute f.f_user_attributes;
+  error_if_has_onlyrx_if_rxfunc_attribute env f.f_user_attributes;
   check_maybe_rx_attributes_on_params env f.f_user_attributes f.f_params;
+
+  if f.f_ret_by_ref
+     && env.is_reactive
+     && not (TypecheckerOptions.unsafe_rx (Env.get_options env.tenv))
+  then Errors.reference_in_rx p;
 
   List.iter f.f_tparams (tparam env);
   let byref = List.find f.f_params ~f:(fun x -> x.param_is_reference) in
@@ -464,7 +490,8 @@ and func env f named_body =
     fun x -> x.param_callconv = Some Ast.Pinout) in
   (match inout with
     | Some param ->
-      if Attributes.mem SN.UserAttributes.uaMemoize f.f_user_attributes
+      if Attributes.mem SN.UserAttributes.uaMemoize f.f_user_attributes ||
+         Attributes.mem SN.UserAttributes.uaMemoizeLSB f.f_user_attributes
       then Errors.inout_params_memoize p param.param_pos;
       if f.f_ret_by_ref then Errors.inout_params_ret_by_ref p param.param_pos;
       ()
@@ -482,7 +509,7 @@ and func env f named_body =
     env
     named_body.fnb_nast
 
-and tparam env (_, _, cstrl) =
+and tparam env (_, _, cstrl, _) =
   List.iter cstrl (fun (_, h) -> hint env h)
 
 and hint env (p, h) =
@@ -553,16 +580,16 @@ and check_happly unchecked_tparams env h =
   let env = { env with Env.pos = (fst h) } in
   let decl_ty = Decl_hint.hint env.Env.decl_env h in
   let unchecked_tparams =
-    List.map unchecked_tparams begin fun (v, sid, cstrl) ->
+    List.map unchecked_tparams begin fun (v, sid, cstrl, reified) ->
       let cstrl = List.map cstrl (fun (ck, cstr) ->
             let cstr = Decl_hint.hint env.Env.decl_env cstr in
             (ck, cstr)) in
-      (v, sid, cstrl)
+      (v, sid, cstrl, reified)
     end in
   let tyl =
     List.map
       unchecked_tparams
-      (fun (_, (p, _), _) -> Reason.Rwitness p, Tany) in
+      (fun (_, (p, _), _, _) -> Reason.Rwitness p, Tany) in
   let subst = Inst.make_subst unchecked_tparams tyl in
   let decl_ty = Inst.instantiate subst decl_ty in
   match decl_ty with
@@ -582,7 +609,7 @@ and check_happly unchecked_tparams env h =
                   { (Phase.env_with_self env) with
                     substs = Subst.make tc_tparams tyl;
                   } in
-                iter2_shortest begin fun (_, (p, x), cstrl) ty ->
+                iter2_shortest begin fun (_, (p, x), cstrl, _) ty ->
                   List.iter cstrl (fun (ck, cstr_ty) ->
                       let r = Reason.Rwitness p in
                       let env, cstr_ty = Phase.localize ~ety_env env cstr_ty in
@@ -605,7 +632,7 @@ and class_ tenv c =
   if !auto_complete then () else begin
   let cname = Some (snd c.c_name) in
   let env = { t_is_finally = false;
-              lvalue = false;
+              is_array_append_allowed = false;
               class_name = cname;
               class_kind = Some c.c_kind;
               imm_ctrl_ctx = Toplevel;
@@ -619,7 +646,8 @@ and class_ tenv c =
   let tenv = add_constraints (fst c.c_name) tenv constraints in
   let env = { env with tenv = Env.set_mode tenv c.c_mode } in
 
-  error_if_has_onlyrx_if_rxfunc_attribute c.c_user_attributes;
+  error_if_has_onlyrx_if_rxfunc_attribute env c.c_user_attributes;
+  error_if_has_rx_on_scope env c.c_user_attributes;
 
   (* Const handling:
    * prevent for abstract final classes, traits, and interfaces
@@ -744,7 +772,7 @@ and check_class_property_initialization prop =
       match (snd e) with
       | Any | Typename _
       | Id _ | Class_const _ | True | False | Int _ | Float _
-      | Null | String _ ->
+      | Null | String _ | PrefixedString _ ->
         ()
       | Array field_list ->
         List.iter field_list begin function
@@ -845,7 +873,7 @@ and check_no_class_tparams class_tparams (pos, ty)  =
   let check_tparams = check_no_class_tparams class_tparams in
   let maybe_check_tparams = maybe check_no_class_tparams class_tparams in
   let matches_class_tparam tp_name =
-    List.iter class_tparams begin fun (_, (c_tp_pos, c_tp_name), _) ->
+    List.iter class_tparams begin fun (_, (c_tp_pos, c_tp_name), _, _) ->
       if c_tp_name = tp_name
       then Errors.typeconst_depends_on_external_tparam pos c_tp_pos c_tp_name
     end in
@@ -908,7 +936,8 @@ and add_constraints pos tenv (cstrs: locl where_constraint list) =
   List.fold_left cstrs ~init:tenv ~f:(add_constraint pos)
 
 and check_static_memoized_function m =
-  if Attributes.mem SN.UserAttributes.uaMemoize m.m_user_attributes then
+  if Attributes.mem SN.UserAttributes.uaMemoize m.m_user_attributes ||
+     Attributes.mem SN.UserAttributes.uaMemoizeLSB m.m_user_attributes then
     Errors.static_memoized_function (fst m.m_name);
   ()
 
@@ -934,15 +963,23 @@ and method_ (env, is_static) m =
     && not (Attributes.mem SN.UserAttributes.uaOptionalDestruct m.m_user_attributes)
   then Errors.illegal_destructor p;
 
-  (* Mutable async methods are not allowed *)
-  if m.m_fun_kind <> Ast.FSync
-    && Attributes.mem SN.UserAttributes.uaMutable m.m_user_attributes then
-    Errors.mutable_async_method p;
+  let is_mutable =
+    Attributes.mem SN.UserAttributes.uaMutable m.m_user_attributes in
+
+  let is_maybe_mutable =
+    Attributes.mem SN.UserAttributes.uaMaybeMutable m.m_user_attributes in
+
+  error_if_has_rx_on_scope env m.m_user_attributes;
 
   (* Mutable methods must be reactive *)
-  if Attributes.mem SN.UserAttributes.uaMutable m.m_user_attributes
-    && not env.is_reactive then
-    Errors.mutable_methods_must_be_reactive p name;
+  if not env.is_reactive then begin
+    if is_mutable
+    then Errors.mutable_methods_must_be_reactive p name;
+    if is_maybe_mutable
+    then Errors.maybe_mutable_methods_must_be_reactive p name;
+  end;
+  if is_mutable && is_maybe_mutable
+  then Errors.conflicting_mutable_and_maybe_mutable_attributes p;
 
   (*Methods annotated with MutableReturn attribute must be reactive *)
   if Attributes.mem SN.UserAttributes.uaMutableReturn m.m_user_attributes
@@ -953,7 +990,7 @@ and method_ (env, is_static) m =
   then ensure_single_reactivity_attribute m.m_user_attributes;
 
   check_conditionally_reactive_annotations env.is_reactive p name m.m_user_attributes;
-  error_if_has_onlyrx_if_rxfunc_attribute m.m_user_attributes;
+  error_if_has_onlyrx_if_rxfunc_attribute env m.m_user_attributes;
   check_maybe_rx_attributes_on_params env m.m_user_attributes m.m_params;
 
   let byref = List.find m.m_params ~f:(fun x -> x.param_is_reference) in
@@ -965,7 +1002,8 @@ and method_ (env, is_static) m =
     fun x -> x.param_callconv = Some Ast.Pinout) in
   (match inout with
     | Some param ->
-      if Attributes.mem SN.UserAttributes.uaMemoize m.m_user_attributes
+      if Attributes.mem SN.UserAttributes.uaMemoize m.m_user_attributes ||
+         Attributes.mem SN.UserAttributes.uaMemoizeLSB m.m_user_attributes
       then Errors.inout_params_memoize p param.param_pos;
       if m.m_ret_by_ref then Errors.inout_params_ret_by_ref p param.param_pos;
       ()
@@ -1026,14 +1064,31 @@ and check_maybe_rx_attributes_on_params env parent_attrs params =
 and param_is_mutable p =
   Attributes.mem SN.UserAttributes.uaMutable p.param_user_attributes
 
+and param_is_maybe_mutable p =
+  Attributes.mem SN.UserAttributes.uaMaybeMutable p.param_user_attributes
+
 and fun_param env (pos, name) f_type byref param =
   maybe hint env param.param_hint;
   maybe expr env param.param_expr;
-  if param_is_mutable param && f_type <> Ast.FSync then
-    Errors.mutable_params_outside_of_sync
-      param.param_pos pos param.param_name name;
-  if param_is_mutable param && not env.is_reactive then
-    Errors.mutable_methods_must_be_reactive param.param_pos name;
+  let is_mutable = param_is_mutable param in
+  let is_maybe_mutable = param_is_maybe_mutable param in
+  if not env.is_reactive then begin
+    if is_mutable
+    then Errors.mutable_methods_must_be_reactive param.param_pos name;
+    if is_maybe_mutable
+    then Errors.maybe_mutable_methods_must_be_reactive param.param_pos name;
+  end;
+
+  if env.is_reactive
+     && param.param_is_reference
+     && not (TypecheckerOptions.unsafe_rx (Env.get_options env.tenv))
+  then Errors.reference_in_rx pos;
+
+  error_if_has_rx_on_scope env param.param_user_attributes;
+
+  if is_mutable && is_maybe_mutable
+  then Errors.conflicting_mutable_and_maybe_mutable_attributes pos;
+
   match param.param_callconv with
   | None -> ()
   | Some Ast.Pinout ->
@@ -1145,7 +1200,8 @@ and expr_ env p = function
   | ImmutableVar _
   | Lplaceholder _ | Dollardollar _ -> ()
   | Dollar e ->
-    expr env e
+    let env' = {env with is_array_append_allowed = false} in
+    expr env' e
   | Pipe (_, e1, e2) ->
       expr env e1;
       expr env e2
@@ -1182,18 +1238,21 @@ and expr_ env p = function
   | Obj_get (e, (_, Id s), _) ->
       if is_magic s && Env.is_strict env.tenv
       then Errors.magic s;
-      expr env e;
+      let env' = {env with is_array_append_allowed = false} in
+      expr env' e;
       ()
   | Obj_get (e1, e2, _) ->
-      expr env e1;
-      expr env e2;
+      let env' = {env with is_array_append_allowed = false} in
+      expr env' e1;
+      expr env' e2;
       ()
-  | Array_get ((p, _), None) when not env.lvalue ->
+  | Array_get ((p, _), None) when not env.is_array_append_allowed ->
     Errors.reading_from_append p;
     ()
   | Array_get (e, eopt) ->
-      expr env e;
-      maybe expr env eopt;
+      let env' = {env with is_array_append_allowed = false} in
+      expr env' e;
+      maybe expr env' eopt;
       ()
   | Call (_, e, _, el, uel) ->
       expr env e;
@@ -1201,7 +1260,7 @@ and expr_ env p = function
       List.iter uel (expr env);
       ()
   | True | False | Int _
-  | Float _ | Null | String _ -> ()
+  | Float _ | Null | String _ | PrefixedString _ -> ()
   | String2 el ->
       List.iter el (expr env);
       ()
@@ -1253,7 +1312,7 @@ and expr_ env p = function
       ()
   | Binop (op, e1, e2) ->
       let lvalue_env = match op with
-      | Ast.Eq _ -> { env with lvalue = true }
+      | Ast.Eq _ -> { env with is_array_append_allowed = true }
       | _ -> env in
       expr lvalue_env e1;
       expr env e2;
@@ -1284,7 +1343,7 @@ and expr_ env p = function
       check_coroutines_enabled (f.f_fun_kind = Ast.FCoroutine) env p;
       let env = { env with imm_ctrl_ctx = Toplevel } in
       let body = Nast.assert_named_body f.f_body in
-      func env f body; ()
+      func ~is_efun:true env f body; ()
   | Xml (_, attrl, el) ->
       List.iter attrl (fun attr -> expr env (get_xhp_attr_expr attr));
       List.iter el (expr env);
@@ -1316,7 +1375,7 @@ and field env (e1, e2) =
 
 let typedef tenv t =
   let env = { t_is_finally = false;
-              lvalue = false;
+              is_array_append_allowed = false;
               class_name = None; class_kind = None;
               imm_ctrl_ctx = Toplevel;
               (* Since typedefs cannot have constraints we shouldn't check

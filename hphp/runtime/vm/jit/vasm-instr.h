@@ -89,6 +89,9 @@ struct Vunit;
   O(debugguardjmp, Inone, Un, Dn)\
   O(inlinestart, Inone, Un, Dn)\
   O(inlineend, Inone, Un, Dn)\
+  O(pushframe, Inone, Un, Dn)\
+  O(popframe, Inone, Un, Dn)\
+  O(recordstack, Inone, Un, Dn)\
   /* native function abi */\
   O(vcall, I(call) I(destType) I(fixup), U(args), D(d))\
   O(vinvoke, I(call) I(destType) I(fixup), U(args), D(d))\
@@ -555,6 +558,19 @@ struct inlinestart { const Func* func; int cost; int id; };
  * Marks a return target or exit from the current inlined frame.
  */
 struct inlineend {};
+
+/*
+ * Indicate that an inline frame has been added or removed to/from the rbp
+ * chain for record keeping.
+ */
+struct pushframe {};
+struct popframe {};
+
+/*
+ * Record the current inline stack as though it were materialized for a call at
+ * fakeAddress.
+ */
+struct recordstack { TCA fakeAddress; };
 
 ///////////////////////////////////////////////////////////////////////////////
 // Native function ABI.

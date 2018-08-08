@@ -52,14 +52,42 @@ abstract class ClassMembers {
 //         ^30:12
     await ClassMembers::genLotsOfModifiers();
 //        ^32:11        ^32:25
+    $this->calculateDistance(5, -6, 12, 1);
+//                         ^34:28
   }
+
+  /** Another method doc block */
+  public function calculateDistance(
+    int $originalPositionX,
+    int $finalPositionX,
+    int $originalPositionY,
+    int $finalPositionY,
+  ): int {
+    return sqrt(
+      pow($originalPositionX - $finalPositionX, 2) +
+        pow($originalPositionY - $finalPositionY, 2),
+    );
+  }
+}
+
+function pow(
+  int $base,
+  int $exponent): int {
+  return $base; // TODO: why isn't Math\\pow getting resolved?
+}
+
+function sqrt(int $value): int {
+  return $value;
 }"
 
 let class_members_cases = [
   ("class_members.php", 18, 18), [
     {
       snippet = "public async function genDoStuff(): Awaitable<void>";
-      addendum = ["Full name: `ClassMembers::genDoStuff`"];
+      addendum = [
+        "Return type: `Awaitable<void>`";
+        "Full name: `ClassMembers::genDoStuff`"
+      ];
       pos = pos_at (18, 18) (18, 27);
     }
   ];
@@ -94,14 +122,20 @@ let class_members_cases = [
   ("class_members.php", 28, 12), [
     {
       snippet = "public abstract function abstractMethod(): string";
-      addendum = ["Full name: `ClassMembers::abstractMethod`"];
+      addendum = [
+        "Return type: `string`";
+        "Full name: `ClassMembers::abstractMethod`"
+      ];
       pos = pos_at (28, 12) (28, 25);
     }
   ];
   ("class_members.php", 30, 12), [
     {
       snippet = "public final function finalMethod(string $arg): void";
-      addendum = ["Full name: `ClassMembers::finalMethod`"];
+      addendum = [
+        "Return type: `void`";
+        "Full name: `ClassMembers::finalMethod`"
+      ];
       pos = pos_at (30, 12) (30, 22);
     };
   ];
@@ -116,8 +150,29 @@ let class_members_cases = [
     {
       snippet = "protected final static async\n\
                  function genLotsOfModifiers(): Awaitable<void>";
-      addendum = ["Full name: `ClassMembers::genLotsOfModifiers`"];
+      addendum = [
+        "Return type: `Awaitable<void>`";
+        "Full name: `ClassMembers::genLotsOfModifiers`"
+      ];
       pos = pos_at (32, 25) (32, 42);
+    };
+  ];
+
+  ("class_members.php", 34, 28), [
+    {
+      snippet =
+        "public function calculateDistance(\n" ^
+        "  int $originalPositionX,\n" ^
+        "  int $finalPositionX,\n" ^
+        "  int $originalPositionY,\n" ^
+        "  int $finalPositionY\n" ^
+        "): int";
+      addendum = [
+        "Another method doc block";
+        "Return type: `int`";
+        "Full name: `ClassMembers::calculateDistance`"
+      ];
+      pos = pos_at (34, 12) (34, 28);
     };
   ];
 ]
@@ -142,7 +197,10 @@ let classname_call_cases = [
     }];
   ("classname_call.php", 9, 18), [{
       snippet = "public static function foo(): int";
-      addendum = ["Full name: `ClassnameCall::foo`"];
+      addendum = [
+        "Return type: `int`";
+        "Full name: `ClassnameCall::foo`"
+      ];
       pos = pos_at (9, 18) (9, 20);
     }];
 ]
@@ -167,7 +225,10 @@ let chained_calls_cases = [
   ("chained_calls.php", 13, 8), [
     {
       snippet = "public function foo(): ChainedCalls";
-      addendum = ["Full name: `ChainedCalls::foo`"];
+      addendum = [
+        "Return type: `ChainedCalls`";
+        "Full name: `ChainedCalls::foo`"
+      ];
       pos = pos_at (13, 7) (13, 9);
     };
   ];
@@ -222,7 +283,10 @@ let classname_variable_cases = [
 
   ("classname_variable.php", 8, 10), [{
       snippet = "public static function foo(): void";
-      addendum = ["Full name: `ClassnameVariable::foo`"];
+      addendum = [
+        "Return type: `void`";
+        "Full name: `ClassnameVariable::foo`"
+      ];
       pos = pos_at (8, 9) (8, 11);
     }];
 ]
@@ -354,37 +418,51 @@ let docblock_cases = [
   ("docblock.php", 7, 13), [
     {
       snippet = "public static function doStuff(): void";
-      addendum = ["Method doc block with double star."; "Full name: `DocBlock::doStuff`"];
+      addendum = [
+        "Method doc block with double star.";
+        "Return type: `void`";
+        "Full name: `DocBlock::doStuff`";
+      ];
       pos = pos_at (7, 13) (7, 19);
     }
   ];
   ("docblock.php", 9, 3), [
     {
       snippet = "function queryDocBlocks(): void";
-      addendum = ["Multiline\n\
-                   function\n\
-                   doc block."];
+      addendum = [
+        "Multiline\n\
+        function\n\
+        doc block.";
+        "Return type: `void`";
+      ];
       pos = pos_at (9, 3) (9, 16);
     }
   ];
   ("docblock.php", 11, 13), [
     {
       snippet = "public static function preserveIndentation(): void";
-      addendum = ["Multiline doc block with
+      addendum = [
+        "Multiline doc block with
 a certain amount of
     indentation
-we want to preserve."; "Full name: `DocBlock::preserveIndentation`"];
+we want to preserve.";
+      "Return type: `void`";
+      "Full name: `DocBlock::preserveIndentation`"];
       pos = pos_at (11, 13) (11, 31);
     }
   ];
   ("docblock.php", 13, 13), [
     {
       snippet = "public static function leadingStarsAndMDList(): void";
-      addendum = ["Multiline doc block with
+      addendum = [
+        "Multiline doc block with
 leading stars, as well as
   * a Markdown list!
 and we'd really like to preserve the Markdown list while getting rid of
-the other stars."; "Full name: `DocBlock::leadingStarsAndMDList`"];
+the other stars.";
+        "Return type: `void`";
+        "Full name: `DocBlock::leadingStarsAndMDList`"
+      ];
       pos = pos_at (13, 13) (13, 33);
     }
   ];
@@ -399,7 +477,8 @@ the other stars."; "Full name: `DocBlock::leadingStarsAndMDList`"];
          to have separate paragraphs\n\
          \n\
          in Markdown.";
-      "Full name: `DocBlock::manyLineBreaks`"];
+        "Return type: `void`";
+        "Full name: `DocBlock::manyLineBreaks`"];
       pos = pos_at (15, 13) (15, 26);
     }
   ];
@@ -409,7 +488,7 @@ the other stars."; "Full name: `DocBlock::leadingStarsAndMDList`"];
       addendum = [
         "Full name: `DocBlockOnClassButNotConstructor::__construct`";
       ];
-      pos = pos_at (17, 8) (17, 45);
+      pos = pos_at (17, 12) (17, 43);
     }
   ];
   ("docblock.php", 21, 28), [
@@ -426,7 +505,7 @@ the other stars."; "Full name: `DocBlock::leadingStarsAndMDList`"];
         "DocBlockBase: constructor doc block.";
         "Full name: `DocBlockBase::__construct`";
       ];
-      pos = pos_at (23, 8) (23, 25);
+      pos = pos_at (23, 12) (23, 23);
     }
   ];
   ("docblock.php", 25, 14), [
@@ -436,7 +515,7 @@ the other stars."; "Full name: `DocBlock::leadingStarsAndMDList`"];
         "DocBlockBase: constructor doc block.";
         "Full name: `DocBlockBase::__construct`";
       ];
-      pos = pos_at (25, 10) (25, 30);
+      pos = pos_at (25, 14) (25, 28);
     }
   ];
   ("docblock.php", 84, 10), [
@@ -495,13 +574,16 @@ function idx(
   ?KeyedContainer<int, ?int> $collection,
   ?int $index
 ): ?int";
-      addendum = ["\n\
+      addendum = [
+        "\n\
                     Index into the given KeyedContainer using the provided key.\n\
                     \n\
                     If the key doesn't exist, the key is `null`, or the collection is `null`,\n\
                     return the provided default value instead, or `null` if no default value was\n\
                     provided. If the key is `null`, the default value will be returned even if\n\
-                    `null` is a valid key in the container.\n"];
+                    `null` is a valid key in the container.\n";
+        "Return type: `?int`"
+      ];
       pos = pos_at (3, 3) (3, 5);
     }
   ]
@@ -648,6 +730,7 @@ let doc_block_fallback_cases = [
     snippet = "public function doTheThing(): void";
     addendum = [
       "DBFBInterface2.\n(from DBFBInterface2)\n\n---\n\nDBFBInterface1.\n(from DBFBInterface1)";
+      "Return type: `void`";
       "Full name: `DBFBClass1::doTheThing`";
     ];
     pos = pos_at (3, 7) (3, 16);
@@ -656,49 +739,57 @@ let doc_block_fallback_cases = [
     snippet = "public function docBlockInClass(): void";
     addendum = [
       "DBFBClass1.";
+      "Return type: `void`";
       "Full name: `DBFBClass1::docBlockInClass`";
     ];
     pos = pos_at (5, 7) (5, 21);
   }];
   ("doc_block_fallback.php", 7, 7), [{
-   snippet = "public function identical(): void";
-   addendum = [
-     "Identical.";
-     "Full name: `DBFBClass1::identical`";
-   ];
-   pos = pos_at (7, 7) (7, 15);
+    snippet = "public function identical(): void";
+    addendum = [
+      "Identical.";
+      "Return type: `void`";
+      "Full name: `DBFBClass1::identical`";
+    ];
+    pos = pos_at (7, 7) (7, 15);
   }];
   ("doc_block_fallback.php", 9, 7), [{
-   snippet = "public function slightlyDifferent(): void";
-   addendum = [
-     "Slightly more different.\n(from DBFBInterface3)\n\n\
+    snippet = "public function slightlyDifferent(): void";
+    addendum = [
+      "Slightly more different.\n(from DBFBInterface3)\n\n\
         ---\n\n\
         Slightly different.\n(from DBFBInterface1, DBFBInterface2)";
-     "Full name: `DBFBClass1::slightlyDifferent`";
-   ];
-   pos = pos_at (9, 7) (9, 23);
+      "Return type: `void`";
+      "Full name: `DBFBClass1::slightlyDifferent`";
+    ];
+    pos = pos_at (9, 7) (9, 23);
   }];
   ("doc_block_fallback.php", 11, 7), [{
-   snippet = "public function noDocBlock(): void";
-   addendum = ["Full name: `DBFBClass1::noDocBlock`"];
-   pos = pos_at (11, 7) (11, 16);
+    snippet = "public function noDocBlock(): void";
+    addendum = [
+      "Return type: `void`";
+      "Full name: `DBFBClass1::noDocBlock`"
+    ];
+    pos = pos_at (11, 7) (11, 16);
   }];
 
   (* When falling back, if any class/trait ancestors have a doc block don't show
      any doc blocks from interface ancestors. *)
   ("doc_block_fallback.php", 13, 7), [{
-   snippet = "public function docBlockInClass2(): void";
-   addendum = [
-     "DBFBClass1.";
-     "Full name: `DBFBClass3::docBlockInClass2`";
-   ];
-   pos = pos_at (13, 7) (13, 22);
+    snippet = "public function docBlockInClass2(): void";
+    addendum = [
+      "DBFBClass1.";
+      "Return type: `void`";
+      "Full name: `DBFBClass3::docBlockInClass2`";
+    ];
+    pos = pos_at (13, 7) (13, 22);
   }];
 
   ("doc_block_fallback.php", 15, 7), [{
     snippet = "public function traitFunction(): void";
     addendum = [
       "DBFBTrait.";
+      "Return type: `void`";
       "Full name: `DBFBTrait::traitFunction`";
     ];
     pos = pos_at (15, 7) (15, 19);
@@ -707,9 +798,107 @@ let doc_block_fallback_cases = [
     snippet = "public function traitFunction2(): void";
     addendum = [
       "DBFBClass1.";
+      "Return type: `void`";
       "Full name: `DBFBClass3::traitFunction2`";
     ];
     pos = pos_at (17, 7) (17, 20);
+  }];
+]
+
+let class_id_positions = "<?hh // strict
+function create_class_id_positions(): void {
+  $x = new CIPos(CIPos2::MyConstInt);
+//               ^3:18   ^3:26
+  $x = new CIPos(CIPos2::$myStaticInt);
+//               ^5:18   ^5:26
+  $x = new CIPos(CIPos2::returnConstInt());
+//               ^7:18   ^7:26
+}
+
+class CIPos {
+  public function __construct(private int $x) {}
+}
+
+class CIPos2 {
+  const int MyConstInt = 0;
+  public static int $myStaticInt = 1;
+
+  public static function returnConstInt(): int {
+    return 2;
+  }
+}
+"
+
+let class_id_positions_cases = [
+  ("class_id_positions.php", 3, 18), [{
+    snippet = "class CIPos2";
+    addendum = [];
+    pos = pos_at (3, 18) (3, 23);
+  }];
+  ("class_id_positions.php", 3, 26), [{
+    snippet = "int CIPos2::MyConstInt";
+    addendum = [];
+    pos = pos_at (3, 26) (3, 35);
+  }];
+  ("class_id_positions.php", 5, 18), [{
+    snippet = "class CIPos2";
+    addendum = [];
+    pos = pos_at (5, 18) (5, 23);
+  }];
+  ("class_id_positions.php", 5, 26), [{
+    snippet = "public static int CIPos2::myStaticInt";
+    addendum = [];
+    pos = pos_at (5, 26) (5, 37);
+  }];
+  ("class_id_positions.php", 7, 18), [{
+    snippet = "class CIPos2";
+    addendum = [];
+    pos = pos_at (7, 18) (7, 23);
+  }];
+  ("class_id_positions.php", 7, 26), [{
+    snippet = "public static function returnConstInt(): int";
+    addendum = [
+      "Return type: `int`";
+      "Full name: `CIPos2::returnConstInt`";
+    ];
+    pos = pos_at (7, 26) (7, 39);
+  }];
+]
+
+let duplicate_results = "<?hh // strict
+trait DuplicateResultTrait {
+  /** Doc block. */
+  public function foo(): void {}
+}
+
+class DuplicateResultClass1 {
+  use DuplicateResultTrait;
+}
+
+class DuplicateResultClass2 {
+  use DuplicateResultTrait;
+}
+
+function test_duplicate_result_class(bool $x): void {
+  if ($x) {
+    $y = new DuplicateResultClass1();
+  } else {
+    $y = new DuplicateResultClass2();
+  }
+
+  $y->foo();
+//    ^22:7
+}
+"
+
+let duplicate_results_cases = [
+  ("duplicate_results.php", 22, 7), [{
+    snippet = "public ((function(): void) | (function(): void))";
+    addendum = [
+      "Doc block.";
+      "Full name: `DuplicateResultTrait::foo`";
+    ];
+    pos = pos_at (22, 7) (22, 9);
   }];
 ]
 
@@ -722,10 +911,14 @@ let files = [
   "special_cases.php", special_cases;
   "bounded_generic_fun.php", bounded_generic_fun;
   "doc_block_fallback.php", doc_block_fallback;
+  "class_id_positions.php", class_id_positions;
+  "duplicate_results.php", duplicate_results;
 ]
 
 let cases =
-  doc_block_fallback_cases
+  duplicate_results_cases
+  @ class_id_positions_cases
+  @ doc_block_fallback_cases
   @ special_cases_cases
   @ docblock_cases
   @ class_members_cases

@@ -26,6 +26,8 @@
 #include "hphp/runtime/vm/jit/vasm-unit.h"
 #include "hphp/runtime/vm/jit/vasm-util.h"
 
+#include "hphp/runtime/base/packed-array.h"
+
 #include "hphp/util/arch.h"
 
 #include <boost/dynamic_bitset.hpp>
@@ -45,11 +47,27 @@ namespace {
  * Return true if this instruction can load a TypedValue using a 16-byte load
  * into a SIMD register.
  */
-bool loadsCell(Opcode op) {
-  switch (op) {
+bool loadsCell(const IRInstruction& inst) {
+  auto const arch_allows = [] {
+    switch (arch()) {
+    case Arch::X64: return true;
+    case Arch::ARM: return true;
+    case Arch::PPC64: return true;
+    }
+    not_reached();
+  }();
+
+  switch (inst.op()) {
+  case LdMem:
+    return arch_allows && (!wide_tv_val || inst.src(0)->isA(TPtrToGen));
+
+  case LdVecElem:
+  case LdPackedElem:
+    static_assert(PackedArray::stores_typed_values, "");
+    return arch_allows;
+
   case LdStk:
   case LdLoc:
-  case LdMem:
   case LdContField:
   case LdElem:
   case LdRef:
@@ -70,18 +88,13 @@ bool loadsCell(Opcode op) {
   case ArrayIdx:
   case DictIdx:
   case KeysetIdx:
-  case LdVecElem:
-  case LdPackedElem:
   case MemoGetStaticValue:
   case MemoGetStaticCache:
+  case MemoGetLSBValue:
+  case MemoGetLSBCache:
   case MemoGetInstanceValue:
   case MemoGetInstanceCache:
-    switch (arch()) {
-    case Arch::X64: return true;
-    case Arch::ARM: return true;
-    case Arch::PPC64: return true;
-    }
-    not_reached();
+    return arch_allows;
 
   default:
     return false;
@@ -160,7 +173,7 @@ void assignRegs(const IRUnit& unit, Vunit& vunit, irlower::IRLS& state,
       }
       for (auto& d : inst.dsts()) {
         tmps[d] = d;
-        if (!try_wide || inst.isControlFlow() || !loadsCell(inst.op())) {
+        if (!try_wide || inst.isControlFlow() || !loadsCell(inst)) {
           not_wide.set(d->id());
         }
       }
@@ -177,9 +190,10 @@ void assignRegs(const IRUnit& unit, Vunit& vunit, irlower::IRLS& state,
       continue;
     }
     if (tmp->inst()->is(DefConst)) {
-      auto const c = make_const(vunit, tmp->type());
-      state.locs[tmp] = Vloc{c};
-      FTRACE(kRegAllocLevel, "const t{} in %{}\n", tmp->id(), size_t(c));
+      auto const loc = make_const(vunit, tmp->type());
+      state.locs[tmp] = loc;
+      FTRACE(kRegAllocLevel, "const t{} in %{}\n", tmp->id(),
+             size_t(loc.reg(0)), size_t(loc.reg(1)));
     } else {
       if (tmp->numWords() == 2) {
         if (!not_wide.test(tmp->id())) {

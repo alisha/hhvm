@@ -52,7 +52,9 @@ static zip* _zip_open(const String& filename, int _flags, int* zep) {
       *zep = ZIP_ER_OPEN;
       return nullptr;
     }
-    return zip_fdopen(fd, _flags & ZIP_CHECKCONS, zep);
+    if (auto z = zip_fdopen(fd, _flags & ZIP_CHECKCONS, zep)) return z;
+    close(fd);
+    return nullptr;
   }
   return zip_open(to_full_path(filename).c_str(), _flags, zep);
 }
@@ -356,7 +358,6 @@ static Variant HHVM_METHOD(ZipArchive, getProperty, int64_t property) {
       case 2:
         return 0;
       case 3:
-      case 4:
         return empty_string_variant();
       default:
         return init_null();
@@ -379,10 +380,6 @@ static Variant HHVM_METHOD(ZipArchive, getProperty, int64_t property) {
       return zip_get_num_files(zipDir->getZip());
     }
     case 3:
-    {
-      return this_->o_get("filename", true, s_ZipArchive).asCStrRef();
-    }
-    case 4:
     {
       int len;
       auto comment = zip_get_archive_comment(zipDir->getZip(), &len, 0);

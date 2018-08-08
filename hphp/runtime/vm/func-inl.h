@@ -35,6 +35,19 @@ void FPIEnt::serde(SerDe& sd) {
     ;
 }
 
+template<class SerDe>
+void EHEnt::serde(SerDe& sd) {
+  sd(m_type)
+    (m_base)
+    (m_past)
+    (m_iterId)
+    (m_handler)
+    (m_end)
+    (m_itRef)
+    (m_parentIndex)
+    ;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // ParamInfo.
 
@@ -77,11 +90,12 @@ inline const void* Func::mallocEnd() const {
          + numPrologues() * sizeof(m_prologueTable[0]);
 }
 
-inline void Func::validate() const {
-#ifdef DEBUG
+inline bool Func::validate() const {
+#ifndef NDEBUG
   assertx(m_magic == kMagic);
 #endif
   assertx(m_name != nullptr);
+  return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -147,6 +161,13 @@ inline const StringData* Func::displayName() const {
 inline const StringData* Func::fullDisplayName() const {
   return
     LIKELY(!takesInOutParams()) ? fullName() : stripInOutSuffix(fullName());
+}
+
+inline const StringData* funcToStringHelper(const Func* func) {
+  if (RuntimeOption::EvalRaiseFuncConversionWarning) {
+    raise_warning("Func to string conversion");
+  }
+  return func->fullDisplayName();
 }
 
 inline NamedEntity* Func::getNamedEntity() {
@@ -286,7 +307,7 @@ inline uint32_t Func::numNonVariadicParams() const {
 }
 
 inline bool Func::hasVariadicCaptureParam() const {
-#ifdef DEBUG
+#ifndef NDEBUG
   assertx(bool(m_attrs & AttrVariadicParam) ==
          (numParams() && params()[numParams() - 1].variadic));
 #endif
@@ -424,6 +445,10 @@ inline bool Func::isMemoizeWrapper() const {
   return shared()->m_isMemoizeWrapper;
 }
 
+inline bool Func::isMemoizeWrapperLSB() const {
+  return shared()->m_isMemoizeWrapperLSB;
+}
+
 inline bool Func::isMemoizeImpl() const {
   return isMemoizeImplName(name());
 }
@@ -442,7 +467,7 @@ inline bool Func::isBuiltin() const {
 
 inline bool Func::isCPPBuiltin() const {
   auto const ex = extShared();
-  return UNLIKELY(!!ex) && ex->m_builtinFuncPtr;
+  return UNLIKELY(!!ex) && ex->m_arFuncPtr;
 }
 
 inline bool Func::readsCallerFrame() const {
@@ -461,12 +486,12 @@ inline bool Func::takesNumArgs() const {
   return shared()->m_takesNumArgs;
 }
 
-inline BuiltinFunction Func::builtinFuncPtr() const {
-  if (auto const ex = extShared()) return ex->m_builtinFuncPtr;
+inline ArFunction Func::arFuncPtr() const {
+  if (auto const ex = extShared()) return ex->m_arFuncPtr;
   return nullptr;
 }
 
-inline BuiltinFunction Func::nativeFuncPtr() const {
+inline NativeFunction Func::nativeFuncPtr() const {
   if (auto const ex = extShared()) return ex->m_nativeFuncPtr;
   return nullptr;
 }

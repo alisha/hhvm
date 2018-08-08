@@ -30,11 +30,14 @@ void SparseHeap::threadInit() {
 void SparseHeap::reset() {
   TRACE(1, "heap-id %lu SparseHeap-reset: pooled_slabs %lu bigs %lu\n",
         tl_heap_id, m_pooled_slabs.size(), m_bigs.countBlocks());
+#if !FOLLY_SANITIZE
+  // trash fill is redundant with ASAN
   if (RuntimeOption::EvalTrashFillOnRequestExit) {
     m_bigs.iterate([&](HeapObject* h, size_t size) {
       memset(h, kSmallFreeFill, size);
     });
   }
+#endif
   auto const do_free = [](void* ptr, size_t size) {
 #ifdef USE_JEMALLOC
 #if JEMALLOC_VERSION_MAJOR >= 4
@@ -49,8 +52,6 @@ void SparseHeap::reset() {
   TaggedSlabList pooledSlabs;
   void* pooledSlabTail = nullptr;
   for (auto& slab : m_pooled_slabs) {
-    // The first slab contains the php stack, so only unmap it when the worker
-    // thread dies.
     if (!pooledSlabTail) pooledSlabTail = slab.ptr;
     pooledSlabs.push_front<true>(slab.ptr, slab.version);
     m_bigs.erase(slab.ptr);
@@ -61,12 +62,10 @@ void SparseHeap::reset() {
   m_pooled_slabs.clear();
   m_hugeBytes = 0;
   m_bigs.iterate([&](HeapObject* h, size_t size) {
-    if (h == s_firstSlab.ptr) return; // continue iterating
     do_free(h, size);
   });
   m_bigs.clear();
-  m_slab_min = std::numeric_limits<uintptr_t>::max();
-  m_slab_max = 0;
+  m_slab_range = {nullptr, 0};
 }
 
 void SparseHeap::flush() {
@@ -78,21 +77,18 @@ void SparseHeap::flush() {
 
 HeapObject* SparseHeap::allocSlab(MemoryUsageStats& stats) {
   auto finish = [&](void* p) {
-    m_slab_min = std::min(m_slab_min, reinterpret_cast<uintptr_t>(p));
-    m_slab_max = std::max(m_slab_max, reinterpret_cast<uintptr_t>(p));
+    // expand m_slab_range to include this new slab
+    if (!m_slab_range.size) {
+      m_slab_range = {p, kSlabSize};
+    } else {
+      auto min = std::min(m_slab_range.ptr, p);
+      auto max = std::max((char*)p + kSlabSize,
+                          (char*)m_slab_range.ptr + m_slab_range.size);
+      m_slab_range = {min, size_t((char*)max - (char*)min)};
+    }
     return static_cast<HeapObject*>(p);
   };
 
-  // If we have a pre-allocated slab, and it's slab-aligned, use it first.
-  if (m_hugeBytes == 0 && s_firstSlab.size >= kMaxSmallSize &&
-      reinterpret_cast<uintptr_t>(s_firstSlab.ptr) % kSlabAlign == 0) {
-    stats.mmap_volume += s_firstSlab.size;
-    stats.mmap_cap += s_firstSlab.size;
-    stats.peakCap = std::max(stats.peakCap, stats.capacity());
-    m_bigs.insert((HeapObject*)s_firstSlab.ptr, s_firstSlab.size);
-    m_hugeBytes += s_firstSlab.size;
-    return finish(s_firstSlab.ptr);
-  }
   if (m_slabManager && m_hugeBytes < RuntimeOption::RequestHugeMaxBytes) {
     if (auto slab = m_slabManager->tryAlloc()) {
       stats.mmap_volume += kSlabSize;
@@ -127,6 +123,12 @@ void* SparseHeap::allocBig(size_t bytes, bool zero, MemoryUsageStats& stats) {
     zero ? safe_calloc(1, bytes) : safe_malloc(bytes)
   );
   auto cap = malloc_usable_size(n);
+  if (cap % kSmallSizeAlign != 0) {
+    // cap==bytes is legal, but RadixMap requires at least kSmallSizeAlign
+    // for tracking purposes. In this mode we just call free(), so it's safe
+    // to slightly overestimate the block size
+    cap += kSmallSizeAlign - cap % kSmallSizeAlign;
+  }
 #endif
   m_bigs.insert(n, cap);
   stats.mm_udebt -= cap;
@@ -170,6 +172,10 @@ void* SparseHeap::resizeBig(void* ptr, size_t new_size,
     safe_realloc(ptr, new_size)
   );
   auto new_cap = malloc_usable_size(newNode);
+  if (new_cap % kSmallSizeAlign != 0) {
+    // adjust to satisfy RadixMap (see justification in allocBig())
+    new_cap += kSmallSizeAlign - new_cap % kSmallSizeAlign;
+  }
 #endif
   if (newNode != old || new_cap != old_cap) {
     m_bigs.erase(old);
@@ -178,11 +184,6 @@ void* SparseHeap::resizeBig(void* ptr, size_t new_size,
   stats.mm_udebt -= new_cap - old_cap;
   stats.malloc_cap += new_cap - old_cap;
   return newNode;
-}
-
-MemBlock SparseHeap::slab_range() const {
-  return {reinterpret_cast<void*>(m_slab_min),
-          m_slab_max - m_slab_min + kSlabSize};
 }
 
 }

@@ -733,6 +733,10 @@ Variant HHVM_FUNCTION(file_put_contents,
       }
       break;
     }
+    case KindOfFunc:
+    case KindOfClass:
+      raise_warning("Not a valid stream resource");
+      return false;
   }
 
   // like fwrite(), fclose() can error when fflush()ing

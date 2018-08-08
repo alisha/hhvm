@@ -31,6 +31,7 @@ open Full_fidelity_syntax_type
 module SyntaxKind = Full_fidelity_syntax_kind
 module TokenKind = Full_fidelity_token_kind
 module Operator = Full_fidelity_operator
+[@@@warning "-27"] (* unused variable *)
 
 module WithToken(Token: TokenType) = struct
   module WithSyntaxValue(SyntaxValue: SyntaxValueType) = struct
@@ -62,6 +63,7 @@ module WithToken(Token: TokenType) = struct
       | QualifiedName                           _ -> SyntaxKind.QualifiedName
       | SimpleTypeSpecifier                     _ -> SyntaxKind.SimpleTypeSpecifier
       | LiteralExpression                       _ -> SyntaxKind.LiteralExpression
+      | PrefixedStringExpression                _ -> SyntaxKind.PrefixedStringExpression
       | VariableExpression                      _ -> SyntaxKind.VariableExpression
       | PipeVariableExpression                  _ -> SyntaxKind.PipeVariableExpression
       | EnumDeclaration                         _ -> SyntaxKind.EnumDeclaration
@@ -219,6 +221,7 @@ module WithToken(Token: TokenType) = struct
       | GenericTypeSpecifier                    _ -> SyntaxKind.GenericTypeSpecifier
       | NullableTypeSpecifier                   _ -> SyntaxKind.NullableTypeSpecifier
       | SoftTypeSpecifier                       _ -> SyntaxKind.SoftTypeSpecifier
+      | ReifiedTypeArgument                     _ -> SyntaxKind.ReifiedTypeArgument
       | TypeArguments                           _ -> SyntaxKind.TypeArguments
       | TypeParameters                          _ -> SyntaxKind.TypeParameters
       | TupleTypeSpecifier                      _ -> SyntaxKind.TupleTypeSpecifier
@@ -243,6 +246,7 @@ module WithToken(Token: TokenType) = struct
     let is_qualified_name                               = has_kind SyntaxKind.QualifiedName
     let is_simple_type_specifier                        = has_kind SyntaxKind.SimpleTypeSpecifier
     let is_literal_expression                           = has_kind SyntaxKind.LiteralExpression
+    let is_prefixed_string_expression                   = has_kind SyntaxKind.PrefixedStringExpression
     let is_variable_expression                          = has_kind SyntaxKind.VariableExpression
     let is_pipe_variable_expression                     = has_kind SyntaxKind.PipeVariableExpression
     let is_enum_declaration                             = has_kind SyntaxKind.EnumDeclaration
@@ -400,6 +404,7 @@ module WithToken(Token: TokenType) = struct
     let is_generic_type_specifier                       = has_kind SyntaxKind.GenericTypeSpecifier
     let is_nullable_type_specifier                      = has_kind SyntaxKind.NullableTypeSpecifier
     let is_soft_type_specifier                          = has_kind SyntaxKind.SoftTypeSpecifier
+    let is_reified_type_argument                        = has_kind SyntaxKind.ReifiedTypeArgument
     let is_type_arguments                               = has_kind SyntaxKind.TypeArguments
     let is_type_parameters                              = has_kind SyntaxKind.TypeParameters
     let is_tuple_type_specifier                         = has_kind SyntaxKind.TupleTypeSpecifier
@@ -494,6 +499,13 @@ module WithToken(Token: TokenType) = struct
         literal_expression;
       } ->
          let acc = f acc literal_expression in
+         acc
+      | PrefixedStringExpression {
+        prefixed_string_name;
+        prefixed_string_str;
+      } ->
+         let acc = f acc prefixed_string_name in
+         let acc = f acc prefixed_string_str in
          acc
       | VariableExpression {
         variable_expression;
@@ -2087,10 +2099,12 @@ module WithToken(Token: TokenType) = struct
          let acc = f acc vector_array_right_angle in
          acc
       | TypeParameter {
+        type_reified;
         type_variance;
         type_name;
         type_constraints;
       } ->
+         let acc = f acc type_reified in
          let acc = f acc type_variance in
          let acc = f acc type_name in
          let acc = f acc type_constraints in
@@ -2262,6 +2276,13 @@ module WithToken(Token: TokenType) = struct
          let acc = f acc soft_at in
          let acc = f acc soft_type in
          acc
+      | ReifiedTypeArgument {
+        reified_type_argument_reified;
+        reified_type_argument_type;
+      } ->
+         let acc = f acc reified_type_argument_reified in
+         let acc = f acc reified_type_argument_type in
+         acc
       | TypeArguments {
         type_arguments_left_angle;
         type_arguments_types;
@@ -2334,6 +2355,13 @@ module WithToken(Token: TokenType) = struct
         literal_expression;
       } -> [
         literal_expression;
+      ]
+      | PrefixedStringExpression {
+        prefixed_string_name;
+        prefixed_string_str;
+      } -> [
+        prefixed_string_name;
+        prefixed_string_str;
       ]
       | VariableExpression {
         variable_expression;
@@ -3927,10 +3955,12 @@ module WithToken(Token: TokenType) = struct
         vector_array_right_angle;
       ]
       | TypeParameter {
+        type_reified;
         type_variance;
         type_name;
         type_constraints;
       } -> [
+        type_reified;
         type_variance;
         type_name;
         type_constraints;
@@ -4102,6 +4132,13 @@ module WithToken(Token: TokenType) = struct
         soft_at;
         soft_type;
       ]
+      | ReifiedTypeArgument {
+        reified_type_argument_reified;
+        reified_type_argument_type;
+      } -> [
+        reified_type_argument_reified;
+        reified_type_argument_type;
+      ]
       | TypeArguments {
         type_arguments_left_angle;
         type_arguments_types;
@@ -4175,6 +4212,13 @@ module WithToken(Token: TokenType) = struct
         literal_expression;
       } -> [
         "literal_expression";
+      ]
+      | PrefixedStringExpression {
+        prefixed_string_name;
+        prefixed_string_str;
+      } -> [
+        "prefixed_string_name";
+        "prefixed_string_str";
       ]
       | VariableExpression {
         variable_expression;
@@ -5768,10 +5812,12 @@ module WithToken(Token: TokenType) = struct
         "vector_array_right_angle";
       ]
       | TypeParameter {
+        type_reified;
         type_variance;
         type_name;
         type_constraints;
       } -> [
+        "type_reified";
         "type_variance";
         "type_name";
         "type_constraints";
@@ -5943,6 +5989,13 @@ module WithToken(Token: TokenType) = struct
         "soft_at";
         "soft_type";
       ]
+      | ReifiedTypeArgument {
+        reified_type_argument_reified;
+        reified_type_argument_type;
+      } -> [
+        "reified_type_argument_reified";
+        "reified_type_argument_type";
+      ]
       | TypeArguments {
         type_arguments_left_angle;
         type_arguments_types;
@@ -6076,6 +6129,14 @@ module WithToken(Token: TokenType) = struct
         ]) ->
         LiteralExpression {
           literal_expression;
+        }
+      | (SyntaxKind.PrefixedStringExpression, [
+          prefixed_string_name;
+          prefixed_string_str;
+        ]) ->
+        PrefixedStringExpression {
+          prefixed_string_name;
+          prefixed_string_str;
         }
       | (SyntaxKind.VariableExpression, [
           variable_expression;
@@ -7810,11 +7871,13 @@ module WithToken(Token: TokenType) = struct
           vector_array_right_angle;
         }
       | (SyntaxKind.TypeParameter, [
+          type_reified;
           type_variance;
           type_name;
           type_constraints;
         ]) ->
         TypeParameter {
+          type_reified;
           type_variance;
           type_name;
           type_constraints;
@@ -8001,6 +8064,14 @@ module WithToken(Token: TokenType) = struct
           soft_at;
           soft_type;
         }
+      | (SyntaxKind.ReifiedTypeArgument, [
+          reified_type_argument_reified;
+          reified_type_argument_type;
+        ]) ->
+        ReifiedTypeArgument {
+          reified_type_argument_reified;
+          reified_type_argument_type;
+        }
       | (SyntaxKind.TypeArguments, [
           type_arguments_left_angle;
           type_arguments_types;
@@ -8135,6 +8206,17 @@ module WithToken(Token: TokenType) = struct
       =
         let syntax = LiteralExpression {
           literal_expression;
+        } in
+        let value = ValueBuilder.value_from_syntax syntax in
+        make syntax value
+
+      let make_prefixed_string_expression
+        prefixed_string_name
+        prefixed_string_str
+      =
+        let syntax = PrefixedStringExpression {
+          prefixed_string_name;
+          prefixed_string_str;
         } in
         let value = ValueBuilder.value_from_syntax syntax in
         make syntax value
@@ -10295,11 +10377,13 @@ module WithToken(Token: TokenType) = struct
         make syntax value
 
       let make_type_parameter
+        type_reified
         type_variance
         type_name
         type_constraints
       =
         let syntax = TypeParameter {
+          type_reified;
           type_variance;
           type_name;
           type_constraints;
@@ -10530,6 +10614,17 @@ module WithToken(Token: TokenType) = struct
         let syntax = SoftTypeSpecifier {
           soft_at;
           soft_type;
+        } in
+        let value = ValueBuilder.value_from_syntax syntax in
+        make syntax value
+
+      let make_reified_type_argument
+        reified_type_argument_reified
+        reified_type_argument_type
+      =
+        let syntax = ReifiedTypeArgument {
+          reified_type_argument_reified;
+          reified_type_argument_type;
         } in
         let value = ValueBuilder.value_from_syntax syntax in
         make syntax value

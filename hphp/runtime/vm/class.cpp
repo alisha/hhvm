@@ -37,8 +37,6 @@
 #include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/runtime/ext/std/ext_std_closure.h"
 
-#include "hphp/parser/parser.h"
-
 #include "hphp/util/debug.h"
 #include "hphp/util/logger.h"
 
@@ -57,6 +55,7 @@ namespace HPHP {
 const StaticString s_86cinit("86cinit");
 const StaticString s_86pinit("86pinit");
 const StaticString s_86sinit("86sinit");
+const StaticString s_86linit("86linit");
 const StaticString s___destruct("__destruct");
 const StaticString s___OptionalDestruct("__OptionalDestruct");
 const StaticString s___MockClass("__MockClass");
@@ -214,10 +213,10 @@ template<size_t sz>
 struct assert_sizeof_class {
   // If this static_assert fails, the compiler error will have the real value
   // of sizeof_Class in it since it's in this struct's type.
-#ifdef DEBUG
-  static_assert(sz == (use_lowptr ? 260 : 304), "Change this only on purpose");
+#ifndef NDEBUG
+  static_assert(sz == (use_lowptr ? 268 : 312), "Change this only on purpose");
 #else
-  static_assert(sz == (use_lowptr ? 252 : 296), "Change this only on purpose");
+  static_assert(sz == (use_lowptr ? 260 : 304), "Change this only on purpose");
 #endif
 };
 template struct assert_sizeof_class<sizeof_Class>;
@@ -405,6 +404,9 @@ EnumValues* Class::setEnumValues(EnumValues* values) {
 
 Class::ExtraData::~ExtraData() {
   delete m_enumValues.load(std::memory_order_relaxed);
+  if (m_lsbMemoExtra.m_handles) {
+    vm_free(m_lsbMemoExtra.m_handles);
+  }
 }
 
 void Class::destroy() {
@@ -491,7 +493,7 @@ Class::~Class() {
     low_free(p);
   }
 
-#ifdef DEBUG
+#ifndef NDEBUG
   validate();
   m_magic = ~m_magic;
 #endif
@@ -734,6 +736,9 @@ bool Class::isCollectionClass() const {
 // Property initialization.
 
 void Class::initialize() const {
+  if (m_maybeRedefsPropTy) checkPropTypeRedefinitions();
+  if (m_needsPropInitialCheck) checkPropInitialValues();
+
   if (m_pinitVec.size() > 0 && getPropData() == nullptr) {
     initProps();
   }
@@ -747,6 +752,16 @@ bool Class::initialized() const {
     return false;
   }
   if (numStaticProperties() > 0 && needsInitSProps()) {
+    return false;
+  }
+  if (m_maybeRedefsPropTy &&
+      (!m_extra->m_checkedPropTypeRedefs.bound() ||
+       !m_extra->m_checkedPropTypeRedefs.isInit())) {
+    return false;
+  }
+  if (m_needsPropInitialCheck &&
+      (!m_extra->m_checkedPropInitialValues.bound() ||
+       !m_extra->m_checkedPropInitialValues.isInit())) {
     return false;
   }
   return true;
@@ -812,7 +827,7 @@ bool Class::needsInitSProps() const {
 void Class::initSProps() const {
   assertx(needsInitSProps() || m_sPropCacheInit.isPersistent());
 
-  const bool hasNonscalarInit = !m_sinitVec.empty();
+  const bool hasNonscalarInit = !m_sinitVec.empty() || !m_linitVec.empty();
   folly::Optional<VMRegAnchor> _;
   if (hasNonscalarInit) {
     _.emplace();
@@ -832,12 +847,25 @@ void Class::initSProps() const {
   for (Slot slot = 0, n = m_staticProperties.size(); slot < n; ++slot) {
     auto const& sProp = m_staticProperties[slot];
 
-    if (sProp.cls == this && !m_sPropCache[slot].isPersistent()) {
+    if ((sProp.cls == this && !m_sPropCache[slot].isPersistent()) ||
+        sProp.attrs & AttrLSB) {
+      if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+          !(sProp.attrs & (AttrInitialSatisfiesTC|AttrSystemInitialValue)) &&
+          sProp.val.m_type != KindOfUninit &&
+          sProp.typeConstraint.isCheckable()) {
+        sProp.typeConstraint.verifyStaticProperty(
+          &sProp.val,
+          this,
+          sProp.cls,
+          sProp.name
+        );
+      }
       m_sPropCache[slot]->val = sProp.val;
     }
   }
 
-  // If there are non-scalar initializers (i.e. 86sinit methods), run them now.
+  // If there are non-scalar initializers (i.e. 86sinit or 86linit methods),
+  // run them now.
   // They will override the KindOfUninit values set by scalar initialization.
   if (hasNonscalarInit) {
     for (unsigned i = 0, n = m_sinitVec.size(); i < n; i++) {
@@ -847,11 +875,115 @@ void Class::initSProps() const {
       );
       assertx(retval.m_type == KindOfNull);
     }
+    for (unsigned i = 0, n = m_linitVec.size(); i < n; i++) {
+      DEBUG_ONLY auto retval = g_context->invokeFunc(
+        m_linitVec[i], init_null_variant, nullptr, const_cast<Class*>(this),
+        nullptr, nullptr, ExecutionContext::InvokeNormal, false, false
+      );
+      assertx(retval.m_type == KindOfNull);
+    }
   }
 
   m_sPropCacheInit.initWith(true);
 }
 
+Slot Class::lsbMemoSlot(const Func* func, bool forValue) const {
+  assertx(m_extra);
+  if (forValue) {
+    assertx(func->numParams() == 0);
+  } else {
+    assertx(func->numParams() > 0);
+  }
+  const auto& slots = m_extra->m_lsbMemoExtra.m_slots;
+  auto it = slots.find(func->getFuncId());
+  always_assert(it != slots.end());
+  return it->second;
+}
+
+void Class::checkPropInitialValues() const {
+  assertx(m_needsPropInitialCheck);
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+  assertx(m_extra.get() != nullptr);
+
+  auto extra = m_extra.get();
+  extra->m_checkedPropInitialValues.bind(rds::Mode::Normal);
+  if (extra->m_checkedPropInitialValues.isInit()) return;
+
+  for (Slot slot = 0; slot < m_declProperties.size(); ++slot) {
+    auto const& prop = m_declProperties[slot];
+    if (prop.attrs & (AttrInitialSatisfiesTC|AttrSystemInitialValue)) continue;
+    auto const& tc = prop.typeConstraint;
+    if (!tc.isCheckable()) continue;
+    auto const& tv = m_declPropInit[slot];
+    if (tv.m_type == KindOfUninit) continue;
+    tc.verifyProperty(&tv, this, prop.cls, prop.name);
+  }
+
+  extra->m_checkedPropInitialValues.initWith(true);
+}
+
+void Class::checkPropTypeRedefinitions() const {
+  assertx(m_maybeRedefsPropTy);
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+  assertx(m_parent);
+  assertx(m_extra.get() != nullptr);
+
+  auto extra = m_extra.get();
+  extra->m_checkedPropTypeRedefs.bind(rds::Mode::Normal);
+  if (extra->m_checkedPropTypeRedefs.isInit()) return;
+
+  if (m_parent->m_maybeRedefsPropTy) m_parent->checkPropTypeRedefinitions();
+
+  if (m_selfMaybeRedefsPropTy) {
+    for (Slot slot = 0; slot < m_declProperties.size(); slot++) {
+      auto const& prop = m_declProperties[slot];
+      if (prop.attrs & AttrNoBadRedeclare) continue;
+      checkPropTypeRedefinition(slot);
+    }
+  }
+
+  extra->m_checkedPropTypeRedefs.initWith(true);
+}
+
+void Class::checkPropTypeRedefinition(Slot slot) const {
+  assertx(m_maybeRedefsPropTy);
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+  assertx(m_parent);
+  assertx(slot != kInvalidSlot);
+  assertx(slot < numDeclProperties());
+
+  auto const& prop = m_declProperties[slot];
+  assertx(!(prop.attrs & AttrNoBadRedeclare));
+
+  auto const& oldProp = m_parent->m_declProperties[slot];
+
+  auto const& oldTC = oldProp.typeConstraint;
+  auto const& newTC = prop.typeConstraint;
+
+  auto const result = oldTC.equivalentForProp(newTC);
+  if (result == TypeConstraint::EquivalentResult::Pass) return;
+
+  auto const oldTCName =
+    oldTC.hasConstraint() ? oldTC.displayName() : "mixed";
+  auto const newTCName =
+    newTC.hasConstraint() ? newTC.displayName() : "mixed";
+
+  auto const msg = folly::sformat(
+    "Type-hint of '{}::{}' must be {} (as in class {}), not {}",
+    prop.cls->name(),
+    prop.name,
+    oldTCName,
+    oldProp.cls->name(),
+    newTCName
+  );
+
+  if (result == TypeConstraint::EquivalentResult::DVArray) {
+    assertx(RuntimeOption::EvalHackArrCompatTypeHintNotices);
+    raise_hackarr_compat_notice(msg);
+  } else {
+    raise_property_typehint_error(msg, oldTC.isSoft() && newTC.isSoft());
+  }
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // Property storage.
@@ -876,7 +1008,7 @@ void Class::initSPropHandles() const {
     auto& propHandle = m_sPropCache[slot];
     auto const& sProp = m_staticProperties[slot];
 
-    if (sProp.cls == this) {
+    if (sProp.cls == this || (sProp.attrs & AttrLSB)) {
       if (usePersistentHandles && (sProp.attrs & AttrPersistent)) {
         static_assert(sizeof(StaticPropData) == sizeof(sProp.val),
                       "StaticPropData must be a simple wrapper "
@@ -936,7 +1068,7 @@ TypedValue* Class::getSPropData(Slot index) const {
 ///////////////////////////////////////////////////////////////////////////////
 // Property lookup and accessibility.
 
-Class::PropLookup<Slot> Class::getDeclPropIndex(
+Class::PropSlotLookup Class::getDeclPropIndex(
   const Class* ctx,
   const StringData* key
 ) const {
@@ -954,11 +1086,11 @@ Class::PropLookup<Slot> Class::getDeclPropIndex(
       assertx(baseClass);
 
       // If ctx == baseClass, we have the right property and we can stop here.
-      if (ctx == baseClass) return PropLookup<Slot> { propInd, true };
+      if (ctx == baseClass) return PropSlotLookup { propInd, true };
 
       // The anonymous context cannot access protected or private properties, so
       // we can fail fast here.
-      if (ctx == nullptr) return PropLookup<Slot> { propInd, false };
+      if (ctx == nullptr) return PropSlotLookup { propInd, false };
 
       assertx(ctx);
       if (attrs & AttrPrivate) {
@@ -973,7 +1105,7 @@ Class::PropLookup<Slot> Class::getDeclPropIndex(
           // ctx is derived from baseClass, so we know this protected
           // property is accessible and we know ctx cannot have private
           // property with the same name, so we're done.
-          return PropLookup<Slot> { propInd, true };
+          return PropSlotLookup { propInd, true };
         }
         if (!baseClass->classof(ctx)) {
           // ctx is not the same, an ancestor, or a descendent of baseClass,
@@ -981,7 +1113,7 @@ Class::PropLookup<Slot> Class::getDeclPropIndex(
           // be the same or an ancestor of this, so we don't need to check if
           // ctx declares a private property with the same name and we can
           // fail fast here.
-          return PropLookup<Slot> { propInd, false };
+          return PropSlotLookup { propInd, false };
         }
         // We now know this protected property is accessible, but we need to
         // keep going because ctx may define a private property with the same
@@ -995,7 +1127,7 @@ Class::PropLookup<Slot> Class::getDeclPropIndex(
       accessible = true;
       // If ctx == this, we don't have to check if ctx defines a private
       // property with the same name and we can stop here.
-      if (ctx == this) return PropLookup<Slot> { propInd, true };
+      if (ctx == this) return PropSlotLookup { propInd, true };
 
       // We still need to check if ctx defines a private property with the same
       // name.
@@ -1015,7 +1147,7 @@ Class::PropLookup<Slot> Class::getDeclPropIndex(
         (ctx->m_declProperties[ctxPropInd].attrs & AttrPrivate)) {
       // A private property from ctx trumps any other property we may
       // have found.
-      return PropLookup<Slot> { ctxPropInd, true };
+      return PropSlotLookup { ctxPropInd, true };
     }
   }
 
@@ -1030,22 +1162,28 @@ Class::PropLookup<Slot> Class::getDeclPropIndex(
     return m_parent->getDeclPropIndex(ctx, key);
   }
 
-  return PropLookup<Slot> { propInd, accessible };
+  return PropSlotLookup { propInd, accessible };
 }
 
-Class::PropLookup<Slot> Class::findSProp(
+Class::PropSlotLookup Class::findSProp(
   const Class* ctx,
   const StringData* sPropName
 ) const {
   auto const sPropInd = lookupSProp(sPropName);
 
   // Non-existent property.
-  if (sPropInd == kInvalidSlot) return PropLookup<Slot> { kInvalidSlot, false };
+  if (sPropInd == kInvalidSlot) return PropSlotLookup { kInvalidSlot, false };
 
+  auto const& sProp = m_staticProperties[sPropInd];
+  auto const sPropAttrs = sProp.attrs;
+  const Class* baseCls = this;
+  if (sPropAttrs & AttrLSB) {
+    // For an LSB static, accessibility attributes are relative to the class
+    // that originally declared it.
+    baseCls = sProp.cls;
+  }
   // Property access within this Class's context.
-  if (ctx == this) return PropLookup<Slot> { sPropInd, true };
-
-  auto const sPropAttrs = m_staticProperties[sPropInd].attrs;
+  if (ctx == baseCls) return PropSlotLookup { sPropInd, true };
 
   auto const accessible = [&] {
     switch (sPropAttrs & (AttrPublic | AttrProtected | AttrPrivate)) {
@@ -1056,7 +1194,8 @@ Class::PropLookup<Slot> Class::findSProp(
       // Property access is from within a parent class's method, which is
       // allowed for protected properties.
       case AttrProtected:
-        return ctx != nullptr && (classof(ctx) || ctx->classof(this));
+        return ctx != nullptr &&
+               (baseCls->classof(ctx) || ctx->classof(baseCls));
 
       // Can only access private properties via the debugger.
       case AttrPrivate:
@@ -1067,24 +1206,47 @@ Class::PropLookup<Slot> Class::findSProp(
     not_reached();
   }();
 
-  return PropLookup<Slot> { sPropInd, accessible };
+  return PropSlotLookup { sPropInd, accessible };
 }
 
-Class::PropLookup<TypedValue*> Class::getSProp(
+Class::PropValLookup Class::getSProp(
   const Class* ctx,
   const StringData* sPropName
 ) const {
   initialize();
 
   auto const lookup = findSProp(ctx, sPropName);
-  if (lookup.prop == kInvalidSlot) {
-    return PropLookup<TypedValue*> { nullptr, false };
+  if (lookup.slot == kInvalidSlot) {
+    return PropValLookup { nullptr, kInvalidSlot, false };
   }
 
-  auto const sProp = getSPropData(lookup.prop);
-  assertx(sProp && sProp->m_type != KindOfUninit &&
-         "Static property initialization failed to initialize a property.");
-  return PropLookup<TypedValue*> { sProp, lookup.accessible };
+  auto const sProp = getSPropData(lookup.slot);
+
+  if (debug) {
+    always_assert(
+      sProp && sProp->m_type != KindOfUninit &&
+      "Static property initialization failed to initialize a property."
+    );
+
+    if (RuntimeOption::RepoAuthoritative) {
+      auto const repoTy = staticPropRepoAuthType(lookup.slot);
+      always_assert(tvMatchesRepoAuthType(*sProp, repoTy));
+    }
+
+    if (RuntimeOption::EvalCheckPropTypeHints > 2) {
+      auto const& decl = m_staticProperties[lookup.slot];
+      auto const typeOk =
+        !decl.typeConstraint.isCheckable() ||
+        decl.typeConstraint.isSoft() ||
+        (!(decl.attrs & AttrNoImplicitNullable)
+         && sProp->m_type == KindOfNull) ||
+        (sProp->m_type != KindOfRef &&
+         decl.typeConstraint.assertCheck(sProp));
+      always_assert(typeOk);
+    }
+  }
+
+  return PropValLookup { sProp, lookup.slot, lookup.accessible };
 }
 
 bool Class::IsPropAccessible(const Prop& prop, Class* ctx) {
@@ -1380,6 +1542,7 @@ void Class::setParent() {
       }
     }
     m_preClass->enforceInMaybeSealedParentWhitelist(m_parent->preClass());
+    if (m_parent->m_maybeRedefsPropTy) m_maybeRedefsPropTy = true;
   }
 
   // Handle stuff specific to cppext classes
@@ -1717,12 +1880,15 @@ void checkDeclarationCompat(const PreClass* preClass,
 Class::Class(PreClass* preClass, Class* parent,
              CompactVector<ClassPtr>&& usedTraits,
              unsigned classVecLen, unsigned funcVecLen)
-#ifdef DEBUG
+#ifndef NDEBUG
   : m_magic{kMagic}
   , m_parent(parent)
 #else
   : m_parent(parent)
 #endif
+  , m_maybeRedefsPropTy{false}
+  , m_selfMaybeRedefsPropTy{false}
+  , m_needsPropInitialCheck{false}
   , m_preClass(PreClassPtr(preClass))
   , m_classVecLen(always_safe_cast<decltype(m_classVecLen)>(classVecLen))
   , m_funcVecLen(always_safe_cast<decltype(m_funcVecLen)>(funcVecLen))
@@ -1738,13 +1904,14 @@ Class::Class(PreClass* preClass, Class* parent,
   setRTAttributes();
   setInterfaces();
   setConstants();
-  setProperties();
+  setProperties();    // must run before setInitializers
   setInitializers();
   setClassVec();
   setRequirements();
   setNativeDataInfo();
   setEnumType();
-  setMemoCacheInfo();
+  setInstanceMemoCacheInfo();
+  setLSBMemoCacheInfo();
 
   // A class is allowed to implement two interfaces that share the same slot if
   // we'll fatal trying to define that class, so this has to happen after all
@@ -2183,8 +2350,9 @@ void Class::setProperties() {
       prop.cls                 = parentProp.cls;
       prop.mangledName         = parentProp.mangledName;
       prop.originalMangledName = parentProp.originalMangledName;
-      prop.attrs               = parentProp.attrs;
+      prop.attrs               = parentProp.attrs | AttrNoBadRedeclare;
       prop.docComment          = parentProp.docComment;
+      prop.userType            = parentProp.userType;
       prop.typeConstraint      = parentProp.typeConstraint;
       prop.name                = parentProp.name;
       prop.repoAuthType        = parentProp.repoAuthType;
@@ -2204,16 +2372,20 @@ void Class::setProperties() {
       }
     }
     m_declPropInit = m_parent->m_declPropInit;
+    m_needsPropInitialCheck = m_parent->m_needsPropInitialCheck;
     for (auto const& parentProp : m_parent->staticProperties()) {
-      if (parentProp.attrs & AttrPrivate) continue;
+      if ((parentProp.attrs & AttrPrivate) &&
+          !(parentProp.attrs & AttrLSB)) continue;
 
       // Alias parent's static property.
       SProp sProp;
       sProp.name           = parentProp.name;
-      sProp.attrs          = parentProp.attrs;
+      sProp.attrs          = parentProp.attrs | AttrNoBadRedeclare;
+      sProp.userType       = parentProp.userType;
       sProp.typeConstraint = parentProp.typeConstraint;
       sProp.docComment     = parentProp.docComment;
       sProp.cls            = parentProp.cls;
+      sProp.repoAuthType   = parentProp.repoAuthType;
       sProp.idx            = -parentProp.idx - 1;
       if (traitOffset < -sProp.idx) {
         traitOffset = -sProp.idx;
@@ -2273,9 +2445,11 @@ void Class::setProperties() {
         prop.name                = preProp->name();
         prop.mangledName         = preProp->mangledName();
         prop.originalMangledName = preProp->mangledName();
-        prop.attrs               = Attr(preProp->attrs() & ~AttrTrait);
+        prop.attrs               = Attr(preProp->attrs() & ~AttrTrait)
+                                   | AttrNoBadRedeclare;
         // This is the first class to declare this property
         prop.cls                 = this;
+        prop.userType            = preProp->userType();
         prop.typeConstraint      = preProp->typeConstraint();
         prop.docComment          = preProp->docComment();
         prop.repoAuthType        = preProp->repoAuthType();
@@ -2284,8 +2458,24 @@ void Class::setProperties() {
         } else {
           prop.idx = slot + m_preClass->numProperties() + traitOffset;
         }
+
+        // Check if this property's initial value needs to be type checked at
+        // runtime.
+        auto const& tv = preProp->val();
+        auto const& tc = prop.typeConstraint;
+        if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+            !(prop.attrs & AttrInitialSatisfiesTC) &&
+            tv.m_type != KindOfUninit) {
+          // System provided initial values should always be correct
+          if ((prop.attrs & AttrSystemInitialValue) || tc.alwaysPasses(&tv)) {
+            prop.attrs |= AttrInitialSatisfiesTC;
+          } else {
+            m_needsPropInitialCheck = true;
+          }
+        }
+
         curPropMap.add(preProp->name(), prop);
-        m_declPropInit.push_back(preProp->val());
+        m_declPropInit.push_back(tv);
       };
 
       switch (preProp->attrs() & (AttrPublic|AttrProtected|AttrPrivate)) {
@@ -2301,14 +2491,53 @@ void Class::setProperties() {
           auto& prop = curPropMap[it2->second];
           assertx((prop.attrs & (AttrPublic|AttrProtected|AttrPrivate)) ==
                  AttrProtected);
+          assertx(!(prop.attrs & AttrNoImplicitNullable) ||
+                  (preProp->attrs() & AttrNoImplicitNullable));
+          assertx(prop.attrs & AttrNoBadRedeclare);
           prop.cls = this;
           prop.docComment = preProp->docComment();
+
+          auto const& tc = preProp->typeConstraint();
+          if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+              !(preProp->attrs() & AttrNoBadRedeclare) &&
+              tc.maybeInequivalentForProp(prop.typeConstraint)) {
+            // If this property isn't obviously not redeclaring a property in
+            // the parent, we need to check that when we initialize the class.
+            prop.attrs = Attr(prop.attrs & ~AttrNoBadRedeclare);
+            m_selfMaybeRedefsPropTy = true;
+            m_maybeRedefsPropTy = true;
+          }
+          prop.typeConstraint = tc;
+
+          if (preProp->attrs() & AttrNoImplicitNullable) {
+            prop.attrs |= AttrNoImplicitNullable;
+          }
+          if (preProp->attrs() & AttrSystemInitialValue) {
+            prop.attrs |= AttrSystemInitialValue;
+          }
+          if (preProp->attrs() & AttrInitialSatisfiesTC) {
+            prop.attrs |= AttrInitialSatisfiesTC;
+          }
+
+          // Check if this property's initial value needs to be type checked at
+          // runtime.
+          auto const& tv = preProp->val();
+          if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+              !(prop.attrs & AttrInitialSatisfiesTC) &&
+              tv.m_type != KindOfUninit) {
+            // System provided initial values should always be correct
+            if ((prop.attrs & AttrSystemInitialValue) || tc.alwaysPasses(&tv)) {
+              prop.attrs |= AttrInitialSatisfiesTC;
+            } else {
+              m_needsPropInitialCheck = true;
+            }
+          }
+
           if (slot < traitIdx) {
             prop.idx = slot;
           } else {
             prop.idx = slot + m_preClass->numProperties() + traitOffset;
           }
-          const TypedValue& tv = preProp->val();
           TypedValueAux& tvaux = m_declPropInit[it2->second];
           tvaux.m_data = tv.m_data;
           tvaux.m_type = tv.m_type;
@@ -2324,6 +2553,9 @@ void Class::setProperties() {
         auto it2 = curPropMap.find(preProp->name());
         if (it2 != curPropMap.end()) {
           auto& prop = curPropMap[it2->second];
+          assertx(!(prop.attrs & AttrNoImplicitNullable) ||
+                  (preProp->attrs() & AttrNoImplicitNullable));
+          assertx(prop.attrs & AttrNoBadRedeclare);
           prop.cls = this;
           prop.docComment = preProp->docComment();
           if ((prop.attrs & (AttrPublic|AttrProtected|AttrPrivate))
@@ -2332,14 +2564,50 @@ void Class::setProperties() {
             prop.mangledName = preProp->mangledName();
             prop.originalMangledName = preProp->mangledName();
             prop.attrs = Attr(prop.attrs ^ (AttrProtected|AttrPublic));
-            prop.typeConstraint = preProp->typeConstraint();
+            prop.userType = preProp->userType();
           }
           if (slot < traitIdx) {
             prop.idx = slot;
           } else {
             prop.idx = slot + m_preClass->numProperties() + traitOffset;
           }
+
+          auto const& tc = preProp->typeConstraint();
+          if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+              !(preProp->attrs() & AttrNoBadRedeclare) &&
+              tc.maybeInequivalentForProp(prop.typeConstraint)) {
+            // If this property isn't obviously not redeclaring a property in
+            // the parent, we need to check that when we initialize the class.
+            prop.attrs = Attr(prop.attrs & ~AttrNoBadRedeclare);
+            m_selfMaybeRedefsPropTy = true;
+            m_maybeRedefsPropTy = true;
+          }
+          prop.typeConstraint = tc;
+
+          if (preProp->attrs() & AttrNoImplicitNullable) {
+            prop.attrs |= AttrNoImplicitNullable;
+          }
+          if (preProp->attrs() & AttrSystemInitialValue) {
+            prop.attrs |= AttrSystemInitialValue;
+          }
+          if (preProp->attrs() & AttrInitialSatisfiesTC) {
+            prop.attrs |= AttrInitialSatisfiesTC;
+          }
+
+          // Check if this property's initial value needs to be type checked at
+          // runtime.
           auto const& tv = preProp->val();
+          if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+              !(prop.attrs & AttrInitialSatisfiesTC) &&
+              tv.m_type != KindOfUninit) {
+            // System provided initial values should always be correct
+            if ((prop.attrs & AttrSystemInitialValue) || tc.alwaysPasses(&tv)) {
+              prop.attrs |= AttrInitialSatisfiesTC;
+            } else {
+              m_needsPropInitialCheck = true;
+            }
+          }
+
           TypedValueAux& tvaux = m_declPropInit[it2->second];
           tvaux.m_data = tv.m_data;
           tvaux.m_type = tv.m_type;
@@ -2376,6 +2644,15 @@ void Class::setProperties() {
             attrToVisibilityStr(parentSProp.attrs),
             m_parent->name()->data());
         }
+        // Prohibit overlaying LSB static properties.
+        if (parentSProp.attrs & AttrLSB) {
+          raise_error(
+            "Cannot redeclare LSB static %s::%s as %s::%s",
+            parentSProp.cls->name()->data(),
+            preProp->name()->data(),
+            m_preClass->name()->data(),
+            preProp->name()->data());
+        }
         sPropInd = it3->second;
       }
       // Create a new property, or overlay ancestor's property if one exists.
@@ -2387,7 +2664,8 @@ void Class::setProperties() {
       }
       // Finish initializing.
       auto& sProp = curSPropMap[sPropInd];
-      sProp.attrs          = preProp->attrs();
+      sProp.attrs          = preProp->attrs() | AttrNoBadRedeclare;
+      sProp.userType       = preProp->userType();
       sProp.typeConstraint = preProp->typeConstraint();
       sProp.docComment     = preProp->docComment();
       sProp.cls            = this;
@@ -2397,6 +2675,23 @@ void Class::setProperties() {
         sProp.idx = slot;
       } else {
         sProp.idx = slot + m_preClass->numProperties() + traitOffset;
+      }
+
+      // Check if this property's initial value needs to be type checked at
+      // runtime.
+      auto const& tv = preProp->val();
+      auto const& tc = sProp.typeConstraint;
+      if (RuntimeOption::EvalCheckPropTypeHints > 0 &&
+          !(sProp.attrs & AttrInitialSatisfiesTC) &&
+          tv.m_type != KindOfUninit) {
+        // System provided initial values should always be correct
+        if ((sProp.attrs & AttrSystemInitialValue) || tc.alwaysPasses(&tv)) {
+          sProp.attrs |= AttrInitialSatisfiesTC;
+        } else {
+          // If the sprop needs an initial value check, force it to be
+          // non-persistent so we check it on every request.
+          sProp.attrs = Attr(sProp.attrs & ~AttrPersistent);
+        }
       }
     }
   }
@@ -2426,6 +2721,17 @@ void Class::setProperties() {
   }
 
   importTraitProps(curIdx + 1, curPropMap, curSPropMap);
+
+  // LSB static properties that were inherited must be initialized separately.
+  for (Slot slot = 0; slot < curSPropMap.size(); ++slot) {
+    auto& sProp = curSPropMap[slot];
+    if ((sProp.attrs & AttrLSB) && sProp.cls != this) {
+      auto const& prevSProps = sProp.cls->m_staticProperties;
+      auto prevInd = prevSProps.findIndex(sProp.name);
+      assertx(prevInd != kInvalidSlot);
+      sProp.val = prevSProps[prevInd].val;
+    }
+  }
 
   m_declProperties.create(curPropMap);
   m_staticProperties.create(curSPropMap);
@@ -2468,12 +2774,26 @@ bool Class::compatibleTraitPropInit(const TypedValue& tv1,
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
   }
   not_reached();
 }
 
-void Class::importTraitInstanceProp(Class* /*trait*/, Prop& traitProp,
+namespace {
+
+const constexpr Attr kRedeclarePropAttrMask =
+  Attr(
+    ~(AttrNoBadRedeclare |
+      AttrSystemInitialValue |
+      AttrNoImplicitNullable |
+      AttrInitialSatisfiesTC)
+  );
+
+}
+
+void Class::importTraitInstanceProp(Class* trait, Prop& traitProp,
                                     TypedValue& traitPropVal,
                                     const int idxOffset,
                                     PropMap::Builder& curPropMap) {
@@ -2492,6 +2812,11 @@ void Class::importTraitInstanceProp(Class* /*trait*/, Prop& traitProp,
     if (prop.attrs & AttrDeepInit) {
       m_hasDeepInitProps = true;
     }
+    // Clear NoImplicitNullable on the property. HHBBC analyzed the property in
+    // the context of the trait, not this class, so we cannot predict what
+    // derived class' will do with it. Be conservative.
+    prop.attrs = Attr(prop.attrs & ~AttrNoImplicitNullable)
+                 | AttrNoBadRedeclare;
     prop.idx += idxOffset;
     curPropMap.add(prop.name, prop);
     m_declPropInit.push_back(traitPropVal);
@@ -2499,8 +2824,10 @@ void Class::importTraitInstanceProp(Class* /*trait*/, Prop& traitProp,
     // Redeclared prop, make sure it matches previous declarations
     auto& prevProp    = curPropMap[prevIt->second];
     auto& prevPropVal = m_declPropInit[prevIt->second];
-    if (prevProp.attrs != traitProp.attrs ||
-        !compatibleTraitPropInit(prevPropVal, traitPropVal)) {
+    if (((prevProp.attrs ^ traitProp.attrs) & kRedeclarePropAttrMask) ||
+        (!(prevProp.attrs & AttrSystemInitialValue) &&
+         !(traitProp.attrs & AttrSystemInitialValue) &&
+         !compatibleTraitPropInit(prevPropVal, traitPropVal))) {
       raise_error("trait declaration of property '%s' is incompatible with "
                     "previous declaration", traitProp.name->data());
     }
@@ -2523,11 +2850,16 @@ void Class::importTraitStaticProp(Class* /*trait*/, SProp& traitProp,
     SProp prop = traitProp;
     prop.cls = this; // set current class as the first declaring prop
     prop.idx += idxOffset;
+    prop.attrs |= AttrNoBadRedeclare;
     curSPropMap.add(prop.name, prop);
   } else {
     // Redeclared prop, make sure it matches previous declaration
     auto& prevProp = curSPropMap[prevIt->second];
     TypedValue prevPropVal;
+    if (prevProp.attrs & AttrLSB) {
+      raise_error("trait declaration of property '%s' would redeclare "
+                  "LSB static", traitProp.name->data());
+    }
     if (prevProp.cls == this) {
       // If this static property was declared by this class, we can get the
       // initial value directly from its value.
@@ -2543,8 +2875,10 @@ void Class::importTraitStaticProp(Class* /*trait*/, SProp& traitProp,
 
       prevPropVal = prevSProps[prevPropInd].val;
     }
-    if ((prevProp.attrs ^ traitProp.attrs) & ~AttrPersistent ||
-        !compatibleTraitPropInit(traitProp.val, prevPropVal)) {
+    if (((prevProp.attrs ^ traitProp.attrs) & kRedeclarePropAttrMask) ||
+        (!(prevProp.attrs & AttrSystemInitialValue) &&
+         !(traitProp.attrs & AttrSystemInitialValue) &&
+         !compatibleTraitPropInit(traitProp.val, prevPropVal))) {
       raise_error("trait declaration of property '%s' is incompatible with "
                   "previous declaration", traitProp.name->data());
     }
@@ -2559,6 +2893,8 @@ void Class::importTraitProps(int idxOffset,
   if (attrs() & AttrNoExpandTrait) return;
   for (auto const& t : m_extra->m_usedTraits) {
     auto trait = t.get();
+
+    m_needsPropInitialCheck |= trait->m_needsPropInitialCheck;
 
     // instance properties
     for (Slot p = 0; p < trait->m_declProperties.size(); p++) {
@@ -2581,15 +2917,23 @@ void Class::importTraitProps(int idxOffset,
 }
 
 void Class::addTraitPropInitializers(std::vector<const Func*>& thisInitVec,
-                                     bool staticProps) {
+                                     Attr which) {
   if (attrs() & AttrNoExpandTrait) return;
+  auto getInitVec = [&](Class* trait) -> auto& {
+    switch (which) {
+    case AttrNone: return trait->m_pinitVec;
+    case AttrStatic: return trait->m_sinitVec;
+    case AttrLSB: return trait->m_linitVec;
+    default: always_assert(false);
+    }
+  };
   for (auto const& t : m_extra->m_usedTraits) {
     Class* trait = t.get();
-    auto& traitInitVec = staticProps ? trait->m_sinitVec : trait->m_pinitVec;
-    // Insert trait's 86[ps]init into the current class, avoiding repetitions.
+    auto& traitInitVec = getInitVec(trait);
+    // Insert trait's 86[psl]init into the current class, avoiding repetitions.
     for (unsigned m = 0; m < traitInitVec.size(); m++) {
-      // Clone 86[ps]init methods, and set the class to the current class.
-      // This allows 86[ps]init to determine the property offset for the
+      // Clone 86[psl]init methods, and set the class to the current class.
+      // This allows 86[psl]init to determine the property offset for the
       // initializer array corectly.
       Func *f = traitInitVec[m]->clone(this);
       f->setNewFuncId();
@@ -2608,16 +2952,27 @@ namespace {
 void Class::setInitializers() {
   std::vector<const Func*> pinits;
   std::vector<const Func*> sinits;
+  std::vector<const Func*> linits;
 
   if (m_parent.get() != nullptr) {
     // Copy parent's 86pinit() vector, so that the 86pinit() methods can be
     // called in reverse order without any search/recursion during
     // initialization.
     pinits.assign(m_parent->m_pinitVec.begin(), m_parent->m_pinitVec.end());
+
+    // Copy parent's 86linit into the current class, and set class to the
+    // current class.
+    for (const auto& linit : m_parent->m_linitVec) {
+      Func *f = linit->clone(this);
+      f->setNewFuncId();
+      f->setBaseCls(this);
+      f->setHasPrivateAncestor(false);
+      linits.push_back(f);
+    }
   }
 
   // Clone 86pinit methods from traits
-  addTraitPropInitializers(pinits, false);
+  addTraitPropInitializers(pinits, AttrNone);
 
   // If this class has an 86pinit method, append it last so that
   // reverse iteration of the vector runs this class's 86pinit
@@ -2630,17 +2985,29 @@ void Class::setInitializers() {
 
   // If this class has an 86sinit method, it must be the last element
   // in the vector. See get86sinit().
-  addTraitPropInitializers(sinits, true);
+  addTraitPropInitializers(sinits, AttrStatic);
   const Func* sinit = findSpecialMethod(this, s_86sinit.get());
   if (sinit) {
     sinits.push_back(sinit);
   }
 
+  addTraitPropInitializers(linits, AttrLSB);
+  const Func* meth86linit = findSpecialMethod(this, s_86linit.get());
+  if (meth86linit != nullptr) {
+    linits.push_back(meth86linit);
+  }
+
   m_pinitVec = pinits;
   m_sinitVec = sinits;
+  m_linitVec = linits;
 
-  m_needInitialization = (m_pinitVec.size() > 0 ||
-    m_staticProperties.size() > 0);
+  m_needInitialization =
+    (m_pinitVec.size() > 0 ||
+     m_staticProperties.size() > 0 ||
+     m_maybeRedefsPropTy ||
+     m_needsPropInitialCheck);
+
+  if (m_maybeRedefsPropTy || m_needsPropInitialCheck) allocExtraData();
 
   // Implementations of Throwable get special treatment.
   if (m_parent.get() != nullptr) {
@@ -2969,7 +3336,71 @@ void Class::setEnumType() {
   }
 }
 
-void Class::setMemoCacheInfo() {
+void Class::setLSBMemoCacheInfo() {
+  boost::container::flat_map<FuncId, Slot> slots;
+  Slot numSlots = 0;
+
+  /* Inherit slots from parent */
+  if (m_parent && m_parent->m_extra) {
+    numSlots = m_parent->m_extra->m_lsbMemoExtra.m_numSlots;
+  }
+
+  /* If any of our methods need slots, insert them at the end */
+  auto const methodCount = numMethods();
+  uint64_t assignCount = 0;
+  for (Slot i = 0; i < methodCount; ++i) {
+    auto const f = getMethod(i);
+    if (f->isMemoizeWrapperLSB() && f->cls() == this) {
+      slots.emplace(f->getFuncId(), numSlots++);
+      ++assignCount;
+    }
+  }
+  always_assert(assignCount == slots.size());
+
+  if (numSlots != 0) {
+    allocExtraData();
+    auto& mx = m_extra->m_lsbMemoExtra;
+    mx.m_slots = std::move(slots);
+    mx.m_numSlots = numSlots;
+    initLSBMemoHandles();
+  }
+}
+
+void Class::initLSBMemoHandles() {
+  /* Allocate handles array */
+  auto& mx = m_extra->m_lsbMemoExtra;
+  auto const numSlots = mx.m_numSlots;
+  rds::Handle* handles = static_cast<rds::Handle*>(
+    vm_malloc(numSlots * sizeof(rds::Handle)));
+
+  /* Assign handle to every slot */
+  uint64_t assignCount = 0;
+  uint64_t assignSum = 0;
+  const Class* cls = this;
+  while (cls != nullptr && cls->m_extra) {
+    for (const auto& kv : cls->m_extra->m_lsbMemoExtra.m_slots) {
+      auto const func = Func::fromFuncId(kv.first);
+      auto const slot = kv.second;
+      assertx(slot >= 0 && slot < numSlots);
+      if (func->numParams() == 0) {
+        handles[slot] = rds::bindLSBMemoValue(this, func).handle();
+      } else {
+        handles[slot] = rds::bindLSBMemoCache(this, func).handle();
+      }
+      ++assignCount;
+      assignSum += slot;
+    }
+    cls = cls->m_parent.get();
+  }
+  /* Sanity check: Make sure we assigned every slot exactly once */
+  always_assert(numSlots == assignCount);
+  always_assert(assignSum == ((numSlots - 1) * numSlots) / 2);
+
+  assertx(mx.m_handles == nullptr);
+  mx.m_handles = handles;
+}
+
+void Class::setInstanceMemoCacheInfo() {
   // Inherit the data from the parent, if any.
   if (m_parent && m_parent->hasMemoSlots()) {
     allocExtraData();

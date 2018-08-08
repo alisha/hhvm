@@ -67,8 +67,9 @@ void optimize(tc::FuncMetaInfo& info) {
   folly::Optional<Trace::BumpRelease> bumpLoads;
   folly::Optional<Trace::BumpRelease> bumpStores;
   folly::Optional<Trace::BumpRelease> bumpPrint;
-  if (!RuntimeOption::TraceFunctions.empty() &&
-      RuntimeOption::TraceFunctions.count(func->fullName()->toCppString())) {
+  if (func->getFuncId() == RuntimeOption::TraceFuncId ||
+      (!RuntimeOption::TraceFunctions.empty() &&
+       RuntimeOption::TraceFunctions.count(func->fullName()->toCppString()))) {
     bumpRefcount.emplace(Trace::hhir_refcount, -10);
     bumpLoads.emplace(Trace::hhir_load, -10);
     bumpStores.emplace(Trace::hhir_store, -10);
@@ -285,9 +286,13 @@ void retranslateAll() {
         (mode == JitSerdesMode::Serialize ||
          mode == JitSerdesMode::SerializeAndExit)) {
       if (serverMode) Logger::Info("retranslateAll: serializing profile data");
-      serializeProfData(RuntimeOption::EvalJitSerdesFile);
+      auto const errMsg = serializeProfData(RuntimeOption::EvalJitSerdesFile);
       if (serverMode) {
-        Logger::Info("retranslateAll: serializing done");
+        if (errMsg.empty()) {
+          Logger::Info("retranslateAll: serializing done");
+        } else {
+          Logger::Error(errMsg);
+        }
         if (mode == JitSerdesMode::SerializeAndExit) {
           s_retranslateAllComplete.store(true, std::memory_order_release);
           HttpServer::Server->stop();
@@ -651,6 +656,10 @@ bool retranslateAllPending() {
 bool pendingRetranslateAllScheduled() {
   return s_retranslateAllScheduled.load(std::memory_order_acquire) &&
     !s_retranslateAllComplete.load(std::memory_order_acquire);
+}
+
+bool retranslateAllComplete() {
+  return s_retranslateAllComplete.load(std::memory_order_acquire);
 }
 
 int getActiveWorker() {

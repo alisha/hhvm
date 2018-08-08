@@ -55,11 +55,11 @@ let expand_ty env ty =
   and exp_fun_type { ft_pos; ft_deprecated; ft_arity; ft_abstract; ft_tparams;
                      ft_where_constraints; ft_ret; ft_params;
                      ft_reactive; ft_return_disposable;
-                     ft_mutable; ft_returns_mutable;
+                     ft_mutability; ft_returns_mutable;
                      ft_is_coroutine; ft_ret_by_ref; ft_decl_errors;
                      ft_returns_void_to_rx } =
   { ft_pos; ft_deprecated; ft_arity; ft_abstract; ft_reactive; ft_is_coroutine;
-    ft_return_disposable; ft_ret_by_ref; ft_mutable; ft_returns_mutable;
+    ft_return_disposable; ft_ret_by_ref; ft_mutability; ft_returns_mutable;
     ft_tparams = List.map exp_tparam ft_tparams;
     ft_where_constraints = List.map exp_where_constraint ft_where_constraints;
     ft_ret = exp_ty ft_ret;
@@ -67,9 +67,9 @@ let expand_ty env ty =
     ft_decl_errors; ft_returns_void_to_rx;
   }
 
-  and exp_fun_param { fp_pos; fp_name; fp_kind; fp_type; fp_mutable;
+  and exp_fun_param { fp_pos; fp_name; fp_kind; fp_type; fp_mutability;
                       fp_accept_disposable; fp_rx_condition; } =
-  { fp_pos; fp_name; fp_kind; fp_accept_disposable; fp_mutable;
+  { fp_pos; fp_name; fp_kind; fp_accept_disposable; fp_mutability;
     fp_type = exp_ty fp_type; fp_rx_condition;
   }
 
@@ -96,8 +96,8 @@ let expand_ty env ty =
     | AKnewtype(n, tyl) -> AKnewtype(n, exp_tys tyl)
     | AKenum _ | AKgeneric _ | AKdependent _ -> ak
 
-  and exp_tparam (var, id, cstrs) =
-    (var, id, List.map (fun (ck, ty) -> (ck, exp_ty ty)) cstrs)
+  and exp_tparam (var, id, cstrs, reified) =
+    (var, id, List.map (fun (ck, ty) -> (ck, exp_ty ty)) cstrs, reified)
 
   and exp_where_constraint (ty1, ck, ty2) = (exp_ty ty1, ck, exp_ty ty2) in
   exp_ty ty
@@ -107,7 +107,7 @@ let expand_annotation env (pos, ty) = (pos, expand_ty env ty)
 let expander = object
   inherit Tast_visitor.endo
   method! on_expr_annotation = expand_annotation
-  method! on_class_id_annotation = expand_ty
+  method! on_class_id_annotation = expand_annotation
 end
 
 module ExpandAST =

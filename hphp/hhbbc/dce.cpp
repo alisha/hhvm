@@ -189,13 +189,13 @@ uint32_t numPush(const Bytecode& bc) {
 // a Ref).
 bool setCouldHaveSideEffects(const Type& t) {
   return
-    t.couldBe(TRef) ||
+    t.couldBe(BRef) ||
     could_run_destructor(t);
 }
 
 // Some reads could raise warnings and run arbitrary code.
 bool readCouldHaveSideEffects(const Type& t) {
-  return t.couldBe(TUninit);
+  return t.couldBe(BUninit);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -278,6 +278,20 @@ bool operator<(const LocationId& i1, const LocationId& i2) {
   return i2.isSlot && !i1.isSlot;
 }
 
+struct LocationIdHash {
+  size_t operator()(const LocationId& l) const {
+    return folly::hash::hash_combine(hash_int64_pair(l.blk, l.id), l.isSlot);
+  }
+};
+
+bool operator==(const LocationId& i1, const LocationId& i2) {
+  return i1.blk == i2.blk &&
+         i1.id == i2.id &&
+         i1.isSlot == i2.isSlot;
+}
+
+using LocationIdSet = hphp_fast_set<LocationId,LocationIdHash>;
+
 struct DceAction {
   enum Action {
     Kill,
@@ -333,9 +347,9 @@ struct DceState {
   const FuncAnalysis& ainfo;
   /*
    * Used to accumulate a set of blk/stack-slot pairs that
-   * should be marked used
+   * should be marked used.
    */
-  std::set<LocationId> forcedLiveLocations;
+  LocationIdSet forcedLiveLocations;
 
   /*
    * Eval stack use information.  Stacks slots are marked as being
@@ -465,7 +479,7 @@ std::string DEBUG_ONLY show(const UseInfo& ui) {
   return folly::sformat("{}({})", show(ui.usage), show(ui.actions));
 }
 
-std::string DEBUG_ONLY loc_bits_string(borrowed_ptr<const php::Func> func,
+std::string DEBUG_ONLY loc_bits_string(const php::Func* func,
                                        std::bitset<kMaxTrackedLocals> locs) {
   std::ostringstream out;
   if (func->locals.size() < kMaxTrackedLocals) {
@@ -479,7 +493,7 @@ std::string DEBUG_ONLY loc_bits_string(borrowed_ptr<const php::Func> func,
 }
 
 std::string DEBUG_ONLY
-slot_bits_string(borrowed_ptr<const php::Func> func,
+slot_bits_string(const php::Func* func,
                  std::bitset<kMaxTrackedClsRefSlots> slots) {
   std::ostringstream out;
   if (func->numClsRefSlots < kMaxTrackedClsRefSlots) {
@@ -577,7 +591,7 @@ Type topT(Env& env, uint32_t idx = 0) {
 
 Type topC(Env& env, uint32_t idx = 0) {
   auto const t = topT(env, idx);
-  assert(t.subtypeOf(TInitCell));
+  assert(t.subtypeOf(BInitCell));
   return t;
 }
 
@@ -775,7 +789,7 @@ void discardNonDtors(Env& env) {
  * forcedLiveLocations to prevent inconsistencies in the global state
  * (see markUisLive).
  */
-void use(std::set<LocationId>& forcedLive,
+void use(LocationIdSet& forcedLive,
          std::vector<UseInfo>& uis, uint32_t i) {
   while (true) {
     auto& ui = uis[i];
@@ -1128,7 +1142,7 @@ void dce(Env& env, const bc::ClsRefName& op) {
 }
 
 bool clsRefGetHelper(Env& env, const Type& ty, ClsRefSlotId slot) {
-  if (!ty.subtypeOf(TObj)) {
+  if (!ty.subtypeOf(BObj)) {
     if (!ty.strictSubtypeOf(TStr)) return false;
     auto v = tv(ty);
     if (!v) return false;
@@ -1420,10 +1434,10 @@ void dce(Env& env, const bc::AddElemC& /*op*/) {
         if (allUnusedIfNotLastRef(ui)) return PushFlags::MarkUnused;
         auto v = tv(arrPost);
         CompactVector<Bytecode> bcs;
-        if (arrPost.subtypeOf(TArrN)) {
+        if (arrPost.subtypeOf(BArrN)) {
           bcs.emplace_back(bc::Array { v->m_data.parr });
         } else {
-          assert(arrPost.subtypeOf(TDictN));
+          assert(arrPost.subtypeOf(BDictN));
           bcs.emplace_back(bc::Dict { v->m_data.parr });
         }
         env.dceState.replaceMap.emplace(env.id, std::move(bcs));
@@ -1437,20 +1451,20 @@ void dce(Env& env, const bc::AddElemC& /*op*/) {
         CompactVector<Bytecode> bcs;
         if (cat.cat == Type::ArrayCat::Struct &&
             *postSize <= ArrayData::MaxElemsOnStack) {
-          if (arrPost.subtypeOf(TPArrN)) {
+          if (arrPost.subtypeOf(BPArrN)) {
             bcs.emplace_back(bc::NewStructArray { get_string_keys(arrPost) });
-          } else if (arrPost.subtypeOf(TDArrN)) {
+          } else if (arrPost.subtypeOf(BDArrN)) {
             bcs.emplace_back(bc::NewStructDArray { get_string_keys(arrPost) });
           } else {
             return PushFlags::MarkLive;
           }
         } else if (cat.cat == Type::ArrayCat::Packed &&
                    *postSize <= ArrayData::MaxElemsOnStack) {
-          if (arrPost.subtypeOf(TPArrN)) {
+          if (arrPost.subtypeOf(BPArrN)) {
             bcs.emplace_back(
               bc::NewPackedArray { static_cast<uint32_t>(*postSize) }
             );
-          } else if (arrPost.subtypeOf(TVArrN)) {
+          } else if (arrPost.subtypeOf(BVArrN)) {
             bcs.emplace_back(
               bc::NewVArray { static_cast<uint32_t>(*postSize) }
             );
@@ -1482,7 +1496,7 @@ void dce(Env& env, const bc::AddElemC& /*op*/) {
 void dce(Env& env, const bc::PopL& op) {
   auto const effects = setLocCouldHaveSideEffects(env, op.loc1);
   if (!isLocLive(env, op.loc1) && !effects) {
-    assert(!locRaw(env, op.loc1).couldBe(TRef) ||
+    assert(!locRaw(env, op.loc1).couldBe(BRef) ||
            env.stateBefore.localStaticBindings[op.loc1] ==
            LocalStaticBinding::Bound);
     discardNonDtors(env);
@@ -1490,7 +1504,7 @@ void dce(Env& env, const bc::PopL& op) {
     return;
   }
   pop(env);
-  if (effects || locRaw(env, op.loc1).couldBe(TRef)) {
+  if (effects || locRaw(env, op.loc1).couldBe(BRef)) {
     addLocGen(env, op.loc1);
   } else {
     addLocKill(env, op.loc1);
@@ -1506,7 +1520,7 @@ void dce(Env& env, const bc::InitThisLoc& op) {
 void dce(Env& env, const bc::SetL& op) {
   auto const effects = setLocCouldHaveSideEffects(env, op.loc1);
   if (!isLocLive(env, op.loc1) && !effects) {
-    assert(!locRaw(env, op.loc1).couldBe(TRef) ||
+    assert(!locRaw(env, op.loc1).couldBe(BRef) ||
            env.stateBefore.localStaticBindings[op.loc1] ==
            LocalStaticBinding::Bound);
     return markDead(env);
@@ -1520,7 +1534,7 @@ void dce(Env& env, const bc::SetL& op) {
     ui.actions[env.id] = DceAction::Replace;
     return PushFlags::MarkDead;
   });
-  if (effects || locRaw(env, op.loc1).couldBe(TRef)) {
+  if (effects || locRaw(env, op.loc1).couldBe(BRef)) {
     addLocGen(env, op.loc1);
   } else {
     addLocKill(env, op.loc1);
@@ -1529,7 +1543,7 @@ void dce(Env& env, const bc::SetL& op) {
 
 void dce(Env& env, const bc::UnsetL& op) {
   auto const oldTy   = locRaw(env, op.loc1);
-  if (oldTy.subtypeOf(TUninit)) return markDead(env);
+  if (oldTy.subtypeOf(BUninit)) return markDead(env);
 
   // Unsetting a local bound to a static never has side effects
   // because the static itself has a reference to the value.
@@ -1589,7 +1603,7 @@ bool setOpLSideEffects(const bc::SetOpL& op, const Type& lhs, const Type& rhs) {
     case SetOpOp::SlEqual:
     case SetOpOp::SrEqual:
       return RuntimeOption::EnableHipHopSyntax &&
-        (lhs.subtypeOf(TStr) || rhs.subtypeOf(TStr));
+        (lhs.subtypeOf(BStr) || rhs.subtypeOf(BStr));
   }
   not_reached();
 }
@@ -1612,6 +1626,33 @@ void dce(Env& env, const bc::SetOpL& op) {
             !setOpLSideEffects(op, oldTy, topC(env))) {
           return PushFlags::MarkUnused;
         }
+      }
+      return PushFlags::MarkLive;
+    });
+}
+
+void dce(Env& env, const bc::ArrayIdx& op) {
+  stack_ops(env, [&] (UseInfo& ui) {
+      if (!env.flags.wasPEI && allUnused(ui)) {
+        return PushFlags::MarkUnused;
+      }
+      return PushFlags::MarkLive;
+    });
+}
+
+void dce(Env& env, const bc::Idx& op) {
+  stack_ops(env, [&] (UseInfo& ui) {
+      if (!env.flags.wasPEI && allUnused(ui)) {
+        return PushFlags::MarkUnused;
+      }
+      return PushFlags::MarkLive;
+    });
+}
+
+void dce(Env& env, const bc::AKExists& op) {
+  stack_ops(env, [&] (UseInfo& ui) {
+      if (!env.flags.wasPEI && allUnused(ui)) {
+        return PushFlags::MarkUnused;
       }
       return PushFlags::MarkLive;
     });
@@ -1861,7 +1902,7 @@ folly::Optional<DceState>
 dce_visit(const Index& index,
           const FuncAnalysis& fa,
           CollectedInfo& collect,
-          borrowed_ptr<const php::Block> const blk,
+          const php::Block* const blk,
           const State& stateIn,
           const DceOutState& dceOutState) {
   if (!stateIn.initialized) {
@@ -2022,13 +2063,13 @@ struct DceAnalysis {
   std::bitset<kMaxTrackedClsRefSlots> slotLiveIn;
   std::vector<UseInfo>                stack;
   std::vector<UseInfo>                slotUsage;
-  std::set<LocationId>                forcedLiveLocations;
+  LocationIdSet                       forcedLiveLocations;
 };
 
 DceAnalysis analyze_dce(const Index& index,
                         const FuncAnalysis& fa,
                         CollectedInfo& collect,
-                        borrowed_ptr<php::Block> const blk,
+                        php::Block* const blk,
                         const State& stateIn,
                         const DceOutState& dceOutState) {
   if (auto dceState = dce_visit(index, fa, collect,
@@ -2059,7 +2100,7 @@ void dce_perform(const php::Func& func,
   };
   for (auto const& elm : actionMap) {
     auto const& id = elm.first;
-    auto const b = borrow(func.blocks[id.blk]);
+    auto const b = func.blocks[id.blk].get();
     FTRACE(1, "{} {}\n", show(elm), show(func, b->hhbcs[id.idx]));
     switch (elm.second.action) {
       case DceAction::PopInputs:
@@ -2144,7 +2185,7 @@ DceOptResult
 optimize_dce(const Index& index,
              const FuncAnalysis& fa,
              CollectedInfo& collect,
-             borrowed_ptr<php::Block> const blk,
+             php::Block* const blk,
              const State& stateIn,
              const DceOutState& dceOutState) {
   auto dceState = dce_visit(index, fa, collect, blk, stateIn, dceOutState);
@@ -2280,7 +2321,7 @@ void remove_unused_clsref_slots(Context const ctx,
 void local_dce(const Index& index,
                const FuncAnalysis& ainfo,
                CollectedInfo& collect,
-               borrowed_ptr<php::Block> const blk,
+               php::Block* const blk,
                const State& stateIn) {
   // For local DCE, we have to assume all variables are in the
   // live-out set for the block.
@@ -2346,13 +2387,13 @@ void global_dce(const Index& index, const FuncAnalysis& ai) {
    * can't be killed, we add it to this set (via markUisLive, and the
    * DceAnalysis), and schedule its block for re-analysis.
    */
-  std::set<LocationId> forcedLiveLocations;
+  LocationIdSet forcedLiveLocations;
 
   /*
    * Temporary set used to collect locations that were forced live by
    * block merging/linked locations etc.
    */
-  std::set<LocationId> forcedLiveTemp;
+  LocationIdSet forcedLiveTemp;
 
   auto checkLive = [&] (std::vector<UseInfo>& uis, uint32_t i,
                         LocationId location) {
@@ -2431,7 +2472,7 @@ void global_dce(const Index& index, const FuncAnalysis& ai) {
    * Also, merge the entries into our global forcedLiveLocations, to
    * make sure they always get marked Used.
    */
-  auto processForcedLive = [&] (const std::set<LocationId>& forcedLive) {
+  auto processForcedLive = [&] (const LocationIdSet& forcedLive) {
     for (auto const& id : forcedLive) {
       if (forcedLiveLocations.insert(id).second) {
         // This is slightly inefficient; we know exactly how this will

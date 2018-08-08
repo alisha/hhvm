@@ -57,11 +57,6 @@ std::vector<std::string> Option::ParseOnDemandDirs;
 
 std::vector<std::string> Option::IncludeSearchPaths;
 
-bool Option::GeneratePickledPHP = false;
-bool Option::GenerateInlinedPHP = false;
-bool Option::GenerateTrimmedPHP = false;
-std::string Option::ProgramPrologue;
-std::string Option::TrimmedPrologue;
 std::set<std::string> Option::VolatileClasses;
 std::map<std::string,std::string,stdltistr> Option::AutoloadClassMap;
 std::map<std::string,std::string,stdltistr> Option::AutoloadFuncMap;
@@ -140,6 +135,10 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
                config, "PackageExcludeStaticPatterns");
   Config::Bind(CachePHPFile, ini, config, "CachePHPFile");
 
+  Config::Bind(RuntimeOption::EvalDisableReturnByReference,
+               ini, config, "DisableReturnByReference",
+               RuntimeOption::EvalDisableReturnByReference);
+
   Config::Bind(ParseOnDemandDirs, ini, config, "ParseOnDemandDirs");
 
   Config::Bind(IdPrefix, ini, config, "CodeGeneration.IdPrefix", IdPrefix);
@@ -198,6 +197,9 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
 
   static bool HardReturnTypeHints;
   Config::Bind(HardReturnTypeHints, ini, config, "HardReturnTypeHints", true);
+
+  Config::Bind(RuntimeOption::EvalCheckPropTypeHints, ini, config,
+               "CheckPropTypeHints", RuntimeOption::EvalCheckPropTypeHints);
 
   // This option takes precedence over RuntimeOption. We test to see if the
   // option has been set (by the user) or not.
@@ -268,12 +270,12 @@ void Option::Load(const IniSetting::Map& ini, Hdf &config) {
   Config::Bind(RuntimeOption::EvalNoticeOnBuiltinDynamicCalls,
                ini, config, "NoticeOnBuiltinDynamicCalls",
                RuntimeOption::EvalNoticeOnBuiltinDynamicCalls);
-  Config::Bind(RuntimeOption::EvalUseMSRVForInOut,
-               ini, config, "UseMSRVForInOut",
-               RuntimeOption::EvalUseMSRVForInOut);
   Config::Bind(RuntimeOption::EvalAllowObjectDestructors,
                ini, config, "AllowObjectDestructors",
                RuntimeOption::EvalAllowObjectDestructors);
+  Config::Bind(RuntimeOption::EvalAbortBuildOnVerifyError,
+               ini, config, "AbortBuildOnVerifyError",
+               RuntimeOption::EvalAbortBuildOnVerifyError);
 
   {
     // Hack

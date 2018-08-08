@@ -788,7 +788,6 @@ let do_enhanced_hover
         (MarkedCode ("hack", snippet)) :: (List.map ~f:(fun s -> MarkedString s) addendum)
     end
     |> List.concat
-    |> List.remove_consecutive_duplicates ~equal:(=)
   in
   (* We pull the position from the SymbolOccurrence.t record, so I would be
      surprised if there were any different ones in here. Just take the first
@@ -899,6 +898,7 @@ let make_ide_completion_response
     | Namespace_kind -> Some Completion.Module
     | Constructor_kind -> Some Completion.Constructor
     | Keyword_kind -> Some Completion.Keyword
+    | Literal_kind -> Some Completion.Value
   in
   let hack_to_itemType (completion: complete_autocomplete_result) : string option =
     (* TODO: we're using itemType (left column) for function return types, and *)
@@ -995,9 +995,10 @@ let do_completion_ffp
     (ref_unblocked_time: float ref)
     (params: Completion.params)
   : Completion.result =
+  let open Completion in
   let open TextDocumentIdentifier in
-  let pos = lsp_position_to_ide params.TextDocumentPositionParams.position in
-  let filename = lsp_uri_to_path params.TextDocumentPositionParams.textDocument.uri in
+  let pos = lsp_position_to_ide params.loc.TextDocumentPositionParams.position in
+  let filename = lsp_uri_to_path params.loc.TextDocumentPositionParams.textDocument.uri in
   let command = ServerCommandTypes.IDE_FFP_AUTOCOMPLETE (filename, pos) in
   let result = rpc conn ref_unblocked_time command in
   make_ide_completion_response result filename
@@ -1007,11 +1008,16 @@ let do_completion_legacy
     (ref_unblocked_time: float ref)
     (params: Completion.params)
   : Completion.result =
+  let open Completion in
   let open TextDocumentIdentifier in
-  let pos = lsp_position_to_ide params.TextDocumentPositionParams.position in
-  let filename = lsp_uri_to_path params.TextDocumentPositionParams.textDocument.uri in
+  let pos = lsp_position_to_ide params.loc.TextDocumentPositionParams.position in
+  let filename = lsp_uri_to_path params.loc.TextDocumentPositionParams.textDocument.uri in
+  let is_manually_invoked = match params.context with
+    | None -> false
+    | Some c -> c.triggerKind == Invoked
+  in
   let delimit_on_namespaces = true in
-  let command = ServerCommandTypes.IDE_AUTOCOMPLETE (filename, pos, delimit_on_namespaces) in
+  let command = ServerCommandTypes.IDE_AUTOCOMPLETE (filename, pos, delimit_on_namespaces, is_manually_invoked) in
   let result = rpc conn ref_unblocked_time command in
   make_ide_completion_response result filename
 
@@ -1606,7 +1612,7 @@ let do_initialize () : Initialize.result =
       hoverProvider = true;
       completionProvider = Some {
         resolveProvider = true;
-        completion_triggerCharacters = ["$"; ">"; "\\"; ":"; "<"];
+        completion_triggerCharacters = ["$"; ">"; "\\"; ":"; "<"; "["; "'"; "\"" ];
       };
       signatureHelpProvider = Some { sighelp_triggerCharacters = ["("; ","] };
       definitionProvider = true;

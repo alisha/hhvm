@@ -159,7 +159,7 @@ let process_changes changes env =
   | Watchman_unavailable ->
     Hh_logger.log "Watchman unavailable. Exiting";
     exit 1
-  | Watchman_pushed (Changed_merge_base (mergebase, changes)) ->
+  | Watchman_pushed (Changed_merge_base (mergebase, changes, _)) ->
     Hh_logger.log "changed mergebase: %s" mergebase;
     let changes = String.concat "\n" (SSet.elements changes) in
     Hh_logger.log "changes: %s" changes;
@@ -266,7 +266,7 @@ let init_watchman root =
     expression_terms = watchman_expression_terms;
     subscription_prefix = "hh_event_watcher";
     roots = [root];
-  }
+  } ()
 
 let init root =
   let init_id = Random_id.short_string () in

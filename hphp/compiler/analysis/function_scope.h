@@ -26,7 +26,7 @@
 #include "hphp/compiler/analysis/block_scope.h"
 #include "hphp/compiler/option.h"
 
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
 #include "hphp/parser/parser.h"
 
 #include "hphp/runtime/base/static-string-table.h"
@@ -90,6 +90,8 @@ struct FunctionScope : BlockScope {
   bool isInOutParam(int index) const;
 
   bool hasUserAttr(const char *attr) const;
+  bool hasMemoize() const;
+  bool hasMemoizeLSB() const;
 
   /**
    * What kind of function this is.
@@ -183,8 +185,9 @@ struct FunctionScope : BlockScope {
   void setContainsDynamicVar() { m_containsDynamicVar = true; }
   bool containsDynamicVar() const { return m_containsDynamicVar; }
 
-  typedef hphp_hash_map<std::string, ExpressionPtr, string_hashi,
-    string_eqstri> UserAttributeMap;
+  using UserAttributeMap = hphp_hash_map<
+    std::string, ExpressionPtr, string_hashi, string_eqstri
+  >;
 
   UserAttributeMap& userAttributes() { return m_userAttributes;}
 

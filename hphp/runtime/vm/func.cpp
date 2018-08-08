@@ -116,7 +116,7 @@ Func::~Func() {
     // and the memory may now be in use by another function.
     jit::clobberFuncGuards(this);
   }
-#ifdef DEBUG
+#ifndef NDEBUG
   validate();
   m_magic = ~m_magic;
 #endif
@@ -233,7 +233,7 @@ void Func::rename(const StringData* name) {
 // Initialization.
 
 void Func::init(int numParams) {
-#ifdef DEBUG
+#ifndef NDEBUG
   m_magic = kMagic;
 #endif
   // For methods, we defer setting the full name until m_cls is initialized
@@ -610,7 +610,7 @@ void Func::resetPrologue(int numParams) {
 ///////////////////////////////////////////////////////////////////////////////
 // Pretty printer.
 
-static void print_attrs(std::ostream& out, Attr attrs) {
+void Func::print_attrs(std::ostream& out, Attr attrs) {
   if (attrs & AttrStatic)    { out << " static"; }
   if (attrs & AttrPublic)    { out << " public"; }
   if (attrs & AttrProtected) { out << " protected"; }
@@ -640,6 +640,7 @@ void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
     print_attrs(out, m_attrs);
     if (isPhpLeafFn()) out << " (leaf)";
     if (isMemoizeWrapper()) out << " (memoize_wrapper)";
+    if (isMemoizeWrapperLSB()) out << " (memoize_wrapper_lsb)";
     if (isHot()) out << " (hot)";
     if (cls() != nullptr) {
       out << ' ' << fullName()->data();
@@ -651,6 +652,7 @@ void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
     print_attrs(out, m_attrs);
     if (isPhpLeafFn()) out << " (leaf)";
     if (isMemoizeWrapper()) out << " (memoize_wrapper)";
+    if (isMemoizeWrapperLSB()) out << " (memoize_wrapper_lsb)";
     if (isHot()) out << " (hot)";
     out << ' ' << m_name->data();
   }
@@ -665,7 +667,7 @@ void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
     auto const& param = params[i];
     out << " Param: " << localVarName(i)->data();
     if (param.typeConstraint.hasConstraint()) {
-      out << " " << param.typeConstraint.displayName(this, true);
+      out << " " << param.typeConstraint.displayName(cls(), true);
     }
     if (param.userType) {
       out << " (" << param.userType->data() << ")";
@@ -683,7 +685,7 @@ void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
       (returnUserType() && !returnUserType()->empty())) {
     out << " Ret: ";
     if (returnTypeConstraint().hasConstraint()) {
-      out << " " << returnTypeConstraint().displayName(this, true);
+      out << " " << returnTypeConstraint().displayName(cls(), true);
     }
     if (returnUserType() && !returnUserType()->empty()) {
       out << " (" << returnUserType()->data() << ")";
@@ -761,6 +763,7 @@ Func::SharedData::SharedData(PreClass* preClass, Offset base, Offset past,
   , m_hasExtendedSharedData(false)
   , m_returnByValue(false)
   , m_isMemoizeWrapper(false)
+  , m_isMemoizeWrapperLSB(false)
   , m_isPhpLeafFn(isPhpLeafFn)
   , m_takesNumArgs(false)
   , m_numClsRefSlots(0)
@@ -1154,6 +1157,7 @@ void logFunc(const Func* func, StructuredLogEntry& ent) {
   std::set<folly::StringPiece> attrSet(attrs.begin(), attrs.end());
 
   if (func->isMemoizeWrapper()) attrSet.emplace("memoize_wrapper");
+  if (func->isMemoizeWrapperLSB()) attrSet.emplace("memoize_wrapper_lsb");
   if (func->isMemoizeImpl()) attrSet.emplace("memoize_impl");
   if (func->isAsync()) attrSet.emplace("async");
   if (func->isGenerator()) attrSet.emplace("generator");

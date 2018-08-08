@@ -190,6 +190,7 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
   and validate_expression : expression validator = fun x ->
     match Syntax.syntax x with
     | Syntax.LiteralExpression _ -> tag validate_literal_expression (fun x -> ExprLiteral x) x
+    | Syntax.PrefixedStringExpression _ -> tag validate_prefixed_string_expression (fun x -> ExprPrefixedString x) x
     | Syntax.VariableExpression _ -> tag validate_variable_expression (fun x -> ExprVariable x) x
     | Syntax.PipeVariableExpression _ -> tag validate_pipe_variable_expression (fun x -> ExprPipeVariable x) x
     | Syntax.DecoratedExpression _ -> tag validate_decorated_expression (fun x -> ExprDecorated x) x
@@ -243,6 +244,7 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
   and invalidate_expression : expression invalidator = fun (value, thing) ->
     match thing with
     | ExprLiteral                       thing -> invalidate_literal_expression             (value, thing)
+    | ExprPrefixedString                thing -> invalidate_prefixed_string_expression     (value, thing)
     | ExprVariable                      thing -> invalidate_variable_expression            (value, thing)
     | ExprPipeVariable                  thing -> invalidate_pipe_variable_expression       (value, thing)
     | ExprDecorated                     thing -> invalidate_decorated_expression           (value, thing)
@@ -450,6 +452,7 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
   and validate_lambda_body : lambda_body validator = fun x ->
     match Syntax.syntax x with
     | Syntax.LiteralExpression _ -> tag validate_literal_expression (fun x -> LambdaLiteral x) x
+    | Syntax.PrefixedStringExpression _ -> tag validate_prefixed_string_expression (fun x -> LambdaPrefixedString x) x
     | Syntax.VariableExpression _ -> tag validate_variable_expression (fun x -> LambdaVariable x) x
     | Syntax.PipeVariableExpression _ -> tag validate_pipe_variable_expression (fun x -> LambdaPipeVariable x) x
     | Syntax.DecoratedExpression _ -> tag validate_decorated_expression (fun x -> LambdaDecorated x) x
@@ -504,6 +507,7 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
   and invalidate_lambda_body : lambda_body invalidator = fun (value, thing) ->
     match thing with
     | LambdaLiteral                       thing -> invalidate_literal_expression             (value, thing)
+    | LambdaPrefixedString                thing -> invalidate_prefixed_string_expression     (value, thing)
     | LambdaVariable                      thing -> invalidate_variable_expression            (value, thing)
     | LambdaPipeVariable                  thing -> invalidate_pipe_variable_expression       (value, thing)
     | LambdaDecorated                     thing -> invalidate_decorated_expression           (value, thing)
@@ -557,6 +561,7 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
   and validate_constructor_expression : constructor_expression validator = fun x ->
     match Syntax.syntax x with
     | Syntax.LiteralExpression _ -> tag validate_literal_expression (fun x -> CExprLiteral x) x
+    | Syntax.PrefixedStringExpression _ -> tag validate_prefixed_string_expression (fun x -> CExprPrefixedString x) x
     | Syntax.VariableExpression _ -> tag validate_variable_expression (fun x -> CExprVariable x) x
     | Syntax.PipeVariableExpression _ -> tag validate_pipe_variable_expression (fun x -> CExprPipeVariable x) x
     | Syntax.DecoratedExpression _ -> tag validate_decorated_expression (fun x -> CExprDecorated x) x
@@ -611,6 +616,7 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
   and invalidate_constructor_expression : constructor_expression invalidator = fun (value, thing) ->
     match thing with
     | CExprLiteral                       thing -> invalidate_literal_expression             (value, thing)
+    | CExprPrefixedString                thing -> invalidate_prefixed_string_expression     (value, thing)
     | CExprVariable                      thing -> invalidate_variable_expression            (value, thing)
     | CExprPipeVariable                  thing -> invalidate_pipe_variable_expression       (value, thing)
     | CExprDecorated                     thing -> invalidate_decorated_expression           (value, thing)
@@ -760,6 +766,20 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
     { Syntax.syntax =
       Syntax.LiteralExpression
       { literal_expression = invalidate_list_with (invalidate_expression) x.literal_expression
+      }
+    ; Syntax.value = v
+    }
+  and validate_prefixed_string_expression : prefixed_string_expression validator = function
+  | { Syntax.syntax = Syntax.PrefixedStringExpression x; value = v } -> v,
+    { prefixed_string_str = validate_token x.prefixed_string_str
+    ; prefixed_string_name = validate_token x.prefixed_string_name
+    }
+  | s -> validation_fail (Some SyntaxKind.PrefixedStringExpression) s
+  and invalidate_prefixed_string_expression : prefixed_string_expression invalidator = fun (v, x) ->
+    { Syntax.syntax =
+      Syntax.PrefixedStringExpression
+      { prefixed_string_name = invalidate_token x.prefixed_string_name
+      ; prefixed_string_str = invalidate_token x.prefixed_string_str
       }
     ; Syntax.value = v
     }
@@ -3346,12 +3366,14 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
     { type_constraints = validate_list_with (validate_type_constraint) x.type_constraints
     ; type_name = validate_token x.type_name
     ; type_variance = validate_option_with (validate_token) x.type_variance
+    ; type_reified = validate_option_with (validate_token) x.type_reified
     }
   | s -> validation_fail (Some SyntaxKind.TypeParameter) s
   and invalidate_type_parameter : type_parameter invalidator = fun (v, x) ->
     { Syntax.syntax =
       Syntax.TypeParameter
-      { type_variance = invalidate_option_with (invalidate_token) x.type_variance
+      { type_reified = invalidate_option_with (invalidate_token) x.type_reified
+      ; type_variance = invalidate_option_with (invalidate_token) x.type_variance
       ; type_name = invalidate_token x.type_name
       ; type_constraints = invalidate_list_with (invalidate_type_constraint) x.type_constraints
       }
@@ -3626,6 +3648,20 @@ module Make(Token : TokenType)(SyntaxValue : SyntaxValueType) = struct
       Syntax.SoftTypeSpecifier
       { soft_at = invalidate_token x.soft_at
       ; soft_type = invalidate_specifier x.soft_type
+      }
+    ; Syntax.value = v
+    }
+  and validate_reified_type_argument : reified_type_argument validator = function
+  | { Syntax.syntax = Syntax.ReifiedTypeArgument x; value = v } -> v,
+    { reified_type_argument_type = validate_specifier x.reified_type_argument_type
+    ; reified_type_argument_reified = validate_token x.reified_type_argument_reified
+    }
+  | s -> validation_fail (Some SyntaxKind.ReifiedTypeArgument) s
+  and invalidate_reified_type_argument : reified_type_argument invalidator = fun (v, x) ->
+    { Syntax.syntax =
+      Syntax.ReifiedTypeArgument
+      { reified_type_argument_reified = invalidate_token x.reified_type_argument_reified
+      ; reified_type_argument_type = invalidate_specifier x.reified_type_argument_type
       }
     ; Syntax.value = v
     }

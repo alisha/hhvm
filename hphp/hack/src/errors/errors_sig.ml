@@ -130,7 +130,6 @@ module type S = sig
   val uninstantiable_class : Pos.t -> Pos.t -> string -> (Pos.t * string) list
     -> unit
   val abstract_const_usage: Pos.t -> Pos.t -> string -> unit
-  val typedef_constraint : Pos.t -> unit
   val add_a_typehint : Pos.t -> unit
   val local_const : Pos.t -> unit
   val illegal_constant : Pos.t -> unit
@@ -138,6 +137,8 @@ module type S = sig
   val format_string :
     Pos.t -> string -> string -> Pos.t -> string -> string -> unit
   val expected_literal_string : Pos.t -> unit
+  val re_prefixed_non_string : Pos.t -> string -> unit
+  val bad_regex_pattern : Pos.t -> string -> unit
   val generic_array_strict : Pos.t -> unit
   val strict_members_not_known : Pos.t -> string -> unit
   val option_return_only_typehint : Pos.t -> [< `void | `noreturn ] -> unit
@@ -337,7 +338,6 @@ module type S = sig
   val shape_field_type_mismatch : Pos.t -> Pos.t -> string -> string -> unit
   val shape_fields_unknown: Pos.t -> Pos.t  -> unit
   val invalid_shape_remove_key : Pos.t -> unit
-  val missing_optional_field : Pos.t -> Pos.t -> string -> unit
   val shape_field_unset : Pos.t -> Pos.t -> string -> unit
   val using_internal_class : Pos.t -> string -> unit
   val nullsafe_not_needed : Pos.t -> (Pos.t * string) list -> unit
@@ -393,7 +393,7 @@ module type S = sig
   val invalid_disposable_hint : Pos.t -> string -> unit
   val invalid_disposable_return_hint : Pos.t -> string -> unit
   val invalid_return_disposable : Pos.t -> unit
-
+  val unsupported_feature : Pos.t -> string -> unit
   val to_json : Pos.absolute error_ -> Hh_json.json
   val to_string : ?indent:bool -> Pos.absolute error_ -> string
   val try_ : (unit -> 'a) -> (error -> 'a) -> 'a
@@ -413,6 +413,7 @@ module type S = sig
   val try_when :
     (unit -> 'a) -> when_:(unit -> bool) -> do_:(error -> unit) -> 'a
   val has_no_errors : (unit -> 'a) -> bool
+  val currently_has_errors : unit -> bool
   val must_error : (unit -> unit) -> (unit -> unit) -> unit
   val to_absolute : error -> Pos.absolute error_
 
@@ -470,6 +471,10 @@ module type S = sig
   val coroutine_call_outside_of_suspend : Pos.t -> unit
   val function_is_not_coroutine : Pos.t -> string -> unit
   val coroutinness_mismatch : bool -> Pos.t -> Pos.t -> unit
+  val invalid_ppl_call : Pos.t -> string -> unit
+  val invalid_ppl_static_call : Pos.t -> string -> unit
+  val ppl_meth_pointer : Pos.t -> string -> unit
+  val coroutine_outside_experimental : Pos.t -> unit
   val return_disposable_mismatch : bool -> Pos.t -> Pos.t -> unit
   val fun_reactivity_mismatch : Pos.t -> string -> Pos.t -> string -> unit
   val frozen_in_incorrect_scope : Pos.t -> unit
@@ -516,7 +521,7 @@ module type S = sig
   val illegal_destructor : Pos.t -> unit
   val rx_enabled_in_non_rx_context : Pos.t -> unit
   val rx_enabled_in_lambdas : Pos.t -> unit
-  val ambiguous_lambda : Pos.t -> int -> unit
+  val ambiguous_lambda : Pos.t -> (Pos.t * string) list -> unit
   val ellipsis_strict_mode :
     require:[< `Param_name | `Type | `Type_and_param_name ] -> Pos.t -> unit
   val untyped_lambda_strict_mode : Pos.t -> unit
@@ -563,4 +568,22 @@ module type S = sig
     Pos.t -> Pos.t -> Pos.t -> string -> string -> unit
   val callsite_reactivity_mismatch: Pos.t -> Pos.t -> string -> string -> unit
   val rx_parameter_condition_mismatch: string -> Pos.t -> Pos.t -> unit
+  val maybe_mutable_attribute_on_function: Pos.t -> unit
+  val conflicting_mutable_and_maybe_mutable_attributes: Pos.t -> unit
+  val maybe_mutable_methods_must_be_reactive: Pos.t -> string -> unit
+  val reassign_maybe_mutable_var: Pos.t -> unit
+  val immutable_argument_mismatch : Pos.t -> Pos.t -> unit
+  val maybe_mutable_argument_mismatch : Pos.t -> Pos.t -> unit
+  val immutable_call_on_mutable: Pos.t -> Pos.t -> unit
+  val invalid_call_on_maybe_mutable: fun_is_mutable:bool -> Pos.t -> Pos.t -> unit
+  val mutability_mismatch: is_receiver: bool -> Pos.t -> string -> Pos.t -> string -> unit
+  val invalid_traversable_in_rx: Pos.t -> unit
+  val reference_in_rx: Pos.t -> unit
+  val reassign_mutable_this: Pos.t -> unit
+  val mutable_expression_as_multiple_mutable_arguments: Pos.t -> string -> Pos.t -> string -> unit
+  val invalid_unset_target_rx: Pos.t -> unit
+  val declare_statement_in_hack : Pos.t -> unit
+  val misplaced_rx_of_scope: Pos.t -> unit
+  val rx_of_scope_and_explicit_rx: Pos.t -> unit
+  val lateinit_with_default: Pos.t -> unit
 end

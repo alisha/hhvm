@@ -31,7 +31,7 @@
 #include "hphp/util/compact-vector.h"
 #include "hphp/util/fixed-vector.h"
 #include "hphp/util/functional.h"
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
 #include "hphp/util/lock-free-ptr-wrapper.h"
 #include "hphp/util/md5.h"
 #include "hphp/util/mutex.h"
@@ -491,6 +491,8 @@ public:
    */
   Func* getMain(Class* cls) const;
 
+  // Return the cached EntryPoint
+  Func* getCachedEntryPoint() const;
   /*
    * The first hoistable Func in the Unit.
    *
@@ -910,6 +912,11 @@ private:
   TypedValue m_mainReturn;
   CompactVector<PreClassPtr> m_preClasses;
   FixedVector<TypeAlias> m_typeAliases;
+  /*
+   * Cached the EntryPoint for an unit, since compactMergeInfo() inside of
+   * mergeImpl will drop the original EP.
+   */
+  Func* m_cachedEntryPoint{nullptr};
 
   /*
    * The remaining fields are cold, and arbitrarily ordered.

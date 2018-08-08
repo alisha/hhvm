@@ -148,7 +148,6 @@ val error2055 : string
 val error2056 : string
 val error2057 : string
 val error2058 : string
-val error2059 : string
 val error2060 : string
 val error2061 : string
 val error2062 : string
@@ -169,6 +168,7 @@ val error2076 : string
 val error2077 : string
 
 (* Start giving names rather than numbers *)
+val async_not_last : string
 val list_as_subscript : string
 val vdarray_in_php : string
 val using_st_function_scoped_top_level : string
@@ -196,6 +196,7 @@ val double_variadic : string
 val double_reference : string
 val global_in_const_decl : string
 val conflicting_trait_require_clauses : name:string -> string
+val shape_type_ellipsis_without_trailing_comma: string
 val yield_in_magic_methods : string
 val reference_not_allowed_on_key : string
 val reference_not_allowed_on_value : string
@@ -203,6 +204,8 @@ val reference_not_allowed_on_element : string
 val yield_outside_function : string
 val coloncolonclass_on_dynamic : string
 val enum_elem_name_is_class : string
+val expected_as_or_insteadof : string
+val expected_dotdotdot : string
 val not_allowed_in_write : string -> string
 val reassign_this : string
 val strict_types_first_statement : string
@@ -238,6 +241,7 @@ val redeclaration_of_method : name:string -> string
 val self_or_parent_colon_colon_class_outside_of_class : string -> string
 val variadic_param_with_type_in_php : string -> string -> string
 val final_property : string
+val var_property : string
 val invalid_is_as_expression_hint : string -> string -> string
 val elvis_operator_space : string
 val property_has_multiple_visibilities : string -> string
@@ -254,7 +258,14 @@ val sealed_val_not_classname: string
 val sealed_final: string
 val interface_implements: string
 val memoize_on_lambda: string
+val memoize_lsb_on_non_static: string
+val memoize_lsb_on_non_method: string
 val instanceof_paren: string -> string
+val instanceof_invalid_scope_resolution: string
+val instanceof_memberselection_inside_scoperesolution: string
+val instanceof_missing_subscript_index: string
+val instanceof_unknown_node: string -> string
+val instanceof_reference: string
 val invalid_await_use: string
 val invalid_constructor_method_call: string
 val invalid_default_argument: string -> string
@@ -269,3 +280,22 @@ val invalid_yield : string
 val invalid_yield_from : string
 val invalid_class_in_collection_initializer: string
 val invalid_brace_kind_in_collection_initializer: string
+val alternate_control_flow : string
+val execution_operator : string
+val invalid_octal_integer : string
+val php7_anonymous_function : string
+val prefixed_invalid_string_kind : string
+val non_re_prefix : string
+val collection_intrinsic_generic: string
+val invalid_shape_field_name : string
+val incorrect_byref_assignment : string
+val invalid_hack_mode : string
+val pair_initializer_needed : string
+val pair_initializer_arity : string
+val nested_unary_reference : string
+val toplevel_statements : string
+val invalid_reified : string
+val shadowing_reified : string
+val dollar_unary : string
+val decl_outside_global_scope : string
+val experimental_in_codegen_without_hacksperimental : string

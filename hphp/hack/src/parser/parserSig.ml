@@ -54,6 +54,7 @@ module WithSyntax(Syntax : Syntax_sig.Syntax_S) = struct
         val qualified_name : t -> SC.r -> t * SC.r
         val simple_type_specifier : t -> SC.r -> t * SC.r
         val literal_expression : t -> SC.r -> t * SC.r
+        val prefixed_string_expression : t -> SC.r -> SC.r -> t * SC.r
         val variable_expression : t -> SC.r -> t * SC.r
         val pipe_variable_expression : t -> SC.r -> t * SC.r
         val enum_declaration : t -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
@@ -195,7 +196,7 @@ module WithSyntax(Syntax : Syntax_sig.Syntax_S) = struct
         val tuple_type_explicit_specifier : t -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
         val varray_type_specifier : t -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
         val vector_array_type_specifier : t -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
-        val type_parameter : t -> SC.r -> SC.r -> SC.r -> t * SC.r
+        val type_parameter : t -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
         val type_constraint : t -> SC.r -> SC.r -> t * SC.r
         val darray_type_specifier : t -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
         val map_array_type_specifier : t -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> SC.r -> t * SC.r
@@ -211,6 +212,7 @@ module WithSyntax(Syntax : Syntax_sig.Syntax_S) = struct
         val generic_type_specifier : t -> SC.r -> SC.r -> t * SC.r
         val nullable_type_specifier : t -> SC.r -> SC.r -> t * SC.r
         val soft_type_specifier : t -> SC.r -> SC.r -> t * SC.r
+        val reified_type_argument : t -> SC.r -> SC.r -> t * SC.r
         val type_arguments : t -> SC.r -> SC.r -> SC.r -> t * SC.r
         val type_parameters : t -> SC.r -> SC.r -> SC.r -> t * SC.r
         val tuple_type_specifier : t -> SC.r -> SC.r -> SC.r -> t * SC.r

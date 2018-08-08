@@ -34,6 +34,7 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+struct MInstrPropState;
 struct TypedValue;
 
 #define INVOKE_FEW_ARGS_COUNT 6
@@ -387,7 +388,10 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   bool hasDynProps() const;
 
   /*
-   * Returns the dynamic properties array for this object.
+   * Returns a reference to dynamic properties Array for this object.
+   * The reference points into an entry in ExecutionContext::dynPropArray,
+   * so is only valid for a short lifetime, until another entry is inserted
+   * or erased (anything that moves entries).
    *
    * Note: you're generally not going to want to copy-construct the
    * return value of this function.  If you want to make changes to
@@ -398,19 +402,12 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   Array& dynPropArray() const;
 
   /*
-   * Create the dynamic property array for this ObjectData if it
-   * doesn't already exist yet.
-   *
-   * Post: getAttribute(HasDynPropArr)
-   */
-  Array& reserveProperties(int nProp = 2);
-
-  /*
    * Use the given array for this object's dynamic properties. HasDynPropArry
    * must not already be set. Returns a reference to the Array in its final
    * location.
    */
-  Array& setDynPropArray(const Array&);
+  void setDynProps(const Array&);
+  void reserveDynProps(int nProp);
 
   // accessors for the declared properties area
   TypedValue* propVecForWrite();
@@ -440,11 +437,25 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   //============================================================================
   // Properties.
  private:
-  Slot declPropInd(tv_rval prop) const;
+  /*
+   * Use the given array for this object's dynamic properties. HasDynPropArry
+   * must not already be set. Returns a reference to the Array in its final
+   * location.
+   */
+  Array& setDynPropArray(const Array&);
+
+  /*
+   * Create the dynamic property array for this ObjectData if it
+   * doesn't already exist yet.
+   *
+   * Post: getAttribute(HasDynPropArr)
+   */
+  Array& reserveProperties(int nProp = 2);
+
   [[noreturn]] NEVER_INLINE
-  void throwMutateImmutable(tv_rval prop) const;
+  void throwMutateImmutable(Slot prop) const;
   [[noreturn]] NEVER_INLINE
-  void throwBindImmutable(tv_rval prop) const;
+  void throwBindImmutable(Slot prop) const;
 
  public:
   // never box the lval returned from getPropLval; use propB or vGetProp instead
@@ -456,12 +467,14 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
 
  private:
   struct PropLookup {
-    tv_lval prop;
+    tv_lval val;
+    const Class::Prop* prop;
+    Slot slot;
     bool accessible;
     bool immutable;
   };
 
-  template <bool forWrite>
+  template <bool forWrite, bool forRead>
   ALWAYS_INLINE
   PropLookup getPropImpl(const Class*, const StringData*);
 
@@ -473,7 +486,8 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   };
 
   template<PropMode mode>
-  tv_lval propImpl(TypedValue* tvRef, const Class* ctx, const StringData* key);
+  tv_lval propImpl(TypedValue* tvRef, const Class* ctx,
+                   const StringData* key, MInstrPropState* pState);
 
   bool propEmptyImpl(const Class* ctx, const StringData* key);
 
@@ -498,8 +512,11 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
  public:
   tv_lval prop(TypedValue* tvRef, const Class* ctx, const StringData* key);
   tv_lval propW(TypedValue* tvRef, const Class* ctx, const StringData* key);
-  tv_lval propD(TypedValue* tvRef, const Class* ctx, const StringData* key);
-  tv_lval propB(TypedValue* tvRef, const Class* ctx, const StringData* key);
+  tv_lval propU(TypedValue* tvRef, const Class* ctx, const StringData* key);
+  tv_lval propD(TypedValue* tvRef, const Class* ctx,
+                const StringData* key, MInstrPropState* pState);
+  tv_lval propB(TypedValue* tvRef, const Class* ctx,
+                const StringData* key, MInstrPropState* pState);
 
   bool propIsset(const Class* ctx, const StringData* key);
   bool propEmpty(const Class* ctx, const StringData* key);
@@ -517,8 +534,9 @@ struct ObjectData : Countable, type_scan::MarkCollectable<ObjectData> {
   static void raiseObjToIntNotice(const char*);
   static void raiseObjToDoubleNotice(const char*);
   static void raiseAbstractClassError(Class*);
-  void raiseUndefProp(const StringData*);
-  void raiseCreateDynamicProp(const StringData*);
+  void raiseUndefProp(const StringData*) const;
+  void raiseCreateDynamicProp(const StringData*) const;
+  void raiseReadDynamicProp(const StringData*) const;
 
   static constexpr ptrdiff_t getVMClassOffset() {
     return offsetof(ObjectData, m_cls);

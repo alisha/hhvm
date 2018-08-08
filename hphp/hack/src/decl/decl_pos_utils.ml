@@ -94,6 +94,9 @@ let rec reason = function
   | Rmissing_optional_field (p, n) -> Rmissing_optional_field (pos p, n)
   | Rcontravariant_generic (r1, n) -> Rcontravariant_generic (reason r1, n)
   | Rinvariant_generic (r1, n) -> Rcontravariant_generic (reason r1, n)
+  | Rregex p                 -> Rregex (pos p)
+  | Rlambda_use p            -> Rlambda_use (pos p)
+  | Rimplicit_upper_bound p -> Rimplicit_upper_bound (pos p)
 
 let string_id (p, x) = pos p, x
 
@@ -126,7 +129,8 @@ let rec ty (p, x) =
       FieldsPartiallyKnown (ShapeMap.map_and_rekey m shape_field_name pos)
 
   and shape_field_name = function
-    | Ast.SFlit s -> Ast.SFlit (string_id s)
+    | Ast.SFlit_int s -> Ast.SFlit_int (string_id s)
+    | Ast.SFlit_str s -> Ast.SFlit_str (string_id s)
     | Ast.SFclass_const (id, s) -> Ast.SFclass_const (string_id id, string_id s)
 
   and constraint_ = List.map ~f:(fun (ck, x) -> (ck, ty x))
@@ -184,8 +188,8 @@ let rec ty (p, x) =
       ttc_origin = tc.ttc_origin;
     }
 
-  and type_param (variance, sid, x) =
-    variance, string_id sid, constraint_ x
+  and type_param (variance, sid, x, reified) =
+    variance, string_id sid, constraint_ x, reified
 
   and class_type dc =
     { dc_final                 = dc.dc_final                          ;

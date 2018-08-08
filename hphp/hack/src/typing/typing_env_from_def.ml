@@ -32,7 +32,7 @@ module EnvFromDef(ASTAnnotations: Aast.ASTAnnotationTypes) = struct
   (* Given a class definition construct a type consisting of the
    * class instantiated at its generic parameters. *)
   let get_self_from_c c =
-    let tparams = List.map (fst c.c_tparams) begin fun (_, (p, s), _) ->
+    let tparams = List.map (fst c.c_tparams) begin fun (_, (p, s), _, _) ->
       Reason.Rwitness p, Tgeneric s
     end in
     Reason.Rwitness (fst c.c_name), Tapply (c.c_name, tparams)
@@ -52,6 +52,12 @@ module EnvFromDef(ASTAnnotations: Aast.ASTAnnotationTypes) = struct
       | Ast.Cinterface | Ast.Cabstract | Ast.Ctrait
       | Ast.Cnormal -> Typing_phase.localize_with_self env self in
     let env = Env.set_self env self in
+    (* Set the ppl env flag *)
+    let is_ppl =
+      List.exists
+        c.c_user_attributes
+        (fun { ua_name; _ } -> SN.UserAttributes.uaProbabilisticModel = snd ua_name) in
+    let env = Env.set_inside_ppl_class env is_ppl in
     env
 
   let typedef_env tcopt t =

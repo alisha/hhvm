@@ -48,7 +48,6 @@ TRACE_SET_MOD(hhir);
 #define DRefineS(n)    HasDest
 #define DParamMayRelax(t) HasDest
 #define DParam(t)      HasDest
-#define DParamPtr(k)   HasDest
 #define DLdObjCls      HasDest
 #define DUnboxPtr      HasDest
 #define DBoxPtr        HasDest
@@ -75,6 +74,7 @@ TRACE_SET_MOD(hhir);
 #define DCns           HasDest
 #define DUnion(...)    HasDest
 #define DMemoKey       HasDest
+#define DLvalOfPtr     HasDest
 
 namespace {
 template<Opcode op, uint64_t flags>
@@ -117,7 +117,6 @@ OpInfo g_opInfo[] = {
 #undef DRefineS
 #undef DParamMayRelax
 #undef DParam
-#undef DParamPtr
 #undef DLdObjCls
 #undef DUnboxPtr
 #undef DBoxPtr
@@ -144,6 +143,7 @@ OpInfo g_opInfo[] = {
 #undef DCns
 #undef DUnion
 #undef DMemoKey
+#undef DLvalOfPtr
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -425,6 +425,7 @@ bool opcodeMayRaise(Opcode opc) {
   case LookupCns:
   case LookupCnsE:
   case LookupCnsU:
+  case LookupFuncCached:
   case LtArr:
   case LteArr:
   case LteObj:
@@ -448,6 +449,7 @@ bool opcodeMayRaise(Opcode opc) {
   case PrintStr:
   case PropDX:
   case PropQ:
+  case PropTypeRedefineCheck:
   case PropX:
   case RaiseArrayIndexNotice:
   case RaiseArrayKeyNotice:
@@ -455,6 +457,7 @@ bool opcodeMayRaise(Opcode opc) {
   case RaiseForbiddenDynCall:
   case RaiseHackArrCompatNotice:
   case RaiseHackArrParamNotice:
+  case RaiseHackArrPropNotice:
   case RaiseMissingArg:
   case RaiseMissingThis:
   case RaiseNotice:
@@ -495,6 +498,10 @@ bool opcodeMayRaise(Opcode opc) {
   case VerifyParamCls:
   case VerifyParamFail:
   case VerifyParamFailHard:
+  case VerifyProp:
+  case VerifyPropCls:
+  case VerifyPropFail:
+  case VerifyPropFailHard:
   case VerifyRetCallable:
   case VerifyRetCls:
   case VerifyRetFail:
@@ -542,8 +549,6 @@ bool opcodeMayRaise(Opcode opc) {
   case CheckFuncStatic:
   case CheckInit:
   case CheckInitMem:
-  case CheckInitProps:
-  case CheckInitSProps:
   case CheckKeysetOffset:
   case CheckLoc:
   case CheckMBase:
@@ -552,6 +557,7 @@ bool opcodeMayRaise(Opcode opc) {
   case CheckNullptr:
   case CheckPackedArrayDataBounds:
   case CheckRange:
+  case CheckRDSInitialized:
   case CheckRefInner:
   case CheckRefs:
   case CheckStaticLoc:
@@ -613,6 +619,7 @@ bool opcodeMayRaise(Opcode opc) {
   case ConvVecToDArr:
   case ConvVecToDict:
   case ConvVecToVArr:
+  case ConvPtrToLval:
   case CountArray:
   case CountArrayFast:
   case CountCollection:
@@ -788,6 +795,7 @@ bool opcodeMayRaise(Opcode opc) {
   case LdLocPseudoMain:
   case LdMBase:
   case LdMem:
+  case LdMIPropStateAddr:
   case LdMIStateAddr:
   case LdObjClass:
   case LdObjInvoke:
@@ -820,6 +828,7 @@ bool opcodeMayRaise(Opcode opc) {
   case LIterNext:
   case LIterNextK:
   case LookupClsRDS:
+  case LookupSPropSlot:
   case LtBool:
   case LtDbl:
   case LteBool:
@@ -833,14 +842,19 @@ bool opcodeMayRaise(Opcode opc) {
   case LtStr:
   case LtStrInt:
   case MapIsset:
+  case MarkRDSInitialized:
   case MemoGetInstanceCache:
   case MemoGetInstanceValue:
   case MemoGetStaticCache:
   case MemoGetStaticValue:
+  case MemoGetLSBCache:
+  case MemoGetLSBValue:
   case MemoSetInstanceCache:
   case MemoSetInstanceValue:
   case MemoSetStaticCache:
   case MemoSetStaticValue:
+  case MemoSetLSBCache:
+  case MemoSetLSBValue:
   case MethodExists:
   case MIterFree:
   case MIterNext:
@@ -930,6 +944,7 @@ bool opcodeMayRaise(Opcode opc) {
   case StLocRange:
   case StMBase:
   case StMem:
+  case StMIPropState:
   case StOutValue:
   case StRef:
   case StrictlyIntegerConv:

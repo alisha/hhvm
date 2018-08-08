@@ -250,10 +250,14 @@ bool PropertiesInfo::isNonSerialized(SString name) const {
   return m_nonSerializedProps.count(name) > 0;
 }
 
+void PropertiesInfo::setBadPropInitialValues() {
+  if (m_cls) m_cls->badPropInitialValues = true;
+}
+
 //////////////////////////////////////////////////////////////////////
 
 void merge_closure_use_vars_into(ClosureUseVarMap& dst,
-                                 borrowed_ptr<php::Class> clo,
+                                 php::Class* clo,
                                  std::vector<Type> types) {
   auto& current = dst[clo];
   if (current.empty()) {
@@ -353,7 +357,7 @@ bool merge_impl(State& dst, const State& src, JoinOp join) {
 
   for (auto i = size_t{0}; i < dst.clsRefSlots.size(); ++i) {
     auto newT = join(dst.clsRefSlots[i], src.clsRefSlots[i]);
-    assert(newT.subtypeOf(TCls));
+    assert(newT.subtypeOf(BCls));
     if (!equivalently_refined(dst.clsRefSlots[i], newT)) {
       changed = true;
       dst.clsRefSlots[i] = std::move(newT);

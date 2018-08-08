@@ -50,8 +50,6 @@
 #include "hphp/runtime/ext/fb/VariantController.h"
 #include "hphp/runtime/vm/unwind.h"
 
-#include "hphp/parser/parser.h"
-
 namespace HPHP {
 
 // fb_serialize options
@@ -516,9 +514,12 @@ static int fb_compact_serialize_variant(
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    case KindOfFunc:
+    case KindOfClass:
       fb_compact_serialize_code(sb, FB_CS_NULL);
       raise_warning(
-        "fb_compact_serialize(): unable to serialize object/resource/ref"
+        "fb_compact_serialize(): unable to serialize "
+        "object/resource/ref/func/class"
       );
       break;
   }
@@ -1076,12 +1077,20 @@ void HHVM_FUNCTION(fb_enable_code_coverage) {
   throw VMSwitchModeBuiltin();
 }
 
-Variant HHVM_FUNCTION(fb_disable_code_coverage) {
+Variant disable_code_coverage_helper(bool report_frequency) {
   ThreadInfo *ti = ThreadInfo::s_threadInfo.getNoCheck();
   ti->m_reqInjectionData.setCoverage(false);
-  Array ret = ti->m_coverage->Report();
+  Array ret = ti->m_coverage->Report(report_frequency);
   ti->m_coverage->Reset();
   return ret;
+}
+
+Variant HHVM_FUNCTION(fb_disable_code_coverage) {
+  return disable_code_coverage_helper(/* report frequency */ false);
+}
+
+Variant HHVM_FUNCTION(HH_disable_code_coverage_with_frequency) {
+  return disable_code_coverage_helper(/* report frequency */ true);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1184,6 +1193,9 @@ struct FBExtension : Extension {
     HHVM_FE(fb_get_last_flush_size);
     HHVM_FE(fb_lazy_lstat);
     HHVM_FE(fb_lazy_realpath);
+
+    HHVM_FALIAS(HH\\disable_code_coverage_with_frequency,
+                HH_disable_code_coverage_with_frequency);
 
     loadSystemlib();
   }

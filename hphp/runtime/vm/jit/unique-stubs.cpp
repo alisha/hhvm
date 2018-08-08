@@ -138,7 +138,7 @@ void storeReturnRegs(Vout& v) {
 template<class F>
 Vinstr simplecall(Vout& v, F helper, Vreg arg, Vreg d) {
   return vcall{
-    CallSpec::direct(helper),
+    CallSpec::direct(helper, nullptr),
     v.makeVcallArgs({{arg}}),
     v.makeTuple({d}),
     Fixup{},
@@ -153,11 +153,11 @@ Vinstr simplecall(Vout& v, F helper, Vreg arg, Vreg d) {
 template<class F>
 Vinstr simplecall(Vout& v, F helper, Vreg arg, Vreg d1, Vreg d2) {
   return vcall{
-    CallSpec::direct(helper),
+    CallSpec::direct(helper, nullptr),
     v.makeVcallArgs({{arg}}),
     v.makeTuple({d1, d2}),
     Fixup{},
-    DestType::SSAPair
+    DestType::SSA
   };
 }
 
@@ -217,7 +217,7 @@ FCallHelperRet fcallHelper(ActRec* ar) {
 
   try {
     VMRegAnchor _(ar);
-    if (doFCall(ar, vmpc())) {
+    if (doFCall(ar, vmpc(), ar->numArgs(), false)) {
       return { tc::ustubs().resumeHelperRet, nullptr };
     }
     // We've been asked to skip the function body (fb_intercept).  The vmregs

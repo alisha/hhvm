@@ -657,6 +657,12 @@ let paramidofiarg arg =
   | IAInt64 n -> Param_unnamed (Int64.to_int n)
   | _ -> report_error "bad param id to instruction"
 
+let has_unpack_of_iarg arg =
+  match arg with
+  | IAInt64 n when n = Int64.zero -> false
+  | IAInt64 n when n = Int64.one -> true
+  | _ -> report_error "bad has_param"
+
 let barethisopofiarg arg =
   match arg with
   | IAId "Notice" -> Notice
@@ -930,12 +936,9 @@ let makeunaryinst s arg = match s with
    | "FPushFunc" -> ICall(FPushFunc (intofiarg arg, []))
    | "FThrowOnRefMismatch" -> ICall(FThrowOnRefMismatch (listofboolofiarg arg))
    | "RetM" -> IContFlow(RetM (intofiarg arg))
-   | "FCall" -> ICall(FCall (intofiarg arg))
-   | "FCallUnpack" -> ICall(FCallUnpack (intofiarg arg))
-
-   (* instruct_base *)
-   | "BaseC" -> IBase(BaseC (intofiarg arg))
-   | "BaseR" -> IBase(BaseR (intofiarg arg))
+   | "ResolveFunc" -> IOp(ResolveFunc (function_id_of_iarg arg))
+   | "ResolveObjMethod" -> IOp (ResolveObjMethod)
+   | "ResolveClsMethod" -> IOp (ResolveClsMethod)
 
    (* instruct_final *)
    | "SetWithRefRML" -> IFinal(SetWithRefRML(localidofiarg arg))
@@ -1025,8 +1028,8 @@ match s with
  | "BaseNL" -> IBase (BaseNL (localidofiarg arg1, memberopmodeofiarg arg2))
  | "BaseGC" -> IBase (BaseGC (intofiarg arg1, memberopmodeofiarg arg2))
  | "BaseGL" -> IBase (BaseGL (localidofiarg arg1, memberopmodeofiarg arg2))
- | "BaseSC" -> IBase(BaseSC (intofiarg arg1, intofiarg arg2))
- | "BaseSL" -> IBase (BaseSL (localidofiarg arg1, intofiarg arg2))
+ | "BaseC" -> IBase(BaseC (intofiarg arg1, memberopmodeofiarg arg2))
+ | "BaseR" -> IBase(BaseR (intofiarg arg1, memberopmodeofiarg arg2))
  | "BaseL" -> IBase (BaseL (localidofiarg arg1, memberopmodeofiarg arg2))
  | "Dim" -> IBase (Dim (memberopmodeofiarg arg1, memberkeyofiarg arg2))
 
@@ -1054,8 +1057,6 @@ match s with
  | "AssertRATL" -> IMisc (AssertRATL (localidofiarg arg1, stringofiarg arg2))
  | "AssertRATStk" -> IMisc (AssertRATStk (intofiarg arg1, stringofiarg arg2))
  | "Silence" -> IMisc (Silence (localidofiarg arg1, opsilenceofiarg arg2))
- | "FCallM" -> ICall (FCallM (intofiarg arg1, intofiarg arg2))
- | "FCallUnpackM" -> ICall (FCallUnpackM (intofiarg arg1, intofiarg arg2))
 
  | "YieldFromDelegate" ->
    IGenDelegation (YieldFromDelegate (iterofiarg arg1, labelofiarg arg2))
@@ -1098,9 +1099,6 @@ let maketernaryinst s arg1 arg2 arg3 =
                                  (intofiarg arg1, specialclsrefofiarg arg2, method_id_of_iarg arg3))
  | "FIsParamByRefCufIter" ->
     ICall (FIsParamByRefCufIter (intofiarg arg1, fpasshintof arg2, iterofiarg arg3))
- | "FCallD" ->
-    ICall(FCallD (intofiarg arg1,
-      class_id_of_iarg arg2, function_id_of_iarg arg3))
  | "FCallAwait" ->
     ICall(FCallAwait (intofiarg arg1,
       class_id_of_iarg arg2, function_id_of_iarg arg3))
@@ -1108,6 +1106,10 @@ let maketernaryinst s arg1 arg2 arg3 =
     ICall(FCallBuiltin (intofiarg arg1, intofiarg arg2, stringofiarg arg3))
  | "FHandleRefMismatch" ->
     ICall (FHandleRefMismatch (intofiarg arg1, fpasshintof arg2, stringofiarg arg3))
+
+ (* instruct_base *)
+ | "BaseSC" -> IBase(BaseSC (intofiarg arg1, intofiarg arg2, memberopmodeofiarg arg3))
+ | "BaseSL" -> IBase (BaseSL (localidofiarg arg1, intofiarg arg2, memberopmodeofiarg arg3))
 
 (* instruct_final *)
  | "QueryM" ->
@@ -1151,9 +1153,6 @@ match s with
                                        labelofiarg arg3, localidofiarg arg4))
  | "LIterNext" -> IIterator(LIterNext (iterofiarg arg1, localidofiarg arg2,
                                        labelofiarg arg3, localidofiarg arg4))
- | "FCallDM" ->
-    ICall(FCallDM (intofiarg arg1, intofiarg arg2,
-      class_id_of_iarg arg3, function_id_of_iarg arg4))
  | _ -> failwith ("NYI quaternary: " ^ s)
 
 let makequinaryinst s arg1 arg2 arg3 arg4 arg5 =
@@ -1164,4 +1163,7 @@ match s with
   | "LIterNextK" -> IIterator(LIterNextK (iterofiarg arg1, localidofiarg arg2,
                                           labelofiarg arg3, localidofiarg arg4,
                                           localidofiarg arg5))
+  | "FCall" ->
+    ICall(FCall (intofiarg arg1, has_unpack_of_iarg arg2, intofiarg arg3,
+      class_id_of_iarg arg4, function_id_of_iarg arg5))
   | _ -> failwith ("NYI quinary: " ^ s)

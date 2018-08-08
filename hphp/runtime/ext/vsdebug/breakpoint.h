@@ -19,7 +19,6 @@
 
 #include "hphp/runtime/ext/vsdebug/break_mode.h"
 #include "hphp/runtime/ext/vsdebug/command.h"
-#include "hphp/runtime/ext/vsdebug/debugger.h"
 
 #include <string>
 #include <unordered_map>
@@ -29,6 +28,7 @@
 namespace HPHP {
 namespace VSDEBUG {
 
+struct Debugger;
 struct ClientPreferences;
 struct RequestInfo;
 
@@ -64,6 +64,8 @@ struct Breakpoint {
     const std::string& hitCondition
   );
 
+  virtual ~Breakpoint();
+
   void updateConditions(
     const std::string& condition,
     const std::string& hitCondition
@@ -93,12 +95,7 @@ struct Breakpoint {
     return it == m_unitCache.end() ? nullptr : it->second;
   }
 
-  void clearCachedConditionUnit(request_id_t requestId) {
-    auto it = m_unitCache.find(requestId);
-    if (it != m_unitCache.end()) {
-      m_unitCache.erase(it);
-    }
-  }
+  void clearCachedConditionUnit(request_id_t requestId);
 
 private:
 

@@ -59,6 +59,7 @@ module WithPositionedSyntax : functor (Syntax : Positioned_syntax_sig.Positioned
     :  env
     -> source_text:Full_fidelity_source_text.t
     -> script:Syntax.t
+    -> (Pos.t * Prim_defs.comment) list
     -> result
 
 end (* WithPositionedSyntax *)
@@ -85,6 +86,7 @@ val from_file : env -> result
 val from_text_with_legacy : env -> string -> Parser_return.t
 val from_file_with_legacy : env -> Parser_return.t
 val defensive_program :
+  ?hacksperimental:bool ->
   ?quick:bool ->
   ?fail_open:bool ->
   ?elaborate_namespaces:bool ->
@@ -97,8 +99,15 @@ val defensive_from_file_with_default_popt :
 val defensive_from_file :
   ?quick:bool -> ParserOptions.t -> Relative_path.t -> Parser_return.t
 val defensive_program_with_default_popt :
+  ?hacksperimental:bool ->
   ?quick:bool ->
   ?fail_open:bool ->
   ?elaborate_namespaces:bool ->
   Relative_path.t ->
   string -> Parser_return.t
+
+val scour_comments_and_add_fixmes :
+  env ->
+  Full_fidelity_source_text.t ->
+  Full_fidelity_positioned_syntax.t ->
+  (Pos.t * Prim_defs.comment) list

@@ -31,6 +31,7 @@ type autocomplete_type =
   | Actype
   | Acclass_get
   | Acprop
+  | Acshape_key
   | Actrait_only
 
 let (argument_global_type: autocomplete_type option ref) = ref None
@@ -131,6 +132,35 @@ let get_class_elt_types env class_ cid elts =
     Tast_env.is_visible env x.ce_visibility cid class_
   end in
   SMap.map elts (fun { ce_type = lazy ty; _ } -> ty)
+
+let autocomplete_shape_key env fields id =
+  if is_auto_complete (snd id)
+  then begin
+    ac_env := Some env;
+    autocomplete_identifier := Some id;
+    argument_global_type := Some Acshape_key;
+    (* not the same as `prefix == ""` in namespaces *)
+    let have_prefix = (Pos.length (fst id)) > suffix_len in
+    let prefix = strip_suffix (snd id) in
+    let add (name: Ast.shape_field_name) =
+      let code, kind, ty = match name with
+        | Ast.SFlit_int (pos, str) ->
+          let reason = Typing_reason.Rwitness pos in
+          let ty = Typing_defs.Tprim Aast_defs.Tint in
+          (str, Literal_kind, (reason, ty))
+        | Ast.SFlit_str (pos, str) ->
+          let reason = Typing_reason.Rwitness pos in
+          let ty = Typing_defs.Tprim Aast_defs.Tstring in
+          let quote = if have_prefix then Str.first_chars prefix 1 else "'" in
+          (quote^str^quote, Literal_kind, (reason, ty))
+        | Ast.SFclass_const ((pos, cid), (_, mid)) ->
+          (Printf.sprintf "%s::%s" cid mid, Class_constant_kind, (Reason.Rwitness pos, Typing_defs.Tany))
+      in
+      if (not have_prefix) || string_starts_with code prefix
+      then add_partial_result code (Phase.decl ty) kind None
+    in
+    List.iter (Ast.ShapeMap.keys fields) ~f:add
+  end
 
 let autocomplete_member ~is_static env class_ cid id =
   (* This is used for instance "$x->|" and static "Class1::|" members. *)
@@ -236,58 +266,26 @@ let compute_complete_global
   let gname = Utils.strip_ns !auto_complete_for_global in
   let gname = strip_suffix gname in
   let gname = if autocomplete_context.is_xhp_classname then (":" ^ gname) else gname in
-  (* Colon hack: in "case Foo::Bar:", we wouldn't want to show autocomplete *)
-  (* here, but we would in "<nt:" and "$a->:" and "function f():". We can   *)
-  (* recognize this case by whether the prefix is empty.                    *)
-  if autocomplete_context.is_after_single_colon && gname = "" then
+  (* is_after_single_colon : XHP vs switch statements                       *)
+  (* is_after_open_square_bracket : shape field names vs container keys     *)
+  (* is_after_quote: shape field names vs arbitrary strings                 *)
+  (*                                                                        *)
+  (* We can recognize these cases by whether the prefix is empty.           *)
+  (* We do this by checking the identifier length, as the string will       *)
+  (* include the current namespace.                                         *)
+  let have_user_prefix = match !autocomplete_identifier with
+    | None -> failwith "No autocomplete position was set"
+    | Some (pos, _) -> Pos.length pos > suffix_len in
+  let ctx = autocomplete_context in
+  if (not ctx.is_manually_invoked) && (not have_user_prefix) &&
+    (ctx.is_after_single_colon || ctx.is_after_open_square_bracket || ctx.is_after_quote)
+  then ()
+  else if ctx.is_after_double_right_angle_bracket then
+    (* <<__Override>>AUTO332 *)
     ()
   else begin
 
-    (* Objective: given "fo|", we should suggest functions in both the current *)
-    (* namespace and also in the global namespace. We'll use gname_gns to      *)
-    (* indicate what prefix to look for (if any) in the global namespace...    *)
-
-    (* "$z = S|"      => gname = "S",      gname_gns = Some "S"   *)
-    (* "$z = Str|"    => gname = "Str",    gname_gns = Some "Str" *)
-    (* "$z = Str\\|"  => gname = "Str\\",  gname_gns = None       *)
-    (* "$z = Str\\s|" => gname = "Str\\s", gname_gns = None       *)
-    (* "$z = \\s|"    => gname = "\\s",    gname_gns = None       *)
-    (* "...; |"       => gname = "",       gname_gns = Some ""    *)
-    let gname_gns = if should_complete_fun completion_type then
-      (* Disgusting hack alert!
-       *
-       * In PHP/Hack, namespaced function lookup falls back into the global
-       * namespace if no function in the current namespace exists. The
-       * typechecker knows everything that exists, and resolves all of this
-       * during naming -- meaning that by the time that we get to typing, not
-       * only has "gname" been fully qualified, but we've lost whatever it
-       * might have looked like originally. This makes it tough to do the full
-       * namespace fallback behavior here -- we'd like to know if whatever
-       * "gname" corresponds to in the source code has a '\' to qualify it, but
-       * since it's already fully qualified here, we can't know.
-       *
-       *   [NOTE(ljw): is this really even true? if user wrote "foo|" then name
-       *   lookup of "fooAUTO332" is guaranteed to fail in the current namespace,
-       *   and guaranteed to fail in the global namespace, so how would the
-       *   typechecker fully qualify it? to what? Experimentally I've only
-       *   ever seen gname to be the exact string that the user typed.]
-       *
-       * Except, we can kinda reverse engineer and figure it out. We have the
-       * positional information, which we can use to figure out how long the
-       * original source code token was, and then figure out what portion of
-       * "gname" that corresponds to, and see if it has a '\'. Since fully
-       * qualifying a name will always prepend, this all works.
-       *)
-      match !autocomplete_identifier with
-        | None -> None
-        | Some (p, _) ->
-            let len = (Pos.length p) - suffix_len in
-            let start = String.length gname - len in
-            if start < 0 || String.contains_from gname start '\\'
-            then None else Some (strip_all_ns gname)
-      else None in
-
-    let does_fully_qualified_name_match_prefix ?(funky_gns_rules=false) name =
+    let does_fully_qualified_name_match_prefix name =
       let stripped_name = strip_ns name in
       if delimit_on_namespaces then
         (* name must match gname, and have no additional namespace slashes, e.g. *)
@@ -296,10 +294,7 @@ let compute_complete_global
         string_starts_with stripped_name gname &&
           not (String.contains_from stripped_name (String.length gname) '\\')
       else
-        match gname_gns with
-        | _ when string_starts_with stripped_name gname -> true
-        | Some gns when funky_gns_rules -> string_starts_with stripped_name gns
-        | _ -> false
+        string_starts_with stripped_name gname
     in
 
     let string_to_replace_prefix name =
@@ -352,7 +347,7 @@ let compute_complete_global
       if autocomplete_context.is_xhp_classname then None else
       if SSet.mem seen name then None else
       if not (should_complete_fun completion_type) then None else
-      if not (does_fully_qualified_name_match_prefix ~funky_gns_rules:true name) then None else
+      if not (does_fully_qualified_name_match_prefix name) then None else
       Option.map (Typing_lazy_heap.get_fun tcopt name) ~f:(fun fun_ ->
         incr result_count;
         let ty = Typing_reason.Rwitness fun_.Typing_defs.ft_pos, Typing_defs.Tfun fun_ in
@@ -399,17 +394,34 @@ let compute_complete_global
     (* and see if any of them really exist in the current codebase/hhconfig!    *)
     (* This will give a good experience only for codebases where users rarely   *)
     (* define their own namespaces...                                           *)
-    let standard_namespaces =
-      ["C"; "Vec"; "Dict"; "Str"; "Keyset"; "Math"; "Regex"; "SecureRandom"; "PHP"; "JS"] in
-    let namespace_permutations ns = [
-       Printf.sprintf "%s" ns;
-       Printf.sprintf "%s\\fb" ns;
-       Printf.sprintf "HH\\Lib\\%s" ns;
-       Printf.sprintf "HH\\Lib\\%s\\fb" ns;
+    let standard_namespaces = [
+      "C";
+      "Vec";
+      "Dict";
+      "Str";
+      "Keyset";
+      "Math";
+      "PseudoRandom";
+      "SecureRandom";
+      "PHP";
+      "JS";
     ] in
+    let auto_namespace_map = GlobalOptions.po_auto_namespace_map tcopt in
+    let all_standard_namespaces = List.concat_map standard_namespaces ~f:(
+      fun ns -> [
+         Printf.sprintf "%s" ns;
+         Printf.sprintf "%s\\fb" ns;
+         Printf.sprintf "HH\\Lib\\%s" ns;
+         Printf.sprintf "HH\\Lib\\%s\\fb" ns;
+      ]
+    ) in
+    let all_aliased_namespaces = List.concat_map auto_namespace_map ~f:(
+      fun (alias, fully_qualified) -> [alias; fully_qualified]
+    ) in
     let all_possible_namespaces =
-      List.map standard_namespaces ~f:namespace_permutations |> List.concat
-    in
+      (all_standard_namespaces @ all_aliased_namespaces)
+        |> SSet.of_list
+        |> SSet.elements in
     List.iter all_possible_namespaces ~f:(fun ns ->
       let ns_results = search_funs_and_classes (ns ^ "\\") ~limit:(Some 1)
         ~on_class:(fun _className -> on_namespace ns)
@@ -427,18 +439,6 @@ let compute_complete_global
     autocomplete_is_complete :=
       !autocomplete_is_complete && gname_results.With_complete_flag.is_complete;
     List.iter gname_results.With_complete_flag.value add_res;
-
-    (* Compute global namespace fallback results for functions, if applicable *)
-    match gname_gns with
-    | Some gname_gns when gname <> gname_gns ->
-      let gname_gns_results = search_funs_and_classes gname_gns ~limit:(Some 100)
-        ~on_class:(fun _ -> None)
-        ~on_function:(on_function ~seen:content_funs)
-      in
-      autocomplete_is_complete :=
-        !autocomplete_is_complete && gname_gns_results.With_complete_flag.is_complete;
-      List.iter gname_gns_results.With_complete_flag.value add_res;
-    | _ -> ()
   end
 
 (* Here we turn partial_autocomplete_results into complete_autocomplete_results *)
@@ -467,6 +467,7 @@ let resolve_ty
     | Enum_kind -> "enum"
     | Namespace_kind -> "namespace"
     | Keyword_kind -> "keyword"
+    | Literal_kind -> "literal"
   in
   let func_details = match ty with
     | (_, Tfun ft) ->
@@ -530,7 +531,7 @@ let autocomplete_typed_member ~is_static env class_ty cid mid =
     end
   end
 
-let autocomplete_static_member env (ty, cid) mid =
+let autocomplete_static_member env ((_, ty), cid) mid =
   autocomplete_typed_member ~is_static:true env ty (Some cid) mid
 
 let visitor = object (self)
@@ -571,6 +572,39 @@ let visitor = object (self)
     | _ -> ()
     );
     super#on_Obj_get env obj mid ognf
+
+  method! on_expr env expr =
+    (match expr with
+    | (_, Tast.Array_get (arr, Some ((pos, _), key))) ->
+      let ty = Tast.get_type arr in
+      let _, ty = Tast_env.expand_type env ty in
+      begin match ty with
+      | _, Typing_defs.Tshape (_, fields) ->
+        (match key with
+        | Tast.Id (_, mid) -> autocomplete_shape_key env fields (pos, mid);
+        | Tast.String mid ->
+          (* autocomplete generally assumes that there's a token ending with the suffix; *)
+          (* This isn't the case for `$shape['a`, unless it's at the end of the file *)
+          let offset = String_utils.substring_index auto_complete_suffix mid in
+          if offset = -1
+          then autocomplete_shape_key env fields (pos, mid)
+          else begin
+            let mid = Str.string_before mid (offset + suffix_len) in
+            let (line, bol, cnum) = Pos.line_beg_offset pos in
+            let pos = Pos.make_from_lnum_bol_cnum
+              ~pos_file:(Pos.filename pos)
+              ~pos_start:(line, bol, cnum)
+              ~pos_end:(line, bol, cnum + offset + suffix_len)
+            in
+            autocomplete_shape_key env fields (pos, mid);
+          end
+        | _ -> ()
+        )
+      | _ -> ()
+      end;
+    | _ -> ()
+    );
+    super#on_expr env expr
 
   method! on_Xml env sid attrs el =
     (* In the case where we're autocompleting an open XHP bracket but haven't

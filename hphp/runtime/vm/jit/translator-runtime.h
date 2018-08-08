@@ -90,9 +90,6 @@ ArrayData* addElemStringKeyHelper(ArrayData* ad, StringData* key,
 ArrayData* dictAddElemIntKeyHelper(ArrayData* ad, int64_t key, TypedValue val);
 ArrayData* dictAddElemStringKeyHelper(ArrayData* ad, StringData* key,
                                       TypedValue val);
-void setNewElem(TypedValue* base, Cell val);
-void setNewElemArray(TypedValue* base, Cell val);
-void setNewElemVec(TypedValue* base, Cell val);
 RefData* boxValue(TypedValue tv);
 ArrayData* arrayAdd(ArrayData* a1, ArrayData* a2);
 /* Helper functions for conversion instructions that are too
@@ -118,25 +115,24 @@ ArrayData* convVecToKeysetHelper(ArrayData* a);
 ArrayData* convDictToKeysetHelper(ArrayData* a);
 ArrayData* convObjToKeysetHelper(ObjectData* o);
 ArrayData* convCellToKeysetHelper(TypedValue tv);
-int64_t convObjToDblHelper(const ObjectData* o);
-int64_t convArrToDblHelper(ArrayData* a);
-int64_t convStrToDblHelper(const StringData* s);
-int64_t convResToDblHelper(const ResourceHdr* r);
-int64_t convCellToDblHelper(TypedValue tv);
+double convObjToDblHelper(const ObjectData* o);
+double convArrToDblHelper(ArrayData* a);
+double convStrToDblHelper(const StringData* s);
+double convResToDblHelper(const ResourceHdr* r);
+double convCellToDblHelper(TypedValue tv);
 ObjectData* convCellToObjHelper(TypedValue tv);
-StringData* convDblToStrHelper(int64_t i);
+StringData* convDblToStrHelper(double i);
 StringData* convIntToStrHelper(int64_t i);
 StringData* convObjToStrHelper(ObjectData* o);
 StringData* convResToStrHelper(ResourceHdr* o);
 
 
 bool coerceCellToBoolHelper(TypedValue tv, int64_t argNum, const Func* func);
-int64_t coerceStrToDblHelper(StringData* sd, int64_t argNum, const Func* func);
-int64_t coerceCellToDblHelper(TypedValue tv, int64_t argNum, const Func* func);
+double coerceStrToDblHelper(StringData* sd, int64_t argNum, const Func* func);
+double coerceCellToDblHelper(TypedValue tv, int64_t argNum, const Func* func);
 int64_t coerceStrToIntHelper(StringData* sd, int64_t argNum, const Func* func);
 int64_t coerceCellToIntHelper(TypedValue tv, int64_t argNum, const Func* func);
 
-int64_t reinterpretDblAsInt(double d);
 
 void raiseUndefProp(ObjectData* base, const StringData* name);
 void raiseUndefVariable(StringData* nm);
@@ -175,7 +171,7 @@ TypedValue* getSPropOrNull(const Class* cls,
 TypedValue* getSPropOrRaise(const Class* cls,
     const StringData* name, Class* ctx);
 
-int64_t switchDoubleHelper(int64_t val, int64_t base, int64_t nTargets);
+int64_t switchDoubleHelper(double val, int64_t base, int64_t nTargets);
 int64_t switchStringHelper(StringData* s, int64_t base, int64_t nTargets);
 int64_t switchObjHelper(ObjectData* o, int64_t base, int64_t nTargets);
 
@@ -224,18 +220,24 @@ void asTypeStructHelper(ArrayData*, Cell);
 [[noreturn]] void invalidArrayKeyHelper(const ArrayData* ad, TypedValue key);
 
 namespace MInstrHelpers {
+void setNewElem(tv_lval base, Cell val, const MInstrPropState*);
+void setNewElemArray(tv_lval base, Cell val);
+void setNewElemVec(tv_lval base, Cell val);
 template<bool intishWarn>
-TypedValue setOpElem(TypedValue* base, TypedValue key, Cell val, SetOpOp op);
+TypedValue setOpElem(tv_lval base, TypedValue key, Cell val, SetOpOp op,
+                     const MInstrPropState*);
 StringData* stringGetI(StringData*, uint64_t);
 uint64_t pairIsset(c_Pair*, int64_t);
 uint64_t vectorIsset(c_Vector*, int64_t);
 template <bool intishWarn>
-void bindElemC(TypedValue*, TypedValue, RefData*);
+void bindElemC(tv_lval, TypedValue, RefData*, const MInstrPropState*);
 template <bool intishWarn>
-void setWithRefElem(TypedValue*, TypedValue, TypedValue);
+void setWithRefElem(tv_lval, TypedValue, TypedValue,
+                    const MInstrPropState*);
 template<bool intishWarn>
-TypedValue incDecElem(TypedValue* base, TypedValue key, IncDecOp op);
-void bindNewElem(TypedValue* base, RefData* val);
+TypedValue incDecElem(tv_lval base, TypedValue key, IncDecOp op,
+                      const MInstrPropState*);
+void bindNewElem(tv_lval base, RefData* val, const MInstrPropState*);
 tv_lval elemVecID(tv_lval base, int64_t key);
 tv_lval elemVecIU(tv_lval base, int64_t key);
 }

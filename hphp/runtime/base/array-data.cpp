@@ -105,6 +105,8 @@ struct ScalarHash {
           case KindOfObject:
           case KindOfResource:
           case KindOfRef:
+          case KindOfFunc:
+          case KindOfClass:
             always_assert(false);
         }
       }
@@ -1169,7 +1171,7 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-const char* describeKeyType(const TypedValue* tv) {
+std::string describeKeyType(const TypedValue* tv) {
   switch (tv->m_type) {
   case KindOfUninit:
   case KindOfNull:             return "null";
@@ -1187,11 +1189,13 @@ const char* describeKeyType(const TypedValue* tv) {
   case KindOfPersistentArray:
   case KindOfArray:            return "array";
   case KindOfResource:
-    return tv->m_data.pres->data()->o_getClassName().c_str();
+    return tv->m_data.pres->data()->o_getClassName().toCppString();
 
   case KindOfObject:
-    return tv->m_data.pobj->getClassName().c_str();
+    return tv->m_data.pobj->getClassName().get()->toCppString();
 
+  case KindOfFunc:            return "func";
+  case KindOfClass:           return "class";
   case KindOfRef:
     return describeKeyType(tv->m_data.pref->var()->asTypedValue());
   }
@@ -1221,6 +1225,8 @@ std::string describeKeyValue(TypedValue tv) {
   case KindOfArray:
   case KindOfResource:
   case KindOfObject:
+  case KindOfFunc:
+  case KindOfClass:
     return "<invalid key type>";
   }
   not_reached();

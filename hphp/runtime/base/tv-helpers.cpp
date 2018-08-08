@@ -21,6 +21,7 @@
 #include "hphp/runtime/base/resource-data.h"
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/typed-value.h"
+#include "hphp/runtime/vm/func.h"
 
 #include "hphp/util/assertions.h"
 
@@ -31,7 +32,7 @@ namespace HPHP {
 bool cellIsPlausible(const Cell cell) {
   assertx(!isRefType(cell.m_type));
 
-  auto assertPtr = [](void* ptr) {
+  auto assertPtr = [](const void* ptr) {
     assertx(ptr && (uintptr_t(ptr) % sizeof(ptr) == 0));
   };
 
@@ -115,6 +116,14 @@ bool cellIsPlausible(const Cell cell) {
         assertPtr(cell.m_data.pres);
         assertx(cell.m_data.pres->kindIsValid());
         assertx(cell.m_data.pres->checkCount());
+        return;
+      case KindOfFunc:
+        assertPtr(cell.m_data.pfunc);
+        assertx(cell.m_data.pfunc->validate());
+        return;
+      case KindOfClass:
+        assertPtr(cell.m_data.pclass);
+        assertx(cell.m_data.pclass->validate());
         return;
       case KindOfRef:
         assertx(!"KindOfRef found in a Cell");

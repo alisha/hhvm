@@ -28,9 +28,9 @@
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
 
-#include "hphp/runtime/base/req-containers.h"
+#include "hphp/runtime/base/req-optional.h"
 
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-set.h"
 #include "hphp/util/lock.h"
 #include "hphp/util/mutex.h"
 #include "hphp/util/trace.h"
@@ -61,7 +61,7 @@ bool addDbgBLFunc(const Func* func) {
 
 struct DebuggerCatches {
   // keys could point to resumable ActRecs in req heap
-  req::Optional<req::hash_map<const ActRec*, TCA>> catches;
+  req::Optional<req::fast_map<const ActRec*, TCA>> catches;
 };
 
 THREAD_LOCAL(DebuggerCatches, tl_debuggerCatches);

@@ -15,7 +15,7 @@
  */
 
 <<__PHPStdLib, __Rx>>
-function array_key_exists<Tk, Tv>(mixed $key, ?KeyedContainer<Tk, Tv> $search): bool;
+function array_key_exists<Tk, Tv>(mixed $key, <<__MaybeMutable>> ?KeyedContainer<Tk, Tv> $search): bool;
 
 <<__PHPStdLib, __Rx>>
 function array_sum/*<T>*/(/*Container<T>*/ $input)/*: num*/;
@@ -48,16 +48,16 @@ function uksort<Tk,Tv>(KeyedContainer<Tk, Tv> &$arg, mixed $c): bool;
  * Creates a `dict` from a `KeyedTraversable`, preserving keys and order.
  */
 <<__Rx, __OnlyRxIfArgs>>
-function dict<Tk, Tv>(<<__OnlyRxIfImpl(\HH\Rx\Traversable::class)>> KeyedTraversable<Tk, Tv> $arr): dict<Tk, Tv>;
+function dict<Tk as arraykey, Tv>(<<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>> KeyedTraversable<Tk, Tv> $arr): dict<Tk, Tv>;
 /**
  * Creates a `vec` from a `Traversable`, preserving order. Keys are not
  * preserved.
  */
 <<__Rx, __OnlyRxIfArgs>>
-function vec<Tv>(<<__OnlyRxIfImpl(\HH\Rx\Traversable::class)>> Traversable<Tv> $arr): vec<Tv>;
+function vec<Tv>(<<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>> Traversable<Tv> $arr): vec<Tv>;
 /**
  * Create a `keyset` from a `Traversable` of strings or ints, preserving order.
  * Keys are not preserved.
  */
 <<__Rx, __OnlyRxIfArgs>>
-function keyset<Tv as arraykey>(<<__OnlyRxIfImpl(\HH\Rx\Traversable::class)>> Traversable<Tv> $arr): keyset<Tv>;
+function keyset<Tv as arraykey>(<<__OnlyRxIfImpl(\HH\Rx\Traversable::class), __MaybeMutable>> Traversable<Tv> $arr): keyset<Tv>;

@@ -200,6 +200,9 @@ bool effectful(Vinstr& inst) {
     case Vinstr::debugguardjmp:
     case Vinstr::inlinestart:
     case Vinstr::inlineend:
+    case Vinstr::popframe:
+    case Vinstr::pushframe:
+    case Vinstr::recordstack:
     case Vinstr::call:
     case Vinstr::callunpack:
     case Vinstr::callfaststub:

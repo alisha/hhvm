@@ -39,7 +39,7 @@ in
   get_defs ast ([],[],[],[])
 
 (* Utility functions for getting all nodes of a particular type *)
-class ast_get_defs_visitor = object (this)
+class ast_get_defs_visitor = object
   inherit [Ast.def list] Ast_visitor.ast_visitor
 
   method! on_def acc def =
@@ -48,7 +48,7 @@ end
 
 let ast_no_pos_mapper = object (self)
   inherit [_] Ast.endo
-  method! private on_pos () pos = Pos.none
+  method! private on_pos () _pos = Pos.none
   (* Skip all blocks because we don't care about method bodies *)
   method! on_block env _ = self#on_list self#on_stmt env [(Pos.none,Ast.Noop)]
 end
@@ -86,8 +86,8 @@ let ast_deregister_attributes_mapper = object (self)
     let body = this.c_body in
     let body = List.filter body (fun elt ->
       match elt with
-      | Method m when self#ignored_attr env m.m_user_attributes ->
-        false
+      | Method m when self#ignored_attr env m.m_user_attributes -> false
+      | ClassVars cv when self#ignored_attr env cv.cv_user_attributes -> false
       | _ -> true
     ) in
     let this = { this with c_body = body } in
@@ -116,7 +116,7 @@ let generate_ast_decl_hash ast =
 let get_def_nodes ast =
   List.rev ((new ast_get_defs_visitor)#on_program [] ast)
 
-class ast_get_class_elts_visitor = object (this)
+class ast_get_class_elts_visitor = object
   inherit [Ast.class_elt list] Ast_visitor.ast_visitor
 
   method! on_class_elt acc elt =

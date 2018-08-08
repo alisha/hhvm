@@ -60,14 +60,14 @@ and hint_ p env = function
   | Hoption h ->
     let h = hint env h in
     Toption h
-  | Hfun (is_reactive, is_coroutine, hl, kl, vh, h) ->
+  | Hfun (reactivity, is_coroutine, hl, kl, vh, h) ->
     let make_param ((p, _ as x), k) =
       { fp_pos = p;
         fp_name = None;
         fp_type = hint env x;
         fp_kind = get_param_mode ~is_ref:false k;
         fp_accept_disposable = false;
-        fp_mutable = false;
+        fp_mutability = None;
         fp_rx_condition = None;
       }
     in
@@ -79,6 +79,11 @@ and hint_ p env = function
       | Hvariadic None -> Fvariadic (arity_min, make_param ((p, Hany), None))
       | Hnon_variadic -> Fstandard (arity_min, arity_min)
     in
+    let reactivity = match reactivity with
+    | FReactive -> Reactive None
+    | FShallow -> Shallow None
+    | FLocal -> Local None
+    | FNonreactive -> Nonreactive in
     Tfun {
       ft_pos = p;
       ft_deprecated = None;
@@ -90,9 +95,9 @@ and hint_ p env = function
       ft_params = paraml;
       ft_ret = ret;
       ft_ret_by_ref = false;
-      ft_reactive = if is_reactive then Reactive None else Nonreactive;
+      ft_reactive = reactivity;
       ft_return_disposable = false;
-      ft_mutable = false;
+      ft_mutability = None;
       ft_returns_mutable = false;
       ft_decl_errors = None;
       ft_returns_void_to_rx = false;

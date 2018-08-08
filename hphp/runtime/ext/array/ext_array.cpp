@@ -27,7 +27,6 @@
 #include "hphp/runtime/base/container-functions.h"
 #include "hphp/runtime/base/double-to-int64.h"
 #include "hphp/runtime/base/mixed-array.h"
-#include "hphp/runtime/base/req-containers.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/sort-flags.h"
@@ -337,6 +336,8 @@ bool HHVM_FUNCTION(array_key_exists,
     case KindOfArray:
     case KindOfObject:
     case KindOfResource:
+    case KindOfFunc:
+    case KindOfClass:
       if (!ad->useWeakKeys()) throwInvalidArrayKeyException(cell, ad);
       if (checkHACMisc()) {
         raiseHackArrCompatImplicitArrayKey(cell);
@@ -416,9 +417,11 @@ static bool couldRecur(tv_lval lval, const ArrayData* arr) {
   return tvIsReferenced(lval.tv()) || arr->kind() == ArrayData::kGlobalsKind;
 }
 
+using PointerSet = ArrayUtil::PointerSet;
+
 static void php_array_merge_recursive(PointerSet &seen, bool check,
                                       Array &arr1, const Array& arr2) {
-  auto const arr1_ptr = (void*)arr1.get();
+  auto const arr1_ptr = arr1.get();
   if (check) {
     if (seen.find(arr1_ptr) != seen.end()) {
       raise_warning("array_merge_recursive(): recursion detected");
@@ -612,7 +615,7 @@ static void php_array_replace_recursive(PointerSet &seen, bool check,
     return;
   }
 
-  auto const arr1_ptr = (void*)arr1.get();
+  auto const arr1_ptr = arr1.get();
   if (check) {
     if (seen.find(arr1_ptr) != seen.end()) {
       raise_warning("array_replace_recursive(): recursion detected");
@@ -782,6 +785,8 @@ TypedValue HHVM_FUNCTION(array_product,
       case KindOfArray:
       case KindOfObject:
       case KindOfResource:
+      case KindOfFunc:
+      case KindOfClass:
         continue;
     }
     not_reached();
@@ -991,10 +996,6 @@ TypedValue HHVM_FUNCTION(array_slice,
 Variant array_splice(VRefParam input, int offset,
                      const Variant& length, const Variant& replacement) {
   getCheckedArrayVariant(input);
-  if (arr_input.isHackArray()) {
-    throw_expected_array_exception("array_splice");
-    return init_null();
-  }
   Array ret = Array::Create();
   int64_t len = length.isNull() ? 0x7FFFFFFF : length.toInt64();
   input.assignIfRef(ArrayUtil::Splice(arr_input, offset, len, replacement, &ret));
@@ -1057,6 +1058,8 @@ TypedValue HHVM_FUNCTION(array_sum,
       case KindOfArray:
       case KindOfObject:
       case KindOfResource:
+      case KindOfFunc:
+      case KindOfClass:
         continue;
     }
     not_reached();
@@ -1362,6 +1365,8 @@ int64_t HHVM_FUNCTION(count,
     case KindOfPersistentString:
     case KindOfString:
     case KindOfResource:
+    case KindOfFunc:
+    case KindOfClass:
       return 1;
 
     case KindOfPersistentVec:
@@ -2952,7 +2957,14 @@ TypedValue HHVM_FUNCTION(HH_array_key_cast, const Variant& input) {
       SystemLib::throwInvalidArgumentExceptionObject(
         "Objects cannot be cast to an array-key"
       );
-
+    case KindOfFunc:
+      SystemLib::throwInvalidArgumentExceptionObject(
+        "Funcs cannot be cast to an array-key"
+      );
+    case KindOfClass:
+      SystemLib::throwInvalidArgumentExceptionObject(
+        "Classes cannot be cast to an array-key"
+      );
     case KindOfRef:
       break;
   }

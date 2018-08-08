@@ -64,8 +64,10 @@ module WithStatementAndDeclAndTypeParser
   include Parser
   include ParserHelper.WithParser(Parser)
 
+  [@@@warning "-32"] (* next line warning 32 unused variable pp_binary_expression_prefix_kind *)
   type binary_expression_prefix_kind =
     | Prefix_byref_assignment | Prefix_assignment | Prefix_none [@@deriving show]
+  [@@@warning "+32"]
 
   let make_and_track_prefix_unary_expression parser operator kind operand =
     let (parser, node) = Make.prefix_unary_expression parser operator operand in
@@ -227,8 +229,30 @@ module WithStatementAndDeclAndTypeParser
     | Name ->
       let (parser, qualified_name) =
         let (parser, token) = Make.token parser1 token in
-        scan_remaining_qualified_name parser token in
-      parse_name_or_collection_literal_expression parser qualified_name
+        scan_remaining_qualified_name parser token
+      in
+      let (parser1, str_maybe) = next_token_no_trailing parser in
+      begin match Token.kind str_maybe with
+      | ExecutionStringLiteral | ExecutionStringLiteralHead
+      | SingleQuotedStringLiteral | NowdocStringLiteral
+      | HeredocStringLiteral | HeredocStringLiteralHead ->
+        (* Treat as an attempt to prefix a non-double-quoted string *)
+        let parser = with_error parser SyntaxError.prefixed_invalid_string_kind in
+        parse_name_or_collection_literal_expression parser qualified_name
+      | DoubleQuotedStringLiteral ->
+        (* This name prefixes a double-quoted string *)
+        let (parser, str) = Make.token parser1 str_maybe in
+        let (parser, str) = Make.literal_expression parser str in
+        Make.prefixed_string_expression parser qualified_name str
+      | DoubleQuotedStringLiteralHead ->
+        (* This name prefixes a double-quoted string containing embedded expressions *)
+        let (parser, str) = parse_double_quoted_like_string
+          parser1 str_maybe Lexer.Literal_double_quoted in
+        Make.prefixed_string_expression parser qualified_name str
+      | _ ->
+        (* Not a prefixed string or an attempt at one *)
+        parse_name_or_collection_literal_expression parser qualified_name
+      end
     | Backslash ->
       let (parser, qualified_name) =
         let (parser, missing) = Make.missing parser1 (pos parser1) in
@@ -2288,7 +2312,8 @@ module WithStatementAndDeclAndTypeParser
   and parse_xhp_spread_attribute parser =
     let (parser, left_brace, _) = next_xhp_element_token parser in
     let (parser, left_brace) = Make.token parser left_brace in
-    let (parser, ellipsis) = assert_token parser DotDotDot in
+    let (parser, ellipsis) =
+      require_token parser DotDotDot SyntaxError.expected_dotdotdot in
     let (parser, expression) = parse_expression_with_reset_precedence parser in
     let (parser, right_brace) = require_right_brace parser in
     let (parser, node) =
@@ -2318,7 +2343,7 @@ module WithStatementAndDeclAndTypeParser
       (parser, Some node)
     else
       let (parser', equal) = Make.token parser' token in
-      let (parser'', token, text) = next_xhp_element_token parser' in
+      let (parser'', token, _text) = next_xhp_element_token parser' in
       match (Token.kind token) with
       | XHPStringLiteral ->
         let (parser, token) = Make.token parser'' token in
@@ -2357,7 +2382,7 @@ module WithStatementAndDeclAndTypeParser
       (parser, Some token)
     | LessThan ->
       let (parser, expr) =
-        parse_possible_xhp_expression ~consume_trailing_trivia:false  parser in
+        parse_possible_xhp_expression ~consume_trailing_trivia:false parser in
       (parser, Some expr)
     | _ -> (parser, None)
 
@@ -2365,7 +2390,7 @@ module WithStatementAndDeclAndTypeParser
     let (parser, less_than_slash, _) = next_xhp_element_token parser in
     let (parser, less_than_slash_token) = Make.token parser less_than_slash in
     if (Token.kind less_than_slash) = LessThanSlash then
-      let (parser1, name, name_text) = next_xhp_element_token parser in
+      let (parser1, name, _name_text) = next_xhp_element_token parser in
       if (Token.kind name) = XHPElementName then
         let (parser1, name_token) = Make.token parser1 name in
         (* TODO: Check that the given and name_text are the same. *)
@@ -2415,6 +2440,11 @@ module WithStatementAndDeclAndTypeParser
     let (parser1, token, _) = next_xhp_element_token ~no_trailing:true parser in
     match (Token.kind token) with
     | SlashGreaterThan ->
+      (* We have determined that this is a self-closing XHP tag, so
+         `consume_trailing_trivia` needs to be propagated down. *)
+      let (parser1, token, _) =
+        next_xhp_element_token ~no_trailing:(not consume_trailing_trivia) parser
+      in
       let (parser1, token) = Make.token parser1 token in
       let (parser1, xhp_open) =
         Make.xhp_open parser1 left_angle name attrs token
@@ -2424,6 +2454,10 @@ module WithStatementAndDeclAndTypeParser
       let (parser, missing2) = Make.missing parser pos in
       Make.xhp_expression parser xhp_open missing1 missing2
     | GreaterThan ->
+      (* This is not a self-closing tag, so we are now in an XHP body context.
+         We can use the GreaterThan token as-is (i.e., lexed above with
+         ~no_trailing:true), since we don't want to lex trailing trivia inside
+         XHP bodies. *)
       let (parser, token) = Make.token parser1 token in
       let (parser, xhp_open) =
         Make.xhp_open parser left_angle name attrs token
@@ -2450,7 +2484,7 @@ module WithStatementAndDeclAndTypeParser
 
   and parse_possible_xhp_expression ~consume_trailing_trivia parser =
     (* We got a < token where an expression was expected. *)
-    let (parser, less_than) = assert_token parser LessThan in
+    let (parser, less_than) = assert_xhp_body_token parser LessThan in
     let (parser1, name, text) = next_xhp_element_token parser in
     if (Token.kind name) = XHPElementName then
       let (parser, token) = Make.token parser1 name in

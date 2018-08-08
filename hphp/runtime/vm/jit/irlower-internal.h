@@ -52,8 +52,10 @@ Vout& vcold(IRLS& env);
 Vlabel label(IRLS& env, Block* b);
 
 /*
- * Get the SSATmp location descriptor for the i-th src or dst of `inst'.
+ * Get the SSATmp location descriptor for an SSATmp*, or the i-th src or dst of
+ * `inst'.
  */
+Vloc tmpLoc(IRLS& env, const SSATmp* tmp);
 Vloc srcLoc(IRLS& env, const IRInstruction* inst, unsigned i);
 Vloc dstLoc(IRLS& env, const IRInstruction* inst, unsigned i);
 
@@ -69,7 +71,6 @@ CallDest callDest(Vreg reg0);
 CallDest callDest(Vreg reg0, Vreg reg1);
 CallDest callDest(IRLS& env, const IRInstruction*);
 CallDest callDestTV(IRLS& env, const IRInstruction*);
-CallDest callDestDbl(IRLS& env, const IRInstruction*);
 
 ///////////////////////////////////////////////////////////////////////////////
 

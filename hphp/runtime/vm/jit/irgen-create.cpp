@@ -24,6 +24,7 @@
 #include "hphp/runtime/vm/jit/irgen-interpone.h"
 #include "hphp/runtime/vm/jit/irgen-internal.h"
 #include "hphp/runtime/vm/jit/irgen-sprop-global.h"
+#include "hphp/runtime/vm/jit/irgen-types.h"
 
 namespace HPHP { namespace jit { namespace irgen {
 
@@ -44,7 +45,7 @@ void initProps(IRGS& env, const Class* cls) {
   ifThen(
     env,
     [&] (Block* taken) {
-      gen(env, CheckInitProps, taken, ClassData(cls));
+      gen(env, CheckRDSInitialized, taken, RDSHandleData { cls->propHandle() });
     },
     [&] {
       hint(env, Block::Hint::Unlikely);
@@ -67,7 +68,7 @@ void initThrowable(IRGS& env, const Class* cls, SSATmp* throwable) {
       env,
       LdPropAddr,
       ByteOffsetData { (ptrdiff_t)rootCls->declPropOffset(idx) },
-      TInitNull.ptr(Ptr::Prop),
+      TInitNull.lval(Ptr::Prop),
       throwable
     );
   };
@@ -138,11 +139,92 @@ void initThrowable(IRGS& env, const Class* cls, SSATmp* throwable) {
   }
 }
 
-//////////////////////////////////////////////////////////////////////
+void checkPropTypeRedefs(IRGS& env, const Class* cls) {
+  assertx(cls->maybeRedefinesPropTypes());
+  assertx(cls->parent());
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
 
+  ifThen(
+    env,
+    [&] (Block* taken) {
+      gen(
+        env,
+        CheckRDSInitialized,
+        taken,
+        RDSHandleData { cls->checkedPropTypeRedefinesHandle() }
+      );
+    },
+    [&] {
+      hint(env, Block::Hint::Unlikely);
+      IRUnit::Hinter h(env.irb->unit(), Block::Hint::Unlikely);
+
+      auto const parent = cls->parent();
+      if (parent->maybeRedefinesPropTypes()) checkPropTypeRedefs(env, parent);
+      for (auto const& prop : cls->declProperties()) {
+        if (prop.attrs & AttrNoBadRedeclare) continue;
+        auto const slot = parent->lookupDeclProp(prop.name);
+        assertx(slot != kInvalidSlot);
+        gen(env, PropTypeRedefineCheck, cns(env, cls), cns(env, slot));
+      }
+
+      gen(
+        env,
+        MarkRDSInitialized,
+        RDSHandleData { cls->checkedPropTypeRedefinesHandle() }
+      );
+    }
+  );
+}
+
+void checkPropInitialValues(IRGS& env, const Class* cls) {
+  assertx(cls->needsPropInitialValueCheck());
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+
+  ifThen(
+    env,
+    [&] (Block* taken) {
+      gen(
+        env,
+        CheckRDSInitialized,
+        taken,
+        RDSHandleData { cls->checkedPropInitialValuesHandle() }
+      );
+    },
+    [&] {
+      hint(env, Block::Hint::Unlikely);
+      IRUnit::Hinter h(env.irb->unit(), Block::Hint::Unlikely);
+
+      auto const& props = cls->declProperties();
+      for (Slot slot = 0; slot < props.size(); ++slot) {
+        auto const& prop = props[slot];
+        if (prop.attrs & AttrInitialSatisfiesTC) continue;
+        auto const& tc = prop.typeConstraint;
+        if (!tc.isCheckable()) continue;
+        const TypedValue& tv = cls->declPropInit()[slot];
+        if (tv.m_type == KindOfUninit) continue;
+        verifyPropType(
+          env,
+          cns(env, cls),
+          &tc,
+          slot,
+          cns(env, tv),
+          cns(env, makeStaticString(prop.name)),
+          false
+        );
+      }
+
+      gen(
+        env,
+        MarkRDSInitialized,
+        RDSHandleData { cls->checkedPropInitialValuesHandle() }
+      );
+    }
+  );
 }
 
 //////////////////////////////////////////////////////////////////////
+
+}
 
 void initSProps(IRGS& env, const Class* cls) {
   cls->initSPropHandles();
@@ -150,7 +232,12 @@ void initSProps(IRGS& env, const Class* cls) {
   ifThen(
     env,
     [&] (Block* taken) {
-      gen(env, CheckInitSProps, taken, ClassData(cls));
+      gen(
+        env,
+        CheckRDSInitialized,
+        taken,
+        RDSHandleData { cls->sPropInitHandle() }
+      );
     },
     [&] {
       hint(env, Block::Hint::Unlikely);
@@ -159,12 +246,20 @@ void initSProps(IRGS& env, const Class* cls) {
   );
 }
 
+//////////////////////////////////////////////////////////////////////
+
 SSATmp* allocObjFast(IRGS& env, const Class* cls) {
   // Make sure our property init vectors are all set up.
-  const bool props = cls->pinitVec().size() > 0;
-  const bool sprops = cls->numStaticProperties() > 0;
-  assertx((props || sprops) == cls->needInitialization());
+  auto const props = cls->pinitVec().size() > 0;
+  auto const sprops = cls->numStaticProperties() > 0;
+  auto const redefine = cls->maybeRedefinesPropTypes();
+  auto const propVal = cls->needsPropInitialValueCheck();
+  assertx(
+    (props || sprops || redefine || propVal) == cls->needInitialization()
+  );
   if (cls->needInitialization()) {
+    if (redefine) checkPropTypeRedefs(env, cls);
+    if (propVal) checkPropInitialValues(env, cls);
     if (props) initProps(env, cls);
     if (sprops) initSProps(env, cls);
   }

@@ -19,7 +19,6 @@
 
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/base/req-containers.h"
 #include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/base/tv-refcount.h"
@@ -166,7 +165,7 @@ struct FuncExistsChecker {
     }
     auto f = m_ne->getCachedFunc();
     return (f != nullptr) &&
-           (f->builtinFuncPtr() != Native::unimplementedWrapper);
+           (f->arFuncPtr() != Native::unimplementedWrapper);
   }
 };
 struct ClassExistsChecker {

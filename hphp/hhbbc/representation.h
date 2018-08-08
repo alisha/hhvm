@@ -92,7 +92,7 @@ struct Block {
    * The pointer for this block's exception region, or nullptr if
    * there is none.
    */
-  borrowed_ptr<ExnNode> exnNode;
+  ExnNode* exnNode;
 
   /*
    * Edges coming out of blocks are repesented in three ways:
@@ -162,7 +162,7 @@ struct ExnNode {
   uint32_t id;
   uint32_t depth;
 
-  borrowed_ptr<ExnNode> parent;
+  ExnNode* parent;
   CompactVector<std::unique_ptr<ExnNode>> children;
 
   boost::variant<FaultRegion,CatchRegion> info;
@@ -334,8 +334,8 @@ struct Func : FuncBase {
    * Which unit defined this function.  If it is a method, the cls
    * field will be set to the class that contains it.
    */
-  borrowed_ptr<Unit> unit;
-  borrowed_ptr<Class> cls;
+  Unit* unit;
+  Class* cls;
 
   /*
    * Entry point blocks for default value initializers.
@@ -367,7 +367,7 @@ struct Func : FuncBase {
    * drop the originalFilename.
    */
   LSString originalFilename;
-  borrowed_ptr<Unit> originalUnit{};
+  Unit* originalUnit{};
 
   /*
    * Whether or not this function is a top-level function.  (Defined
@@ -398,6 +398,7 @@ struct Func : FuncBase {
   bool isPairGenerator : 1;
 
   bool isMemoizeWrapper : 1;
+  bool isMemoizeWrapperLSB : 1;
 
   bool isMemoizeImpl : 1;
 
@@ -427,11 +428,8 @@ struct Prop {
   UserAttributeMap userAttributes;
   LSString docComment;
 
-  /*
-   * Properties can have string type constraints, which we need to
-   * propagate through just for reflection purposes.
-   */
-  LSString typeConstraint;
+  LSString userType;
+  TypeConstraint typeConstraint;
 
   /*
    * The default value of the property, for properties with scalar
@@ -448,7 +446,7 @@ struct Const {
   LSString name;
 
   // The class that defined this constant.
-  borrowed_ptr<php::Class> cls;
+  php::Class* cls;
 
   /*
    * The value will be KindOfUninit if the class constant is defined
@@ -503,7 +501,7 @@ struct Class : ClassBase {
   /*
    * Which unit defined this class.
    */
-  borrowed_ptr<Unit> unit;
+  Unit* unit;
 
   /*
    * Hoistability of this class.  See the description in class.h
@@ -525,7 +523,7 @@ struct Class : ClassBase {
    * inside of a class run as if they were part of that class context
    * (with regard to access checks, etc).
    */
-  borrowed_ptr<php::Class> closureContextCls;
+  php::Class* closureContextCls;
 
   /*
    * Names of inherited interfaces.
@@ -620,10 +618,16 @@ struct Program {
 //////////////////////////////////////////////////////////////////////
 
 std::string show(const Func&);
-std::string show(const Class&);
-std::string show(const Unit&);
+std::string show(const Func&, const Block&);
+std::string show(const Func&, const Bytecode& bc);
+std::string show(const Class&, bool normalizeClosures = false);
+std::string show(const Unit&, bool normalizeClosures = false);
 std::string show(const Program&);
 std::string local_string(const Func&, LocalId);
+
+inline std::string show(const Func* f, const Bytecode& bc) {
+  return show(*f, bc);
+}
 
 //////////////////////////////////////////////////////////////////////
 

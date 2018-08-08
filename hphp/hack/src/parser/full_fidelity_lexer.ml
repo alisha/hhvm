@@ -12,16 +12,35 @@ module TokenKind = Full_fidelity_token_kind
 module SourceText = Full_fidelity_source_text
 module SyntaxError = Full_fidelity_syntax_error
 
+module Env = struct
+
+  let force_hh_opt = ref false
+  let enable_xhp_opt = ref false
+  let is_hh_file = ref true
+
+  let set_is_hh_file b = is_hh_file := b
+  let set ~force_hh ~enable_xhp =
+    force_hh_opt := force_hh;
+    enable_xhp_opt := enable_xhp
+
+  let is_hh () = !is_hh_file || !force_hh_opt
+  let enable_xhp () = is_hh () || !enable_xhp_opt
+
+end
+
 module Lexer : sig
+  [@@@warning "-32"] (* following line warning 32 unused variable "show" *)
   type t = {
     text : SourceText.t;
-    start : int;  (* Both start and offset are absolute offsets in the text. *)
-    offset : int;
+    (* Both start and offset are absolute offsets in the text. *)
+    start : int; (* set once when creating the lexer. *)
+    offset : int; (* the thing that is incremented when we advance the lexer *)
     errors : SyntaxError.t list;
-    hacksperimental : bool
+    is_experimental_mode : bool;
   } [@@deriving show]
-  val make : ?hacksperimental:bool -> SourceText.t -> t
-  val make_at : ?hacksperimental:bool -> SourceText.t -> int -> t
+  [@@@warning "+32"]
+  val make : ?is_experimental_mode:bool -> SourceText.t -> t
+  val make_at : ?is_experimental_mode:bool -> SourceText.t -> int -> t
   val start : t -> int
   val source : t -> SourceText.t
   val errors : t -> SyntaxError.t list
@@ -34,21 +53,22 @@ module Lexer : sig
   val advance : t -> int -> t
   val with_start_offset : t -> int -> int -> t
 
-  val hacksperimental : t -> bool
+  val is_experimental_mode : t -> bool
 end = struct
 
   (* text consists of a pair consisting of a string, padded by a certain, fixed
    * amount of null bytes, and then the rest of the source text *)
   type t = {
     text : SourceText.t;
-    start : int;  (* Both start and offset are absolute offsets in the text. *)
-    offset : int;
+    (* Both start and offset are absolute offsets in the text. *)
+    start : int; (* set once when creating the lexer. *)
+    offset : int; (* the thing that is incremented when we advance the lexer *)
     errors : SyntaxError.t list;
-    hacksperimental : bool (* write-once: record updates should not update this field *)
+    is_experimental_mode : bool; (* write-once: record updates should not update this field *)
   } [@@deriving show]
 
-  let make ?(hacksperimental = false) text =
-    { text; start = 0; offset = 0; errors = []; hacksperimental }
+  let make ?(is_experimental_mode = false) text =
+    { text; start = 0; offset = 0; errors = []; is_experimental_mode }
 
   let start  x = x.start
   let source x = x.text
@@ -63,8 +83,8 @@ end = struct
 
   let with_start_offset lexer start offset = {lexer with start = start; offset = offset}
 
-  let make_at ?hacksperimental text start_offset =
-    with_start_offset (make ?hacksperimental text) start_offset start_offset
+  let make_at ?is_experimental_mode text start_offset =
+    with_start_offset (make ?is_experimental_mode text) start_offset start_offset
 
   let with_offset_errors lexer offset errors = {
     lexer with offset = offset; errors = errors
@@ -76,14 +96,16 @@ end = struct
   let advance lexer index =
     { lexer with offset = lexer.offset + index }
 
-  let hacksperimental lexer = lexer.hacksperimental
+  let is_experimental_mode lexer = lexer.is_experimental_mode
 end
 
 module WithToken(Token: Lexable_token_sig.LexableToken_S) = struct
 
 module Trivia = Token.Trivia
 
+[@@@warning "-32"] (* following line warning 32 unused variable "show_lexer" *)
 type lexer = Lexer.t [@@deriving show]
+[@@@warning "+32"]
 type t = lexer [@@deriving show]
 
 let make = Lexer.make
@@ -98,7 +120,7 @@ let start_new_lexeme = Lexer.start_new_lexeme
 let advance = Lexer.advance
 let with_offset_errors = Lexer.with_offset_errors
 let with_start_offset = Lexer.with_start_offset
-let hacksperimental = Lexer.hacksperimental
+let is_experimental_mode = Lexer.is_experimental_mode
 
 let start_offset = start
 let end_offset = offset
@@ -134,9 +156,6 @@ let width lexer =
 
 let current_text lexer =
   SourceText.sub (source lexer) (start lexer) (width lexer)
-
-let current_text_at lexer length relative_start =
-  SourceText.sub (source lexer) ((start lexer) + relative_start) length
 
 let at_end lexer =
   (offset lexer) >= SourceText.length (source lexer)
@@ -1399,26 +1418,27 @@ let as_case_insensitive_keyword text =
   non-lower versions in our codebase. *)
   let lower = String.lowercase_ascii text in
   match lower with
-  | "__halt_compiler" | "abstract" | "and" | "array" | "as" | "bool"  | "boolean" | "break"
+  | "__halt_compiler" | "abstract" | "and" | "array" | "as" | "bool" | "boolean" | "break"
   | "callable"
   | "case" | "catch" | "class" | "clone" | "const" | "continue" | "declare" | "default"
   | "die" | "do" | "echo" | "else" | "elseif" | "empty" | "enddeclare" | "endfor"
   | "endforeach" | "endif" | "endswitch" | "endwhile" | "eval" | "exit" | "extends" | "false"
   | "final" | "finally" | "for" | "foreach" | "function" | "global" | "goto" | "if"
-  | "implements" | "include" | "include_once" | "inout" | "instanceof" | "insteadof" | "int"
-  | "integer"
+  | "implements" | "include" | "include_once" | "instanceof" | "insteadof" | "int" | "integer"
   | "interface" | "isset" | "list" | "namespace" | "new" | "null" | "or" | "parent"
   | "print" | "private" | "protected" | "public" | "require" | "require_once"
   | "return" | "self" | "static" | "string" | "switch" | "throw" | "trait"
-  | "try" | "true" | "unset" | "use" | "using" | "var" | "void" | "while"
+  | "try" | "true" | "unset" | "use" | "var" | "void" | "while"
   | "xor" | "yield" -> lower
+  | "inout" | "using" when Env.is_hh () -> lower
   | _ -> text
 
 let as_keyword kind lexer =
   if kind = TokenKind.Name then
     let text = as_case_insensitive_keyword (current_text lexer) in
-    match TokenKind.from_string text with
-    | Some TokenKind.Let when (not (hacksperimental lexer)) -> TokenKind.Name
+    let is_hack = Env.is_hh () and allow_xhp = Env.enable_xhp () in
+    match TokenKind.from_string text ~is_hack ~allow_xhp with
+    | Some TokenKind.Let when (not (is_experimental_mode lexer)) -> TokenKind.Name
     | Some keyword -> keyword
     | _ -> TokenKind.Name
   else
@@ -1610,8 +1630,12 @@ let skip_to_end_of_markup lexer ~is_leading_section =
     let ch1 = peek_char lexer 1 in
     let ch2 = peek_char lexer 2 in
     match ch0, ch1, ch2 with
-    | ('H' | 'h'), ('H' | 'h'), _ -> make_long_tag lexer 2
-    | ('P' | 'p'), ('H' | 'h'), ('P' | 'p') -> make_long_tag lexer 3
+    | ('H' | 'h'), ('H' | 'h'), _ ->
+      Env.set_is_hh_file true;
+      make_long_tag lexer 2
+    | ('P' | 'p'), ('H' | 'h'), ('P' | 'p') ->
+      Env.set_is_hh_file false;
+      make_long_tag lexer 3
     | '=', _, _ ->
       begin
         (* skip = *)

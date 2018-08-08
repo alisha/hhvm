@@ -29,7 +29,7 @@
 #include "hphp/util/compact-vector.h"
 #include "hphp/util/either.h"
 #include "hphp/util/functional.h"
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-set.h"
 
 namespace HPHP {
 
@@ -563,6 +563,9 @@ constexpr uint32_t kMaxConcatN = 4;
   O(FPushFunc,       TWO(IVA,I32LA),   ONE(CV),         NOV,        PF) \
   O(FPushFuncD,      TWO(IVA,SA),      NOV,             NOV,        PF) \
   O(FPushFuncU,      THREE(IVA,SA,SA), NOV,             NOV,        PF) \
+  O(ResolveFunc,     ONE(SA),          NOV,             ONE(CV),    NF) \
+  O(ResolveObjMethod,NA,               TWO(CV,CV),      ONE(CV),    NF) \
+  O(ResolveClsMethod,NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(FPushObjMethod,  THREE(IVA,                                         \
                        OA(ObjMethodOp),                                 \
                        I32LA),          TWO(CV,CV),      NOV,       PF) \
@@ -588,13 +591,9 @@ constexpr uint32_t kMaxConcatN = 4;
   O(FThrowOnRefMismatch, ONE(BLLA),    NOV,             NOV,        FF) \
   O(FHandleRefMismatch, THREE(IVA,OA(FPassHint),SA),                    \
                                        NOV,             NOV,        NF) \
-  O(FCall,           ONE(IVA),         CVMANY,          ONE(RV),    CF_FF) \
-  O(FCallM,          TWO(IVA,IVA),     CVMANY_UMANY,    CMANY,      CF_FF) \
-  O(FCallDM,         FOUR(IVA,IVA,SA,SA),CVMANY_UMANY,  CMANY,      CF_FF) \
-  O(FCallUnpackM,    TWO(IVA,IVA),     C_CVMANY_UMANY,  CMANY,      CF_FF) \
+  O(FCall,           FIVE(IVA,IVA,IVA,SA,SA),                           \
+                                       FCALL,           FCALL,      CF_FF) \
   O(FCallAwait,      THREE(IVA,SA,SA), CVMANY,          ONE(CV),    CF_FF) \
-  O(FCallD,          THREE(IVA,SA,SA), CVMANY,          ONE(RV),    CF_FF) \
-  O(FCallUnpack,     ONE(IVA),         C_CVMANY,        ONE(RV),    CF_FF) \
   O(FCallBuiltin,    THREE(IVA,IVA,SA),CVUMANY,         ONE(RV),    NF) \
   O(IterInit,        THREE(IA,BA,LA),  ONE(CV),         NOV,        CF) \
   O(MIterInit,       THREE(IA,BA,LA),  ONE(VV),         NOV,        CF) \
@@ -688,12 +687,16 @@ constexpr uint32_t kMaxConcatN = 4;
                                        NOV,             NOV,        NF) \
   O(BaseGL,          TWO(LA, OA(MOpMode)),                              \
                                        NOV,             NOV,        NF) \
-  O(BaseSC,          TWO(IVA, CAR),    NOV,             NOV,        NF) \
-  O(BaseSL,          TWO(LA, CAR),     NOV,             NOV,        NF) \
+  O(BaseSC,          THREE(IVA, CAR, OA(MOpMode)),                      \
+                                       NOV,             NOV,        NF) \
+  O(BaseSL,          THREE(LA, CAR, OA(MOpMode)),                       \
+                                       NOV,             NOV,        NF) \
   O(BaseL,           TWO(LA, OA(MOpMode)),                              \
                                        NOV,             NOV,        NF) \
-  O(BaseC,           ONE(IVA),         NOV,             NOV,        NF) \
-  O(BaseR,           ONE(IVA),         NOV,             NOV,        NF) \
+  O(BaseC,           TWO(IVA, OA(MOpMode)),                             \
+                                       NOV,             NOV,        NF) \
+  O(BaseR,           TWO(IVA, OA(MOpMode)),                             \
+                                       NOV,             NOV,        NF) \
   O(BaseH,           NA,               NOV,             NOV,        NF) \
   O(Dim,             TWO(OA(MOpMode), KA),                              \
                                        NOV,             NOV,        NF) \
@@ -832,9 +835,6 @@ IterTable getIterTable(PC opcode);
 // Some decoding helper functions.
 int numImmediates(Op opcode);
 ArgType immType(Op opcode, int idx);
-int immSize(PC opcode, int idx);
-bool immIsVector(Op opcode, int idx);
-bool immIsIterTable(Op opcode, int idx);
 bool hasImmVector(Op opcode);
 bool hasIterTable(Op opcode);
 int instrLen(PC opcode);
@@ -1012,12 +1012,7 @@ constexpr bool isFPushFunc(Op opcode) {
 inline bool isFCallStar(Op opcode) {
   switch (opcode) {
     case Op::FCall:
-    case Op::FCallD:
     case Op::FCallAwait:
-    case Op::FCallUnpack:
-    case Op::FCallM:
-    case Op::FCallDM:
-    case Op::FCallUnpackM:
       return true;
     default:
       return false;

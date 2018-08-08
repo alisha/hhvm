@@ -421,11 +421,13 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
       "Error: failed type check on operand {}\n"
       "   instruction: {}\n"
       "   was expecting: {}\n"
-      "   received: {}\n",
+      "   received: {}\n"
+      "   from: {}\n",
         curSrc,
-        inst->toString(),
+        *inst,
         expectStr,
-        inst->src(curSrc)->type().toString()
+        inst->src(curSrc)->type(),
+        *inst->src(curSrc)->inst()
       ).str()
     );
     return true;
@@ -488,15 +490,6 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
     }
   };
 
-  auto requireTypeParamPtr = [&] (Ptr kind) {
-    checkDst(inst->hasTypeParam(),
-      "Missing paramType for DParamPtr instruction");
-    if (inst->hasTypeParam()) {
-      checkDst(inst->typeParam() <= TGen.ptr(kind),
-               "Invalid paramType for DParamPtr instruction");
-    }
-  };
-
   auto checkVariadic = [&] (Type super) {
     for (; curSrc < inst->numSrcs(); ++curSrc) {
       auto const valid = (inst->src(curSrc)->type() <= super);
@@ -506,9 +499,15 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
 
 #define IRT(name, ...) UNUSED static constexpr Type name = T##name;
 #define IRTP(name, ...) IRT(name)
+#define IRTL(name, ...) IRT(name)
+#define IRTM(name, ...) IRT(name)
+#define IRTX(name, ...) IRT(name)
   IR_TYPES
 #undef IRT
 #undef IRTP
+#undef IRTL
+#undef IRTM
+#undef IRTX
 
 #define NA            return checkNoArgs();
 #define S(...)        {                                   \
@@ -542,7 +541,6 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
                       requireTypeParam(Top);
 #define DParamMayRelax(t) requireTypeParam(t);
 #define DParam(t)         requireTypeParam(t);
-#define DParamPtr(k)   requireTypeParamPtr(Ptr::k);
 #define DUnion(...)    forEachSrcIdx(                                          \
                          [&](uint32_t idx) {                                   \
                            checkDst(idx < inst->numSrcs(), "invalid src num"); \
@@ -567,6 +565,7 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
 #define DCtxCls
 #define DCns
 #define DMemoKey
+#define DLvalOfPtr
 
 #define O(opcode, dstinfo, srcinfo, flags) \
   case opcode: dstinfo srcinfo countCheck(); return true;
@@ -599,7 +598,6 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
 #undef DRefineS
 #undef DParamMayRelax
 #undef DParam
-#undef DParamPtr
 #undef DLdObjCls
 #undef DUnboxPtr
 #undef DBoxPtr
@@ -619,7 +617,7 @@ bool checkOperandTypes(const IRInstruction* inst, const IRUnit* /*unit*/) {
 #undef DCns
 #undef DUnion
 #undef DMemoKey
-
+#undef DLvalOfPtr
   return true;
 }
 

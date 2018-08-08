@@ -118,6 +118,7 @@ module UserAttributes = struct
   let uaUnsafeConstruct     = "__UNSAFE_Construct"
   let uaDeprecated          = "__Deprecated"
   let uaMemoize             = "__Memoize"
+  let uaMemoizeLSB          = "__MemoizeLSB"
   let uaPHPStdLib           = "__PHPStdLib"
   let uaHipHopSpecific      = "__HipHopSpecific"
   let uaAcceptDisposable    = "__AcceptDisposable"
@@ -134,6 +135,8 @@ module UserAttributes = struct
   let uaOnlyRxIfArgs        = "__OnlyRxIfArgs"
   let uaSealed              = "__Sealed"
   let uaReturnsVoidToRx     = "__ReturnsVoidToRx"
+  let uaMaybeMutable        = "__MaybeMutable"
+  let uaRxOfScope           = "__RxOfScope"
 
   let as_set = List.fold_right ~f:SSet.add ~init:SSet.empty
     [
@@ -143,6 +146,7 @@ module UserAttributes = struct
       uaUnsafeConstruct;
       uaDeprecated;
       uaMemoize;
+      uaMemoizeLSB;
       uaPHPStdLib;
       uaHipHopSpecific;
       uaAcceptDisposable;
@@ -158,7 +162,9 @@ module UserAttributes = struct
       uaOnlyRxIfRxFunc;
       uaOnlyRxIfArgs;
       uaSealed;
-      uaReturnsVoidToRx
+      uaReturnsVoidToRx;
+      uaMaybeMutable;
+      uaRxOfScope;
     ]
 end
 
@@ -385,4 +391,20 @@ module Superglobals = struct
     let h = HashSet.create 23 in
     List.iter all_superglobals (HashSet.add h);
     fun x -> HashSet.mem h x
+end
+
+module PPLFunctions = struct
+  let all_reserved =
+    [ "sample"; "\\sample"; "factor"; "\\factor";
+      "observe"; "\\observe"; "condition"; "\\condition"
+    ]
+
+  let is_reserved =
+    let h = HashSet.create 23 in
+    List.iter all_reserved (HashSet.add h);
+    fun name -> HashSet.mem h name
+end
+
+module Regex = struct
+  let tPattern = "\\HH\\Lib\\Regex\\Pattern"
 end

@@ -837,8 +837,8 @@ struct StaticLocName : IRExtraData {
   const StringData* name;
 };
 
-struct LdFuncCachedData : IRExtraData {
-  explicit LdFuncCachedData(const StringData* name)
+struct FuncNameData : IRExtraData {
+  explicit FuncNameData(const StringData* name)
     : name(name)
   {}
 
@@ -847,7 +847,7 @@ struct LdFuncCachedData : IRExtraData {
   }
 
   size_t hash() const { return name->hash(); }
-  bool equals(const LdFuncCachedData& o) const {
+  bool equals(const FuncNameData& o) const {
     return name == o.name;
   }
 
@@ -1429,19 +1429,28 @@ struct ParamData : IRExtraData {
   int32_t paramId;
 };
 
-struct RaiseHackArrParamNoticeData : IRExtraData {
+struct RaiseHackArrNoticeData : IRExtraData {
+  explicit RaiseHackArrNoticeData(AnnotType type)
+    : type{type} {}
+
+  std::string show() const {
+    if (type == AnnotType::VArray) return "varray";
+    if (type == AnnotType::DArray) return "darray";
+    if (type == AnnotType::VArrOrDArr) return "varray_or_darray";
+    return "array";
+  }
+
+  AnnotType type;
+};
+
+struct RaiseHackArrParamNoticeData : RaiseHackArrNoticeData {
   RaiseHackArrParamNoticeData(AnnotType type, int32_t id, bool isReturn)
-    : type{type}
+    : RaiseHackArrNoticeData{type}
     , id{id}
     , isReturn{isReturn} {}
 
   std::string show() const {
-    auto const typeStr = [&]{
-      if (type == AnnotType::VArray) return "varray";
-      if (type == AnnotType::DArray) return "darray";
-      if (type == AnnotType::VArrOrDArr) return "varray_or_darray";
-      return "array";
-    }();
+    auto const typeStr = RaiseHackArrNoticeData::show();
     return folly::to<std::string>(
       typeStr, ",",
       id, ",",
@@ -1449,7 +1458,6 @@ struct RaiseHackArrParamNoticeData : IRExtraData {
     );
   }
 
-  AnnotType type;
   int32_t id;
   bool isReturn;
 };
@@ -1541,9 +1549,7 @@ X(LIterInitK,                   IterInitData);
 X(LIterNext,                    IterData);
 X(LIterNextK,                   IterData);
 X(ConstructInstance,            ClassData);
-X(CheckInitProps,               ClassData);
 X(InitProps,                    ClassData);
-X(CheckInitSProps,              ClassData);
 X(InitSProps,                   ClassData);
 X(NewInstanceRaw,               ClassData);
 X(InitObjProps,                 ClassData);
@@ -1602,7 +1608,8 @@ X(InitClsCns,                   ClsCnsName);
 X(LdSubClsCns,                  LdSubClsCnsData);
 X(CheckSubClsCns,               LdSubClsCnsData);
 X(ProfileSubClsCns,             ProfileSubClsCnsData);
-X(LdFuncCached,                 LdFuncCachedData);
+X(LdFuncCached,                 FuncNameData);
+X(LookupFuncCached,             FuncNameData);
 X(LdFuncCachedU,                LdFuncCachedUData);
 X(LdObjMethod,                  LdObjMethodData);
 X(RaiseMissingArg,              FuncArgData);
@@ -1645,6 +1652,8 @@ X(ProfileType,                  RDSHandleData);
 X(ProfileFunc,                  ProfileCallTargetData);
 X(ProfileMethod,                ProfileCallTargetData);
 X(LdRDSAddr,                    RDSHandleData);
+X(CheckRDSInitialized,          RDSHandleData);
+X(MarkRDSInitialized,           RDSHandleData);
 X(BaseG,                        MOpModeData);
 X(PropX,                        MOpModeData);
 X(PropDX,                       MOpModeData);
@@ -1661,6 +1670,10 @@ X(MemoGetStaticValue,           MemoValueStaticData);
 X(MemoSetStaticValue,           MemoValueStaticData);
 X(MemoGetStaticCache,           MemoCacheStaticData);
 X(MemoSetStaticCache,           MemoCacheStaticData);
+X(MemoGetLSBValue,              MemoValueStaticData);
+X(MemoSetLSBValue,              MemoValueStaticData);
+X(MemoGetLSBCache,              MemoCacheStaticData);
+X(MemoSetLSBCache,              MemoCacheStaticData);
 X(MemoGetInstanceValue,         MemoValueInstanceData);
 X(MemoSetInstanceValue,         MemoValueInstanceData);
 X(MemoGetInstanceCache,         MemoCacheInstanceData);
@@ -1700,6 +1713,7 @@ X(LdTVAux,                      LdTVAuxData);
 X(CheckRefs,                    CheckRefsData);
 X(FuncGuard,                    FuncGuardData);
 X(RaiseHackArrParamNotice,      RaiseHackArrParamNoticeData);
+X(RaiseHackArrPropNotice,       RaiseHackArrNoticeData);
 X(DbgAssertRefCount,            AssertReason);
 X(Unreachable,                  AssertReason);
 X(EndBlock,                     AssertReason);

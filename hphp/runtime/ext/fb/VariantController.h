@@ -72,6 +72,8 @@ struct VariantControllerImpl {
         throw HPHP::serialize::KeysetSerializeError{};
       case KindOfResource:
       case KindOfRef:
+      case KindOfFunc:
+      case KindOfClass:
         throw HPHP::serialize::SerializeError(
           "don't know how to serialize HPHP Variant");
     }

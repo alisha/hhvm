@@ -47,6 +47,9 @@ let exactly_equal err1 err2 =
     err1.end_offset = err2.end_offset &&
     err1.message = err2.message
 
+let expected_as_or_insteadof =
+  "The 'as' keyword or the 'insteadof' keyword is expected here."
+
 let error_type err = err.error_type
 
 let message err = err.message
@@ -210,7 +213,7 @@ let error2055 = "At least one enumerated item is expected."
 let error2056 = "First unbracketed namespace occurrence here"
 let error2057 = "First bracketed namespace occurrence here"
 let error2058 = "Property may not be abstract."
-let error2059 = "Shape field name must be a string or a class constant"
+let invalid_shape_field_name = "Shape field name must be a single-quoted string or a class constant"
 let error2060 = "Shape field name must not start with an integer"
 let error2061 = "Non-static instance variables are not allowed in abstract final
   classes."
@@ -240,6 +243,7 @@ let error2076 = "Cannot use both 'inout' and '&' on the same argument."
 let error2077 = "Cannot use empty list"
 
 (* Start giving names rather than numbers *)
+let async_not_last = "The 'async' modifier must be directly before the 'function' keyword."
 let list_as_subscript = "A subscript index cannot be a list"
 let vdarray_in_php = "varray and darray are only allowed in Hack files"
 let using_st_function_scoped_top_level =
@@ -272,13 +276,13 @@ let name_is_already_in_use_implicit_hh ~line_num ~name ~short_name =
   "; implicit use of names from the HH namespace can be suppressed by adding \
    an explicit `use' statement earlier in the current namespace block"
 
-let declared_name_is_already_in_use_implicit_hh ~line_num ~name ~short_name =
+let declared_name_is_already_in_use_implicit_hh ~line_num ~name ~short_name:_ =
   "Cannot declare class " ^ name ^ " because the name was implicitly used on line "
   ^ (string_of_int line_num) ^
   "; implicit use of names from the HH namespace can be suppressed by adding \
    an explicit `use' statement earlier in the current namespace block"
 
-let declared_name_is_already_in_use ~line_num ~name ~short_name =
+let declared_name_is_already_in_use ~line_num ~name ~short_name:_ =
   "Cannot declare class " ^ name ^
   " because the name was explicitly used earlier via a `use' statement on line "
   ^ (string_of_int line_num)
@@ -308,6 +312,9 @@ let parent_static_const_decl = "Cannot use static or parent::class in constant d
 let conflicting_trait_require_clauses ~name =
   "Conflicting requirements for '" ^ name ^ "'"
 
+let shape_type_ellipsis_without_trailing_comma =
+  "A comma is required before the ... in a shape type"
+
 let yield_in_magic_methods =
   "'yield' is not allowed in constructor, destructor, or magic methods"
 
@@ -324,6 +331,8 @@ let coloncolonclass_on_dynamic =
   "Dynamic class names are not allowed in compile-time ::class fetch"
 let enum_elem_name_is_class =
   "Enum element cannot be named 'class'"
+let expected_dotdotdot =
+  "'...' is expected here."
 let not_allowed_in_write what =
   what ^ " is not allowed in write context"
 let reassign_this =
@@ -402,6 +411,7 @@ let variadic_param_with_type_in_php name type_ =
   ^ type_ ^ "); variadic params with type constraints are not "
   ^ "supported in non-Hack files"
 let final_property = "Properties cannot be declared final"
+let var_property = "Properties cannot be declared as var; a type is required"
 let property_has_multiple_visibilities name =
   "Multiple access type modifiers are not allowed: properties of " ^ name
 let invalid_is_as_expression_hint n hint =
@@ -438,9 +448,31 @@ let interface_implements =
 let memoize_on_lambda = "<<__Memoize>> attribute is not allowed on lambdas or \
   anonymous functions."
 
+let memoize_lsb_on_non_static =
+  "<<__MemoizeLSB>> can only be applied to static methods"
+
+let memoize_lsb_on_non_method =
+  "<<__MemoizeLSB>> can only be applied to methods"
+
 let instanceof_paren x =
   Printf.sprintf "`instanceof (%s)` is not allowed because it is ambiguous. Is `%s` a class or a constant?"
     x x
+
+let instanceof_invalid_scope_resolution = "A scope resolution (::) on the right side of an " ^
+  "instanceof operator must start with a class name, `self`, `parent`, or `static`, and end with " ^
+  "a variable"
+
+let instanceof_memberselection_inside_scoperesolution = "A scope resolution (::) on the right " ^
+  "side of an instanceof operator cannot contain a member selection (->)"
+
+let instanceof_missing_subscript_index = "A subscript expression ([]) on the right side of an " ^
+  "instanceof operator must have an index"
+
+let instanceof_unknown_node msg =
+  Printf.sprintf "Unexpected node on right hand side of instanceof: %s" msg
+
+let instanceof_reference = "References are not allowed on the right side of an instanceof operation"
+
 let invalid_await_use = "Await cannot be used as an expression"
 
 let invalid_default_argument s = s ^ " expression is not permitted \
@@ -450,7 +482,7 @@ let invalid_constructor_method_call = "Method call following immediate construct
   requires parentheses around constructor call."
 
 let do_not_use_xor =
-  "Do not use \"xor\", it has surprising precedence. Cast to bool and use \"^\" instead"
+  "Do not use \"xor\", it has surprising precedence. Cast to bool and use \"!==\" instead"
 
 let do_not_use_or =
   "Do not use \"or\", it has surprising precedence. Use \"||\" instead"
@@ -463,6 +495,10 @@ let invalid_scope_resolution_qualifier = "Only classnames and variables are allo
 let invalid_variable_name =
   "A valid variable name starts with a letter or underscore, followed \
   by any number of letters, numbers, or underscores"
+
+let incorrect_byref_assignment = "Only variables, members, and function calls \
+  can be assigned by reference"
+
 let function_modifier s =
   Printf.sprintf "Top-level function cannot have modifier '%s'" s
 
@@ -471,7 +507,48 @@ let invalid_yield =
 
 let invalid_yield_from =
   "`yield from` can only appear as a statement, after `return`, or on the right of an assignment"
+
 let invalid_class_in_collection_initializer =
   "Cannot use collection initialization for non-collection class."
 let invalid_brace_kind_in_collection_initializer =
   "Initializers of 'vec', 'dict' and 'keyset' should use '[...]' instead of '{...}'."
+
+let alternate_control_flow =
+  "Alternate control flow syntax is not allowed in Hack files"
+let execution_operator =
+  "The execution operator is not allowed in Hack files"
+let invalid_octal_integer = "Invalid octal integers"
+let php7_anonymous_function =
+  "Php7 anonymous functions are not allowed in Hack files, prefer moving the type annotation before the use clause"
+
+let prefixed_invalid_string_kind = "Only double-quoted strings may be prefixed."
+
+let non_re_prefix = "Only `re`-prefixed strings allowed."
+
+let collection_intrinsic_generic =
+  "Cannot initialize collection builtins with type parameters"
+
+let invalid_hack_mode =
+  "Incorrect comment; possible values include strict, decl, partial, only-headers, or empty"
+
+let pair_initializer_needed =
+  "Initializer needed for Pair object"
+
+let pair_initializer_arity =
+  "Pair objects must have exactly 2 elements"
+
+let nested_unary_reference = "References cannot be followed by unary operators"
+
+let toplevel_statements =
+  "Toplevel statements besides requires are not allowed in strict files"
+let invalid_reified =
+  "Invalid place to put reified"
+let shadowing_reified =
+  "You may not shadow a reified parameter"
+
+let dollar_unary = "The dollar sign ('$') cannot be used as a unary operator"
+
+let decl_outside_global_scope = "Declarations are not supported outside global scope"
+
+let experimental_in_codegen_without_hacksperimental =
+  "Experimental mode files are not allowed during codegen unless the hacksperimental flag is set"

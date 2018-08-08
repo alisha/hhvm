@@ -32,7 +32,7 @@
 #include "hphp/runtime/vm/jit/type.h"
 #include "hphp/runtime/vm/jit/types.h"
 
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
 #include "hphp/util/mutex.h"
 
 #include <folly/Format.h>
@@ -248,6 +248,7 @@ enum OutTypeConstraints {
   OutInt64,
   OutArray,
   OutArrayImm,
+  OutVArray,
   OutVec,
   OutVecImm,
   OutDict,
@@ -281,6 +282,9 @@ enum OutTypeConstraints {
   OutIncDec,            // For IncDecL
 
   OutIsTypeL,           // output for IsTypeL instructions
+
+  OutFunc,              // for function pointers
+  OutClass,             // for class pointers
 
   OutNone,
 };

@@ -76,6 +76,13 @@ Vreg zeroExtendIfBool(Vout& v, Type type, Vreg reg);
 // TypedValue manipulations.
 
 /*
+ * Return a pointer to the type or value field of the pointee of `ptr', whether
+ * it is a TPtrToGen or a TLvalToGen.
+ */
+Vptr memTVTypePtr(SSATmp* ptr, Vloc loc);
+Vptr memTVValPtr(SSATmp* ptr, Vloc loc);
+
+/*
  * Test or compare `s0' against the live type `s1', setting the result in `sf'.
  */
 void emitTestTVType(Vout& v, Vreg sf, Immed s0, Vreg s1);
@@ -87,6 +94,7 @@ void emitCmpTVType(Vout& v, Vreg sf, DataType s0, Vreg s1);
  * Store `loc', the registers representing `src', to `dst'.
  */
 void storeTV(Vout& v, Vptr dst, Vloc srcLoc, const SSATmp* src);
+void storeTV(Vout& v, Type type, Vloc srcLoc, Vptr typePtr, Vptr dataPtr);
 
 /*
  * Load `src' into `loc', the registers representing `dst'.
@@ -95,6 +103,8 @@ void storeTV(Vout& v, Vptr dst, Vloc srcLoc, const SSATmp* src);
  * into the type reg.  This should only happen when loading a return value.
  */
 void loadTV(Vout& v, const SSATmp* dst, Vloc dstLoc, Vptr src,
+            bool aux = false);
+void loadTV(Vout& v, Type type, Vloc dstLoc, Vptr typePtr, Vptr valPtr,
             bool aux = false);
 
 /*
@@ -265,6 +275,7 @@ void emitIncStat(Vout& v, Stats::StatCounter stat);
  * @requires: rds::isNormalHandle(ch)
  */
 Vreg checkRDSHandleInitialized(Vout& v, rds::Handle ch);
+Vreg checkRDSHandleInitialized(Vout& v, Vreg ch);
 
 /*
  * Update the generation number for `ch' to the current generation.
@@ -272,6 +283,7 @@ Vreg checkRDSHandleInitialized(Vout& v, rds::Handle ch);
  * @requires: rds::isNormalHandle(ch)
  */
 void markRDSHandleInitialized(Vout& v, rds::Handle ch);
+void markRDSHandleInitialized(Vout& v, Vreg ch);
 
 }}
 

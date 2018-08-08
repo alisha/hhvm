@@ -98,7 +98,9 @@ and gconst = {
   cst_span: pos;
 }
 
-and tparam = variance * id * (constraint_kind * hint) list
+and targ = hint * reified
+
+and tparam = variance * id * (constraint_kind * hint) list * reified
 
 and tconstraint = hint option
 
@@ -384,7 +386,6 @@ and expr_ =
   | False
   | Omitted
   | Id of id
-  | Id_type_arguments of id * hint list
   (* Special case: the pipe variable $$ *)
   | Lvar of id
   (* General dollar expression e.g. ${"a" . $y}. Braced expression
@@ -398,11 +399,12 @@ and expr_ =
   | Array_get of expr * expr option
   | Class_get of expr * expr
   | Class_const of expr * pstring
-  | Call of expr * hint list * expr list * expr list
+  | Call of expr * targ list * expr list * expr list
   | Int of string
   | Float of string
   | String of string
   | String2 of expr list
+  | PrefixedString of string * expr
   | Yield of afield
   | Yield_break
   | Yield_from of expr
@@ -420,7 +422,7 @@ and expr_ =
   | As of expr * hint * (* is nullable *) bool
   | BracedExpr of expr
   | ParenthesizedExpr of expr
-  | New of expr * expr list * expr list
+  | New of expr * targ list * expr list * expr list
   | NewAnonClass of expr list * expr list * class_
   (* Traditional PHP-style closure with a use list. Each use element is
     a name and a bool indicating if its a reference or value *)

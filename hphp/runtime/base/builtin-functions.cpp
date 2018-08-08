@@ -97,11 +97,12 @@ bool array_is_valid_callback(const Array& arr) {
     return false;
   }
   auto const elem0 = arr.rvalAt(0).unboxed();
-  if (!isStringType(elem0.type()) && !isObjectType(elem0.type())) {
+  if (!isStringType(elem0.type()) && !isObjectType(elem0.type()) &&
+      !isClassType(elem0.type())) {
     return false;
   }
   auto const elem1 = arr.rvalAt(1).unboxed();
-  if (!isStringType(elem1.type())) {
+  if (!isStringType(elem1.type()) && !isFuncType(elem1.type())) {
     return false;
   }
   return true;
@@ -134,6 +135,12 @@ bool is_callable(const Variant& v, bool syntax_only, RefData* name) {
   }
 
   auto const tv_func = v.asCell();
+  if (isFuncType(tv_func->m_type)) {
+    auto func_name = tv_func->m_data.pfunc->fullDisplayName();
+    if (name) *name->var() = Variant{func_name, Variant::PersistentStrInit{}};
+    return true;
+  }
+
   if (isStringType(tv_func->m_type)) {
     if (name) *name->var() = v;
     return ret;
@@ -146,7 +153,7 @@ bool is_callable(const Variant& v, bool syntax_only, RefData* name) {
 
     if (arr.size() != 2 ||
         clsname.is_dummy() ||
-        !isStringType(mthname.type())) {
+        (!isStringType(mthname.type()) && !isFuncType(mthname.type()))) {
       if (name) *name->var() = array_string;
       return false;
     }
@@ -156,9 +163,19 @@ bool is_callable(const Variant& v, bool syntax_only, RefData* name) {
       clsString = clsname.val().pobj->getClassName().get();
     } else if (isStringType(clsname.type())) {
       clsString = clsname.val().pstr;
+    } else if (isClassType(clsname.type())) {
+      clsString = const_cast<StringData*>(clsname.val().pclass->name());
     } else {
       if (name) *name->var() = array_string;
       return false;
+    }
+
+    if (isFuncType(mthname.type())) {
+      if (name) {
+        *name->var() = Variant{mthname.val().pfunc->fullDisplayName(),
+                               Variant::PersistentStrInit{}};
+      }
+      return true;
     }
 
     if (name) {
@@ -197,6 +214,14 @@ vm_decode_function(const_variant_ref function,
                    DecodeFlags flags /* = DecodeFlags::Warn */) {
   invName = nullptr;
   dynamic = true;
+
+  if (function.isFunc()) {
+    dynamic = false;
+    this_ = nullptr;
+    cls = nullptr;
+    return function.toFuncVal();
+  }
+
   if (function.isString() || function.isArray()) {
     HPHP::Class* ctx = nullptr;
     if (ar) ctx = arGetContextClass(ar);
@@ -227,12 +252,28 @@ vm_decode_function(const_variant_ref function,
         }
         return nullptr;
       }
+
+      Variant elem0 = arr[0];
       Variant elem1 = arr[1];
+      if (elem1.isFunc()) {
+        if (elem0.isObject()) {
+          this_ = elem0.getObjectData();
+          cls = this_->getVMClass();
+        } else if (elem0.isClass()) {
+          cls = elem0.toClassVal();
+        } else {
+          raise_error("calling an ill-formed array without resolved "
+                      "object/class pointer");
+          return nullptr;
+        }
+        return elem1.toFuncVal();
+      }
+
+      assertx(elem1.isString());
       name = elem1.toString();
       pos = name.find("::");
       nameContainsClass =
         (pos != 0 && pos != String::npos && pos + 2 < name.size());
-      Variant elem0 = arr[0];
       if (elem0.isString()) {
         String sclass = elem0.toString();
         if (sclass.get()->isame(s_self.get())) {
@@ -274,6 +315,8 @@ vm_decode_function(const_variant_ref function,
           }
           return nullptr;
         }
+      } else if (elem0.isClass()) {
+        cls = elem0.toClassVal();
       } else {
         assertx(elem0.isObject());
         this_ = elem0.getObjectData();
@@ -935,12 +978,13 @@ String concat4(const String& s1, const String& s2, const String& s3,
 }
 
 static bool invoke_file_impl(Variant& res, const String& path, bool once,
-                             const char *currentDir) {
+                             const char *currentDir,
+                             bool callByHPHPInvoke) {
   bool initial;
   auto const u = lookupUnit(path.get(), currentDir, &initial);
   if (u == nullptr) return false;
   if (!once || initial) {
-    *res.asTypedValue() = g_context->invokeUnit(u);
+    *res.asTypedValue() = g_context->invokeUnit(u, callByHPHPInvoke);
   }
   return true;
 }
@@ -951,20 +995,21 @@ static NEVER_INLINE Variant throw_missing_file(const char* file) {
 
 static Variant invoke_file(const String& s,
                            bool once,
-                           const char *currentDir) {
+                           const char *currentDir,
+                           bool callByHPHPInvoke) {
   Variant r;
-  if (invoke_file_impl(r, s, once, currentDir)) {
+  if (invoke_file_impl(r, s, once, currentDir, callByHPHPInvoke)) {
     return r;
   }
   return throw_missing_file(s.c_str());
 }
 
 Variant include_impl_invoke(const String& file, bool once,
-                            const char *currentDir) {
+                            const char *currentDir, bool callByHPHPInvoke) {
   if (FileUtil::isAbsolutePath(file.toCppString())) {
     if (RuntimeOption::SandboxMode || !RuntimeOption::AlwaysUseRelativePath) {
       try {
-        return invoke_file(file, once, currentDir);
+        return invoke_file(file, once, currentDir, callByHPHPInvoke);
       } catch(PhpFileDoesNotExistException& e) {}
     }
 
@@ -973,13 +1018,13 @@ Variant include_impl_invoke(const String& file, bool once,
                                            string(file.data())));
 
       // Don't try/catch - We want the exception to be passed along
-      return invoke_file(rel_path, once, currentDir);
+      return invoke_file(rel_path, once, currentDir, callByHPHPInvoke);
     } catch(PhpFileDoesNotExistException& e) {
       throw PhpFileDoesNotExistException(file.c_str());
     }
   } else {
     // Don't try/catch - We want the exception to be passed along
-    return invoke_file(file, once, currentDir);
+    return invoke_file(file, once, currentDir, callByHPHPInvoke);
   }
 }
 
@@ -1135,7 +1180,7 @@ Variant require(const String& file,
 bool function_exists(const String& function_name) {
   auto f = Unit::lookupFunc(function_name.get());
   return (f != nullptr) &&
-         (f->builtinFuncPtr() != Native::unimplementedWrapper);
+         (f->arFuncPtr() != Native::unimplementedWrapper);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

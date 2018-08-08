@@ -13,6 +13,7 @@ open Sys_utils
 module P = Printf
 module SyntaxError = Full_fidelity_syntax_error
 module SourceText = Full_fidelity_source_text
+module Lex = Full_fidelity_lexer
 module Logger = HackcEventLogger
 
 (*****************************************************************************)
@@ -277,6 +278,8 @@ let parse_text compiler_options popt fn text =
       not (Hhbc_options.source_mapping !Hhbc_options.compiler_options) in
     let enable_hh_syntax =
       Hhbc_options.enable_hiphop_syntax !Hhbc_options.compiler_options in
+    let enable_xhp =
+      Hhbc_options.enable_xhp !Hhbc_options.compiler_options in
     let php5_compat_mode =
       not (Hhbc_options.enable_uniform_variable_syntax !Hhbc_options.compiler_options) in
     let hacksperimental =
@@ -284,6 +287,7 @@ let parse_text compiler_options popt fn text =
     let lower_coroutines =
       Hhbc_options.enable_coroutines !Hhbc_options.compiler_options in
     let systemlib_compat_mode = Emit_env.is_systemlib () in
+    Lex.Env.set ~force_hh:enable_hh_syntax ~enable_xhp;
     let env = Full_fidelity_ast.make_env
       ~parser_options:popt
       ~ignore_pos
@@ -350,8 +354,46 @@ let log_fail compiler_options filename exc =
     ~mode:(mode_to_string compiler_options.mode)
     ~exc:(Printexc.to_string exc ^ "\n" ^ Printexc.get_backtrace ())
 
+let modify_prog_for_debugger_eval ast hhas_prog =
+  (* The AST currently always starts with a Markup statement, so a length of 2
+     means there was 1 user def (statement, function, etc.); we assert that
+     the first thing is a Markup statement, and we only want to modify if
+     there was exactly one user def (both 0 user defs and > 1 user def are
+     valid situations where we pass the program through unmodififed) *)
+  begin match (List.hd ast) with
+    | Some (Ast.Stmt (_, Ast.Markup _)) -> ()
+    | _ -> failwith "Lowered AST did not start with a Markup statement"
+  end;
+  if List.length ast <> 2 then hhas_prog else
+  match List.nth_exn ast 1 with
+    | Ast.Stmt (_, Ast.Expr _) ->
+      let main = Hhas_program.main hhas_prog in
+      let instrs = Instruction_sequence.instr_seq_to_list
+        (Hhas_body.instrs main) in
+      let hhas_length = List.length instrs in
+      if hhas_length < 4 then hhas_prog else
+      let (h, t) = List.split_n instrs (hhas_length - 3) in
+      let replace_prog_end_with instr_list =
+        h @ instr_list
+        |> Instruction_sequence.instrs
+        |> Hhas_body.with_instrs main
+        |> Hhas_program.with_main hhas_prog
+      in
+      begin match t with
+        | [ Hhbc_ast.IBasic Hhbc_ast.PopC;
+            Hhbc_ast.ILitConst (Hhbc_ast.Int 1L);
+            Hhbc_ast.IContFlow Hhbc_ast.RetC ] ->
+          replace_prog_end_with [ Hhbc_ast.IContFlow Hhbc_ast.RetC ]
+        | [ Hhbc_ast.IBasic Hhbc_ast.PopR;
+            Hhbc_ast.ILitConst (Hhbc_ast.Int 1L);
+            Hhbc_ast.IContFlow Hhbc_ast.RetC ] ->
+          replace_prog_end_with [ Hhbc_ast.IBasic Hhbc_ast.UnboxR;
+                                  Hhbc_ast.IContFlow Hhbc_ast.RetC ]
+        | _ -> hhas_prog
+      end
+    | _ -> hhas_prog
 
-let do_compile filename compiler_options fail_or_ast debug_time =
+let do_compile filename compiler_options fail_or_ast debug_time for_debugger_eval =
   let t = Unix.gettimeofday () in
   let t = add_to_time_ref debug_time.parsing_t t in
   let hhas_prog =
@@ -367,10 +409,14 @@ let do_compile filename compiler_options fail_or_ast debug_time =
       List.iter (Errors.get_error_list errors) (fun e ->
         P.eprintf "%s\n%!" (Errors.to_string (Errors.to_absolute e)));
       if Errors.is_empty errors
-      then Emit_program.from_ast
-        is_hh_file
-        (is_file_path_for_evaled_code filename)
-        ast
+      then
+        let hhas_prog = Emit_program.from_ast
+          is_hh_file
+          (is_file_path_for_evaled_code filename)
+          ast in
+        if for_debugger_eval
+          then modify_prog_for_debugger_eval ast hhas_prog
+          else hhas_prog
       else Emit_program.emit_fatal_program ~ignore_message:true
         Hhbc_ast.FatalOp.Parse Pos.none "Syntax error"
       in
@@ -387,7 +433,16 @@ let do_compile filename compiler_options fail_or_ast debug_time =
   hhas
 
 let extract_facts ?pretty text =
-  Facts_parser.extract_as_json ~php5_compat_mode:true ~hhvm_compat_mode:true text
+  let enable_hh_syntax =
+    Hhbc_options.enable_hiphop_syntax !Hhbc_options.compiler_options in
+  let enable_xhp =
+    Hhbc_options.enable_xhp !Hhbc_options.compiler_options in
+
+  Facts_parser.extract_as_json
+    ~php5_compat_mode:true
+    ~hhvm_compat_mode:true
+    ~force_hh:enable_hh_syntax
+    ~enable_xhp text
   (* return empty string if file has syntax errors *)
   |> Option.value_map ~default:"" ~f:(Hh_json.json_to_string ?pretty)
   |> fun x -> [x]
@@ -396,8 +451,8 @@ let extract_facts ?pretty text =
 (* Main entry point *)
 (*****************************************************************************)
 
-let process_single_source_unit compiler_options popt handle_output
-  handle_exception filename source_text =
+let process_single_source_unit ?(for_debugger_eval = false) compiler_options
+  popt handle_output handle_exception filename source_text =
   try
     let debug_time = new_debug_time () in
     let t = Unix.gettimeofday () in
@@ -407,7 +462,7 @@ let process_single_source_unit compiler_options popt handle_output
       else begin
         let fail_or_ast = parse_file compiler_options popt filename source_text in
         ignore @@ add_to_time_ref debug_time.parsing_t t;
-        do_compile filename compiler_options fail_or_ast debug_time
+        do_compile filename compiler_options fail_or_ast debug_time for_debugger_eval
       end in
     handle_output filename output debug_time
   with exc ->
@@ -489,7 +544,12 @@ let decl_and_run_mode compiler_options popt =
             (get_string "file")
             (fun af -> fail_daemon None ("Cannot determine file name of source unit: " ^ af))
             header in
+          let for_debugger_eval = get_field
+            (get_bool "for_debugger_eval")
+            (fun af -> fail_daemon None ("for_debugger_eval flag missing: " ^ af))
+            header in
           process_single_source_unit
+            ~for_debugger_eval
             compiler_options
             popt
             handle_output
@@ -605,6 +665,7 @@ let _ =
        it breaks the testsuite where the output is compared to the
        expected one (i.e. in given file without CRLF). *)
       set_binary_mode_out stdout true;
+    let _handle = SharedMem.init GlobalConfig.default_sharedmem_config in
     let options = parse_options () in
     main_hack options
   with exc ->

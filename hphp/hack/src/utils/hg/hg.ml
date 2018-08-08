@@ -112,8 +112,31 @@ let get_closest_svn_ancestor rev repo =
     | None -> primary_mergebase
     | Some p2 ->
       let p2_mergebase = get_closest_svn_ancestor p2 repo in
-      let max_svn primary p2 = max primary p2 in
+      let max_svn primary p2 = match primary, p2 with
+        | Error x, _ -> Error x
+        | _, Error y -> Error y
+        | Ok x, Ok y -> Ok (max x y)
+      in
       Future.merge primary_mergebase p2_mergebase max_svn
+
+
+  (**
+    * List the revisions between start and finish revisions, inclusive.
+    *
+    * hg log --rev start::finish -T {node}\n
+    *)
+  let revs_between_revs_inclusive ~start ~finish repo =
+    let rev_range = Printf.sprintf "%s::%s" (rev_string start) (rev_string finish) in
+    let process = exec_hg [
+      "log";
+      "--rev";
+      rev_range;
+      "-T";
+      "{node}\n";
+      "--cwd";
+      repo;
+    ] in
+    Future.make process Sys_utils.split_lines
 
   (** Returns the files changed since the given svn_rev
    *
@@ -128,6 +151,65 @@ let get_closest_svn_ancestor rev repo =
       repo;
     ] in
     Future.make process Sys_utils.split_lines
+
+  (** Similar to above, except instead of listing files to get us to
+   * the repo's current state, it gets us to the given "finish" revision.
+   *
+   * i.e. If we start at "start" revision, what files need be changed to get us
+   * to "finish" revision.
+   *
+   * hg status -n --rev "start::end-start"
+   *
+   * Note, this is different from: hg status -n --rev "start::end"
+   *
+   * by subtracting out start from the rev range. Itmust be subtracted out
+   * because we don't care about the files inside the start revision itself
+   * (only what files were changed since then)
+   *)
+  let files_changed_since_rev_to_rev ~start ~finish repo =
+    if String.equal (rev_string start) (rev_string finish) then
+      (** Optimization: start and finish are syntactically the same.
+       * They may still be the same revision but just written out
+       * differently - this will be caught below.
+       * *)
+      Future.of_value []
+    else
+      let rev_list = revs_between_revs_inclusive ~start ~finish repo in
+      let rev_range = Printf.sprintf "%s::%s-%s"
+        (rev_string start) (rev_string finish) (rev_string start) in
+      let process = exec_hg [
+        "status";
+        "-n";
+        "--rev";
+        rev_range;
+        "--cwd";
+        repo;
+      ] in
+      let file_list = Future.make process Sys_utils.split_lines in
+      let merge_result file_list rev_list = match file_list, rev_list with
+        | Ok file_list, _ ->
+          (** We were able t retrieve the list of files. Just return them. *)
+          Ok file_list
+        | Error e, Ok rev_list -> begin
+          (**
+           * Getting list of files errored. This could happen if "start" and "end"
+           * refer to the same rev (but appear different, since there are different
+           * ways to describe revs, such as the hash itself vs. something
+           * like ".~10"). If they do refer to the same rev, then the
+           * number of revs between them will be exactly 1 (the rev itself).
+           * So we return an empty list of files.
+           *)
+          if (List.length rev_list) = 1 then
+            Ok []
+          else
+            (** "start" and "end" rev are not the same, but get the list of
+             * files errored. So just return that error. *)
+            Error e
+        end
+        | Error e, _ ->
+          Error e
+      in
+      Future.merge file_list rev_list merge_result
 
   (** hg update --rev r<svn_rev> --cwd <repo> *)
   let update_to_rev rev repo =
@@ -149,10 +231,19 @@ let get_closest_svn_ancestor rev repo =
       let current_working_copy_base_rev_returns _ =
         raise Cannot_set_when_mocks_disabled
 
+      let reset_current_working_copy_base_rev_returns _ =
+        raise Cannot_set_when_mocks_disabled
+
       let closest_svn_ancestor_bind_value _ _ =
         raise Cannot_set_when_mocks_disabled
 
       let files_changed_since_rev_returns _ =
+        raise Cannot_set_when_mocks_disabled
+
+      let files_changed_since_rev_to_rev_returns ~start:_ ~finish:_ _ =
+        raise Cannot_set_when_mocks_disabled
+
+      let reset_files_changed_since_rev_to_rev_returns _ =
         raise Cannot_set_when_mocks_disabled
     end
 
@@ -167,6 +258,7 @@ module Hg_mock = struct
     let current_working_copy_base_rev = ref @@ Future.of_value 0
     let closest_svn_ancestor = Hashtbl.create 10
     let files_changed_since_rev = ref @@ Future.of_value []
+    let files_changed_since_rev_to_rev = Hashtbl.create 10
 
     let current_working_copy_hg_rev_returns v =
       current_working_copy_hg_rev := v
@@ -174,11 +266,18 @@ module Hg_mock = struct
     let current_working_copy_base_rev_returns v =
       current_working_copy_base_rev := v
 
+    let reset_current_working_copy_base_rev_returns () =
+      current_working_copy_base_rev := Future.of_value 0
+
     let closest_svn_ancestor_bind_value hg_rev svn_rev =
       Hashtbl.replace closest_svn_ancestor hg_rev svn_rev
 
     let files_changed_since_rev_returns v =
       files_changed_since_rev := v
+    let files_changed_since_rev_to_rev_returns ~start ~finish v =
+      Hashtbl.replace files_changed_since_rev_to_rev (start, finish) v
+    let reset_files_changed_since_rev_to_rev_returns () =
+      Hashtbl.reset files_changed_since_rev_to_rev
   end
 
   let current_working_copy_hg_rev _ = !Mocking.current_working_copy_hg_rev
@@ -186,6 +285,8 @@ module Hg_mock = struct
   let get_closest_svn_ancestor hg_rev _ =
     Hashtbl.find Mocking.closest_svn_ancestor hg_rev
   let files_changed_since_rev _ _ = !Mocking.files_changed_since_rev
+  let files_changed_since_rev_to_rev ~start ~finish _ =
+    Hashtbl.find Mocking.files_changed_since_rev_to_rev (start, finish)
   let update_to_rev _ _ = Future.of_value ()
   let get_old_version_of_files ~rev:_ ~files:_ ~out:_ ~repo:_ = Future.of_value ()
 

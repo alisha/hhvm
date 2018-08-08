@@ -26,6 +26,7 @@ type t =
   | QualifiedName
   | SimpleTypeSpecifier
   | LiteralExpression
+  | PrefixedStringExpression
   | VariableExpression
   | PipeVariableExpression
   | EnumDeclaration
@@ -183,6 +184,7 @@ type t =
   | GenericTypeSpecifier
   | NullableTypeSpecifier
   | SoftTypeSpecifier
+  | ReifiedTypeArgument
   | TypeArguments
   | TypeParameters
   | TupleTypeSpecifier
@@ -201,6 +203,7 @@ let to_string kind =
   | QualifiedName                           -> "qualified_name"
   | SimpleTypeSpecifier                     -> "simple_type_specifier"
   | LiteralExpression                       -> "literal"
+  | PrefixedStringExpression                -> "prefixed_string"
   | VariableExpression                      -> "variable"
   | PipeVariableExpression                  -> "pipe_variable"
   | EnumDeclaration                         -> "enum_declaration"
@@ -358,6 +361,7 @@ let to_string kind =
   | GenericTypeSpecifier                    -> "generic_type_specifier"
   | NullableTypeSpecifier                   -> "nullable_type_specifier"
   | SoftTypeSpecifier                       -> "soft_type_specifier"
+  | ReifiedTypeArgument                     -> "reified_type_argument"
   | TypeArguments                           -> "type_arguments"
   | TypeParameters                          -> "type_parameters"
   | TupleTypeSpecifier                      -> "tuple_type_specifier"

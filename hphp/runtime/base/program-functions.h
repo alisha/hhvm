@@ -125,7 +125,7 @@ void hphp_memory_cleanup();
  * is provided, various statistics about resources consumed by the request will
  * be logged to ServiceData.
  */
-void hphp_session_exit(const Transport* transport = nullptr);
+void hphp_session_exit(Transport* transport = nullptr);
 void hphp_process_exit() noexcept;
 bool is_hphp_session_initialized();
 std::string get_systemlib(std::string* hhas = nullptr,
@@ -134,9 +134,6 @@ std::string get_systemlib(std::string* hhas = nullptr,
 
 // Helper function for stats tracking with exceptions.
 void bump_counter_and_rethrow(bool isPsp);
-
-// Log an invocation of hphpc
-void log_hphpc_invoke(const char* target);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

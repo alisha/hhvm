@@ -29,14 +29,11 @@ let type_at (file, line, char) tcopt files_info =
   let _, tast = ServerIdeUtils.check_file_input tcopt files_info file in
   ServerInferType.type_at_pos tast line char
 
-(** Filters out redundant elements.
-
-An example of a redundant element would be a Class occurrence when we also
-have a Method occurrence, since that means that the user is hovering over an
-invocation of the constructor, and would therefore only want to see
-information about the constructor, rather than getting both the class and
-constructor back in the hover. *)
-let filter_redundant results =
+(** When we get a Class occurrence and a Method occurrence, that means that the
+user is hovering over an invocation of the constructor, and would therefore only
+want to see information about the constructor, rather than getting both the
+class and constructor back in the hover. *)
+let filter_class_and_constructor results =
   let result_is_constructor result =
     SymbolOccurrence.is_constructor (fst result) in
   let result_is_class result =
@@ -46,6 +43,35 @@ let filter_redundant results =
   if has_class && has_constructor
   then List.filter results ~f:result_is_constructor
   else results
+
+let make_hover_doc_block tcopt file occurrence def_opt =
+  match def_opt with
+  | Some def ->
+    let base_class_name = SymbolOccurrence.enclosing_class occurrence in
+    ServerDocblockAt.go_def tcopt def ~base_class_name ~file
+    |> Option.to_list
+  | None -> []
+
+let make_hover_return_type env_and_ty occurrence =
+  let open SymbolOccurrence in
+  let open Typing_defs in
+  match occurrence, env_and_ty with
+  | { type_ = Function | Method _; _ }, Some (env, (_, Tfun ft)) ->
+    [Printf.sprintf "Return type: `%s`" (Tast_env.print_ty env ft.ft_ret)]
+  | _ -> []
+
+let make_hover_full_name env_and_ty occurrence def_opt =
+  let open SymbolOccurrence in
+  let open Typing_defs in
+  match occurrence, env_and_ty with
+  | { type_ = Method _; _ }, _
+  | { type_ = Property _ | ClassConst _; _ }, Some (_, (_, Tfun _)) ->
+    let name = match def_opt with
+      | Some def -> def.SymbolDefinition.full_name
+      | None -> occurrence.name
+    in
+    [Printf.sprintf "Full name: `%s`" (Utils.strip_ns name)]
+  | _ -> []
 
 let make_hover_info tcopt env_and_ty file (occurrence, def_opt) =
   let open SymbolOccurrence in
@@ -68,24 +94,12 @@ let make_hover_info tcopt env_and_ty file (occurrence, def_opt) =
         end
     | occurrence, Some (env, ty) -> Tast_env.print_ty_with_identity env ty occurrence def_opt
   in
-  let addendum = [
-    (match def_opt with
-      | Some def ->
-        let base_class_name = SymbolOccurrence.enclosing_class occurrence in
-        ServerDocblockAt.go_def tcopt def ~base_class_name ~file
-        |> Option.to_list
-      | None -> []);
-    (match occurrence, env_and_ty with
-      | { type_ = Method _; _ }, _
-      | { type_ = Property _; _ }, Some (_, (_, Tfun _))
-      | { type_ = ClassConst _; _ }, Some (_, (_, Tfun _)) ->
-        let name = match def_opt with
-          | Some def -> def.SymbolDefinition.full_name
-          | None -> occurrence.name
-        in
-        [Printf.sprintf "Full name: `%s`" (Utils.strip_ns name)]
-      | _ -> []);
-  ] |> List.concat in
+  let addendum = List.concat [
+    make_hover_doc_block tcopt file occurrence def_opt;
+    make_hover_return_type env_and_ty occurrence;
+    make_hover_full_name env_and_ty occurrence def_opt;
+  ]
+  in
   HoverService.{ snippet; addendum; pos = Some occurrence.SymbolOccurrence.pos }
 
 let go env (file, line, char) =
@@ -104,5 +118,6 @@ let go env (file, line, char) =
     end
   | identities ->
     identities
-    |> filter_redundant
+    |> filter_class_and_constructor
     |> List.map ~f:(make_hover_info tcopt env_and_ty file)
+    |> List.remove_consecutive_duplicates ~equal:(=)

@@ -65,14 +65,15 @@
 #include "hphp/runtime/vm/jit/tc.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/translator.h"
+#include "hphp/runtime/vm/act-rec-defs.h"
 #include "hphp/runtime/vm/debugger-hook.h"
 #include "hphp/runtime/vm/event-hook.h"
-#include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/hh-utils.h"
-#include "hphp/runtime/vm/unwind.h"
-#include "hphp/runtime/vm/treadmill.h"
-#include "hphp/runtime/vm/act-rec-defs.h"
 #include "hphp/runtime/vm/interp-helpers.h"
+#include "hphp/runtime/vm/runtime.h"
+#include "hphp/runtime/vm/runtime-compiler.h"
+#include "hphp/runtime/vm/treadmill.h"
+#include "hphp/runtime/vm/unwind.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -1329,12 +1330,133 @@ bool ExecutionContext::setHeaderCallback(const Variant& callback) {
   return true;
 }
 
-TypedValue ExecutionContext::invokeUnit(const Unit* unit) {
+bool sideEffect(Op op) {
+  switch (op) {
+    case Op::DefCls:
+    case Op::DefTypeAlias:
+    case Op::DefCns:
+    case Op::Int:
+    case Op::PopC:
+    case Op::String:
+    case Op::Double:
+    case Op::Null:
+    case Op::True:
+    case Op::False:
+    case Op::NewArray:
+    case Op::NullUninit:
+    case Op::Vec:
+    case Op::Keyset:
+    case Op::RetC:
+    case Op::Array:
+    case Op::Dict:
+    case Op::Cns:
+    case Op::CnsE:
+    case Op::ClsCnsD:
+    case Op::ClsCns:
+    case Op::CnsU:
+    case Op::NewMixedArray:
+    case Op::NewLikeArrayL:
+    case Op::NewPackedArray:
+    case Op::NewStructArray:
+    case Op::NewStructDArray:
+    case Op::NewStructDict:
+    case Op::NewVecArray:
+    case Op::NewKeysetArray:
+    case Op::NewVArray:
+    case Op::NewDArray:
+    case Op::NewDictArray:
+    case Op::Nop:
+    case Op::EntryNop:
+    case Op::AssertRATL:
+    case Op::AssertRATStk:
+      return false;
+    default:
+      return true;
+  }
+}
+
+/*
+ * RetC has no side-effect only if when it is the last statement,
+ * and it precedent op is Int 1, like return 0 in c/c++
+ */
+bool checkForRet(Op op, bool isLast, PC lastOp) {
+
+  if (op == Op::RetC) {
+    return !isLast || decode_op(lastOp) != Op::Int ||
+      decode_raw<int64_t>(lastOp) != 1;
+  }
+  return false;
+}
+
+/*
+ * PopC has no side-effect only if it precedes by a DefCns ops, e.g.
+ * const foo = 12;
+ */
+bool checkPopc(Op op, PC lastOp) {
+  if (op == Op::PopC) {
+    return peek_op(lastOp) != Op::DefCns;
+  }
+  return false;
+}
+
+void pseudomainHelper(const Unit* unit, bool callByHPHPInvoke) {
+  auto pseudomain = unit->getMain(nullptr);
+  auto e = pseudomain->getEntry();
+  bool isLast = false;
+  PC lastOp = e;
+  while (e < unit->entry() + pseudomain->past()) {
+    if (e + instrLen(e) >= unit->entry() + pseudomain->past()) {
+      isLast = true;
+    }
+    if (checkPopc(peek_op(e), lastOp) ||
+        sideEffect(peek_op(e)) ||
+        checkForRet(peek_op(e), isLast, lastOp)) {
+      if (callByHPHPInvoke) {
+        if (RuntimeOption::EvalWarnOnRealPseudomain) {
+          raise_warning("The top-level code has side effects in %s"
+                        " which is called by top level code",
+                        unit->filepath()->data());
+          break;
+        }
+      } else {
+        if (RuntimeOption::EvalWarnOnUncalledPseudomain == 1) {
+          raise_warning("The top-level code has side effect in %s "
+                        "by top level code that isn't invoked by pseudomain",
+                        unit->filepath()->data());
+          break;
+        } else if (RuntimeOption::EvalWarnOnUncalledPseudomain == 2) {
+          raise_fatal_error(
+            folly::sformat("The top-level code has side effect in %s"
+                           "by top level code that isn't invoked by pseudomain,"
+                           " fatal error",
+                            unit->filepath()->data()).c_str());
+        }
+      }
+    }
+    if (peek_op(e) != Op::AssertRATStk && peek_op(e) != Op::AssertRATL) {
+      lastOp = e;
+    }
+    e += instrLen(e);
+  }
+}
+
+TypedValue ExecutionContext::invokeUnit(const Unit* unit,
+                                        bool callByHPHPInvoke) {
   checkHHConfig(unit);
 
   auto const func = unit->getMain(nullptr);
-  return invokeFunc(func, init_null_variant, nullptr, nullptr,
+  auto ret = invokeFunc(func, init_null_variant, nullptr, nullptr,
                     m_globalVarEnv, nullptr, InvokePseudoMain);
+
+  pseudomainHelper(unit, callByHPHPInvoke);
+
+  auto it = unit->getCachedEntryPoint();
+  if (callByHPHPInvoke && it != nullptr) {
+    invokeFunc(it, init_null_variant, nullptr, nullptr,
+                    nullptr, nullptr, InvokeNormal);
+  }
+
+  return ret;
 }
 
 void ExecutionContext::syncGdbState() {
@@ -1358,6 +1480,7 @@ void ExecutionContext::pushVMState(Cell* savedSP) {
   savedVM.sp = savedSP;
   savedVM.mInstrState = vmMInstrState();
   savedVM.jitCalledFrame = vmJitCalledFrame();
+  savedVM.jitReturnAddr = vmJitReturnAddr();
   m_nesting++;
 
   if (debug && savedVM.fp &&
@@ -1393,6 +1516,7 @@ void ExecutionContext::popVMState() {
   vmStack().top() = savedVM.sp;
   vmMInstrState() = savedVM.mInstrState;
   vmJitCalledFrame() = savedVM.jitCalledFrame;
+  vmJitReturnAddr() = savedVM.jitReturnAddr;
 
   if (debug) {
     if (savedVM.fp &&
@@ -1479,7 +1603,7 @@ void ExecutionContext::requestInit() {
 
   HHProf::Request::StartProfiling();
 
-#ifdef DEBUG
+#ifndef NDEBUG
   Class* cls = NamedEntity::get(s_stdclass.get())->clsList();
   assertx(cls);
   assertx(cls == SystemLib::s_stdclassClass);
@@ -1560,7 +1684,7 @@ TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
   TypedValue retval;
   if (doStackCheck(retval)) return retval;
 
-  if (UNLIKELY(RuntimeOption::EvalUseMSRVForInOut && f->takesInOutParams())) {
+  if (UNLIKELY(f->takesInOutParams())) {
     for (auto i = f->numInOutParams(); i > 0; --i) vmStack().pushNull();
   }
 
@@ -1583,7 +1707,7 @@ TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
     ar->trashVarEnv();
   }
 
-  if (UNLIKELY(RuntimeOption::EvalUseMSRVForInOut && f->takesInOutParams())) {
+  if (UNLIKELY(f->takesInOutParams())) {
     ar->setFCallM();
   }
 
@@ -1625,7 +1749,7 @@ TypedValue ExecutionContext::invokeFuncImpl(const Func* f,
 
     // `retptr' might point somewhere that is affected by {push,pop}VMState(),
     // so don't write to it until after we pop the nested VM state.
-    if (UNLIKELY(RuntimeOption::EvalUseMSRVForInOut && f->takesInOutParams())) {
+    if (UNLIKELY(f->takesInOutParams())) {
       VArrayInit varr(f->numInOutParams() + 1);
       for (uint32_t i = 0; i < f->numInOutParams() + 1; ++i) {
         varr.append(*vmStack().topTV());
@@ -1659,6 +1783,7 @@ static inline void enterVMCustomHandler(ActRec* ar, Action action) {
 
   vmFirstAR() = ar;
   vmJitCalledFrame() = nullptr;
+  vmJitReturnAddr() = 0;
 
   action();
 
@@ -1865,7 +1990,8 @@ void ExecutionContext::resumeAsyncFuncThrow(Resumable* resumable,
 ActRec* ExecutionContext::getPrevVMState(const ActRec* fp,
                                          Offset* prevPc /* = NULL */,
                                          TypedValue** prevSp /* = NULL */,
-                                         bool* fromVMEntry /* = NULL */) {
+                                         bool* fromVMEntry /* = NULL */,
+                                         uint64_t* jitReturnAddr /* = NULL */) {
   if (fp == nullptr) {
     return nullptr;
   }
@@ -1900,6 +2026,7 @@ ActRec* ExecutionContext::getPrevVMState(const ActRec* fp,
     *prevPc = prevFp->func()->unit()->offsetOf(vmstate.pc);
   }
   if (fromVMEntry) *fromVMEntry = true;
+  if (jitReturnAddr) *jitReturnAddr = (uint64_t)vmstate.jitReturnAddr;
   return prevFp;
 }
 
@@ -1985,6 +2112,7 @@ Variant ExecutionContext::getEvaledArg(const StringData* val,
                           init_null_variant, nullptr, nullptr, nullptr, nullptr,
                           InvokePseudoMain)
   );
+  SuppressHackArrCompatNotices suppress;
   auto const lv = m_evaledArgs.lvalAt(key, AccessFlags::Key);
   tvSet(*v.asTypedValue(), lv);
   return Variant::wrap(lv.tv());

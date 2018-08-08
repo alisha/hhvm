@@ -30,7 +30,7 @@ class type ['a] ast_visitor_type = object
   method on_pipe : 'a -> expr -> expr -> 'a
   method on_block : 'a -> block -> 'a
   method on_break : 'a -> expr option -> 'a
-  method on_call : 'a -> expr -> hint list -> expr list -> expr list -> 'a
+  method on_call : 'a -> expr -> targ list -> expr list -> expr list -> 'a
   method on_callconv : 'a -> param_kind -> expr -> 'a
   method on_case : 'a -> case -> 'a
   method on_cast : 'a -> hint -> expr -> 'a
@@ -62,7 +62,6 @@ class type ['a] ast_visitor_type = object
   method on_goto : 'a -> pstring -> 'a
   method on_hint: 'a -> hint -> 'a
   method on_id : 'a -> id -> 'a
-  method on_id_type_arguments : 'a -> id -> hint list -> 'a
   method on_if : 'a -> expr -> block -> block -> 'a
   method on_import: 'a -> import_flavor -> expr -> 'a
   method on_import_flavor: 'a -> import_flavor -> 'a
@@ -76,7 +75,7 @@ class type ['a] ast_visitor_type = object
   method on_lfun: 'a -> fun_ -> 'a
   method on_list : 'a -> expr list -> 'a
   method on_lvar : 'a -> id -> 'a
-  method on_new : 'a -> expr -> expr list -> expr list -> 'a
+  method on_new : 'a -> expr -> targ list -> expr list -> expr list -> 'a
   method on_newanoncls : 'a -> expr list -> expr list -> class_ -> 'a
   method on_noop : 'a -> 'a
   method on_null : 'a -> 'a
@@ -98,6 +97,7 @@ class type ['a] ast_visitor_type = object
   method on_string : 'a -> string -> 'a
   method on_suspend: 'a -> expr -> 'a
   method on_switch : 'a -> expr -> case list -> 'a
+  method on_targ : 'a -> (hint * bool) -> 'a
   method on_throw : 'a -> expr -> 'a
   method on_true : 'a -> 'a
   method on_try : 'a -> block -> catch list -> block -> 'a
@@ -203,6 +203,10 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
       let acc = this#on_id acc id2 in
       let acc = List.fold_left this#on_id acc idl in
       acc
+
+  method on_targ acc (h, _) =
+    let acc = this#on_hint acc h in
+    acc
 
   method on_throw acc e =
     let acc = this#on_expr acc e in
@@ -376,7 +380,6 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
    | String s    -> this#on_string acc s
    | Execution_operator s -> this#on_execution_operator acc s
    | Id id       -> this#on_id acc id
-   | Id_type_arguments (id, hl) -> this#on_id_type_arguments acc id hl
    | Lvar id     -> this#on_lvar acc id
    | Yield_break -> this#on_yield_break acc
    | Yield e     -> this#on_yield acc e
@@ -391,6 +394,7 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
    | Class_const (e1, pstr)   -> this#on_class_const acc e1 pstr
    | Call        (e, hl, el, uel) -> this#on_call acc e hl el uel
    | String2     el           -> this#on_string2 acc el
+   | PrefixedString (_, e)    -> this#on_expr acc e
    | Cast        (hint, e)   -> this#on_cast acc hint e
    | Unop        (uop, e)         -> this#on_unop acc uop e
    | Binop       (bop, e1, e2)    -> this#on_binop acc bop e1 e2
@@ -401,7 +405,7 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
    | As          (e, h, b) -> this#on_as acc e h b
    | BracedExpr e
    | ParenthesizedExpr e -> this#on_expr acc e
-   | New         (e, el, uel) -> this#on_new acc e el uel
+   | New         (e, hl, el, uel) -> this#on_new acc e hl el uel
    | NewAnonClass (el, uel, cl) -> this#on_newanoncls acc el uel cl
    | Efun        (f, idl)         -> this#on_efun acc f idl
    | Xml         (id, attrl, el) -> this#on_xml acc id attrl el
@@ -430,9 +434,6 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
     end  acc sfnel
 
   method on_id acc _ = acc
-  method on_id_type_arguments acc _ hl =
-    let acc = List.fold_left this#on_hint acc hl in
-    acc
 
   method on_lvar acc _ = acc
 
@@ -462,7 +463,7 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
 
   method on_call acc e hl el uel =
     let acc = this#on_expr acc e in
-    let acc = List.fold_left this#on_hint acc hl in
+    let acc = List.fold_left this#on_targ acc hl in
     let acc = List.fold_left this#on_expr acc el in
     let acc = List.fold_left this#on_expr acc uel in
     acc
@@ -541,8 +542,9 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
     let acc = this#on_hint acc h in
     acc
 
-  method on_new acc e el uel =
+  method on_new acc e hl el uel =
     let acc = this#on_expr acc e in
+    let acc = List.fold_left this#on_targ acc hl in
     let acc = List.fold_left this#on_expr acc el in
     let acc = List.fold_left this#on_expr acc uel in
     acc
@@ -584,7 +586,8 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
         acc
 
   method on_shape_field_name acc = function
-    | SFlit pstr -> this#on_sflit acc pstr
+    | SFlit_int pstr
+    | SFlit_str pstr -> this#on_sflit acc pstr
     | SFclass_const (id, pstr) -> this#on_sfclass_const acc id pstr
 
   method on_sflit acc pstr = this#on_pstring acc pstr
@@ -640,7 +643,7 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
     | Constant g -> this#on_constant acc g
     | Namespace (i, p) -> this#on_namespace acc i p
     | NamespaceUse idl -> this#on_namespaceUse acc idl
-    | SetNamespaceEnv e -> acc
+    | SetNamespaceEnv _e -> acc
 
   method on_class_ acc c =
     let acc = List.fold_left this#on_user_attribute acc c.c_user_attributes in
@@ -674,7 +677,7 @@ class virtual ['a] ast_visitor: ['a] ast_visitor_type = object(this)
       acc end acc il
 
   method on_tparam acc t =
-    let (_, i, c_h_list) = t in
+    let (_, i, c_h_list, _) = t in
     let acc = this#on_id acc i in
     let on_tparam_constraint acc (_, h) = this#on_hint acc h in
     let acc = List.fold_left on_tparam_constraint acc c_h_list in

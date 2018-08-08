@@ -38,8 +38,3 @@ val elaborate_def:
   Namespace_env.env ->
   Ast.def ->
   Namespace_env.env * Ast.def list
-
-val renamespace_if_aliased : ?reverse:bool ->
-                             (string * string) list ->
-                             string ->
-                             string

@@ -109,7 +109,6 @@ bool RuntimeOption::CheckFlushOnUserClose = true;
 bool RuntimeOption::EvalAuthoritativeMode = false;
 bool RuntimeOption::IntsOverflowToInts = false;
 bool RuntimeOption::AutoprimeGenerators = true;
-bool RuntimeOption::EnableHackcOnlyFeature = false;
 bool RuntimeOption::EnableIsExprPrimitiveMigration = true;
 bool RuntimeOption::Hacksperimental = false;
 bool RuntimeOption::CheckParamTypeInvariance = true;
@@ -174,6 +173,7 @@ int RuntimeOption::ServerConnectionLimit = 0;
 int RuntimeOption::ServerThreadCount = 50;
 int RuntimeOption::ServerQueueCount = 50;
 int RuntimeOption::ServerHugeThreadCount = 0;
+int RuntimeOption::ServerHugeStackKb = 384;
 int RuntimeOption::ServerWarmupThrottleRequestCount = 0;
 int RuntimeOption::ServerThreadDropCacheTimeoutSeconds = 0;
 int RuntimeOption::ServerThreadJobLIFOSwitchThreshold = INT_MAX;
@@ -374,7 +374,8 @@ std::string RuntimeOption::CoreDumpReportDirectory =
 std::string RuntimeOption::StackTraceFilename;
 int RuntimeOption::StackTraceTimeout = 0; // seconds; 0 means unlimited
 std::string RuntimeOption::RemoteTraceOutputDir = "/tmp";
-std::set<std::string, stdltistr> RuntimeOption::TraceFunctions{};
+std::set<std::string, stdltistr> RuntimeOption::TraceFunctions;
+uint32_t RuntimeOption::TraceFuncId = InvalidFuncId;
 
 bool RuntimeOption::EnableStats = false;
 bool RuntimeOption::EnableAPCStats = false;
@@ -388,9 +389,6 @@ std::string RuntimeOption::StatsXSLProxy;
 int RuntimeOption::StatsSlotDuration = 10 * 60; // 10 minutes
 int RuntimeOption::StatsMaxSlot = 12 * 6; // 12 hours
 
-int64_t RuntimeOption::MaxRSS = 0;
-int64_t RuntimeOption::MaxRSSPollingCycle = 0;
-int64_t RuntimeOption::DropCacheCycle = 0;
 int64_t RuntimeOption::MaxSQLRowCount = 0;
 int64_t RuntimeOption::SocketDefaultTimeout = 60;
 bool RuntimeOption::LockCodeMemory = false;
@@ -497,14 +495,6 @@ static inline bool pgoDefault() {
 
 static inline bool eagerGcDefault() {
 #ifdef HHVM_EAGER_GC
-  return true;
-#else
-  return false;
-#endif
-}
-
-static inline bool hackCompilerEnableDefault() {
-#ifndef HHVM_NO_DEFAULT_HACKC
   return true;
 #else
   return false;
@@ -621,6 +611,10 @@ static inline int retranslateAllRequestDefault() {
 
 static inline int retranslateAllSecondsDefault() {
   return RuntimeOption::ServerExecutionMode() ? 180 : 0;
+}
+
+static inline bool layoutSplitHotColdDefault() {
+  return arch() != Arch::ARM;
 }
 
 uint64_t ahotDefault() {
@@ -1161,13 +1155,8 @@ void RuntimeOption::Load(
     Config::Bind(s_max_socket, ini, config, "ResourceLimit.MaxSocket", 0);
     Config::Bind(s_rss, ini, config, "ResourceLimit.RSS", 0);
 
-    Config::Bind(MaxRSS, ini, config, "ResourceLimit.MaxRSS", 0);
     Config::Bind(SocketDefaultTimeout, ini, config,
                  "ResourceLimit.SocketDefaultTimeout", 60);
-    Config::Bind(MaxRSSPollingCycle, ini, config,
-                 "ResourceLimit.MaxRSSPollingCycle", 0);
-    Config::Bind(DropCacheCycle, ini, config, "ResourceLimit.DropCacheCycle",
-                 0);
     Config::Bind(MaxSQLRowCount, ini, config, "ResourceLimit.MaxSQLRowCount",
                  0);
     Config::Bind(SerializationSizeLimit, ini, config,
@@ -1287,6 +1276,8 @@ void RuntimeOption::Load(
       X(Deserialize);
       X(DeserializeOrFail);
       X(DeserializeOrGenerate);
+      X(DeserializeAndExit);
+      #undef X
       return JitSerdesMode::Off;
     }();
     Config::Bind(EvalJitSerdesFile, ini, config,
@@ -1326,6 +1317,14 @@ void RuntimeOption::Load(
 
     EvalHackCompilerFallbackPath = insertSchema(
       EvalHackCompilerFallbackPath.data()
+    );
+
+    EvalEmbeddedDataExtractPath = insertSchema(
+      EvalEmbeddedDataExtractPath.data()
+    );
+
+    EvalEmbeddedDataFallbackPath = insertSchema(
+      EvalEmbeddedDataFallbackPath.data()
     );
 
     if (EvalPerfRelocate > 0) {
@@ -1487,9 +1486,6 @@ void RuntimeOption::Load(
     Config::Bind(AutoprimeGenerators, ini, config,
                  "Hack.Lang.AutoprimeGenerators",
                  true);
-    Config::Bind(EnableHackcOnlyFeature, ini, config,
-                 "Hack.Lang.EnableHackcOnlyFeature",
-                 false);
     Config::Bind(EnableIsExprPrimitiveMigration, ini, config,
                  "Hack.Lang.EnableIsExprPrimitiveMigration",
                  true);
@@ -1564,8 +1560,7 @@ void RuntimeOption::Load(
                  ServerThreadCount);
     Config::Bind(ServerHugeThreadCount, ini, config,
                  "Server.HugeThreadCount", 0);
-    extern unsigned s_hugeStackSizeKb;
-    Config::Bind(s_hugeStackSizeKb, ini, config, "Server.HugeStackSizeKb", 384);
+    Config::Bind(ServerHugeStackKb, ini, config, "Server.HugeStackSizeKb", 384);
     Config::Bind(ServerWarmupThrottleRequestCount, ini, config,
                  "Server.WarmupThrottleRequestCount",
                  ServerWarmupThrottleRequestCount);
@@ -1969,6 +1964,7 @@ void RuntimeOption::Load(
                  "Debug.RemoteTraceOutputDir", "/tmp");
     Config::Bind(TraceFunctions, ini, config,
                  "Debug.TraceFunctions", TraceFunctions);
+    Config::Bind(TraceFuncId, ini, config, "Debug.TraceFuncId", TraceFuncId);
 
     {
       // Debug SimpleCounter
@@ -2230,7 +2226,7 @@ void RuntimeOption::Load(
   ExtensionRegistry::moduleLoad(ini, config);
   initialize_apc();
 
-  if (TraceFunctions.size()) {
+  if (TraceFunctions.size() || TraceFuncId != InvalidFuncId) {
     Trace::ensureInit(getTraceOutputFile());
   }
 }

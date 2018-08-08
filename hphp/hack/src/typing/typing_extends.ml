@@ -189,10 +189,7 @@ let check_override env member_name mem_source ?(ignore_fun_return = false)
       check_ambiguous_inheritance check (r_parent, ft_parent) (r_child, ft_child)
         (Reason.to_pos r_child) class_ class_elt.ce_origin
     | lazy fty_parent, _ ->
-      if (TypecheckerOptions.experimental_feature_enabled
-          (Env.get_options env)
-          TypecheckerOptions.experimental_decl_override_require_hint)
-      then begin match snd fty_parent, snd fty_child with
+      begin match snd fty_parent, snd fty_child with
         | Tany, Tany -> ()
         | Tany, _ ->
           Errors.decl_override_missing_hint @@ Reason.to_pos (fst fty_parent)
@@ -282,7 +279,7 @@ let default_constructor_ce class_ =
              ft_ret      = r, Tprim Nast.Tvoid;
              ft_ret_by_ref = false;
              ft_reactive = Nonreactive;
-             ft_mutable = false;
+             ft_mutability = None;
              ft_returns_mutable = false;
              ft_return_disposable = false;
              ft_decl_errors = None;

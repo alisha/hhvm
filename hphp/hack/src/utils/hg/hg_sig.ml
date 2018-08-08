@@ -48,13 +48,24 @@ module type S = sig
     string ->
     (string list) Future.t
 
+  val files_changed_since_rev_to_rev :
+    start:rev ->
+    finish:rev ->
+    (** repository path. *)
+    string ->
+    (string list) Future.t
+
   (** hg update to the base svn revision. *)
   val update_to_rev : rev -> string -> unit Future.t
 
   module Mocking : sig
     val current_working_copy_hg_rev_returns : (hg_rev * bool) Future.t -> unit
     val current_working_copy_base_rev_returns : svn_rev Future.t -> unit
+    val reset_current_working_copy_base_rev_returns : unit -> unit
     val closest_svn_ancestor_bind_value : hg_rev -> svn_rev Future.t -> unit
     val files_changed_since_rev_returns : (string list) Future.t -> unit
+    val files_changed_since_rev_to_rev_returns :
+      start:rev -> finish:rev -> (string list) Future.t -> unit
+    val reset_files_changed_since_rev_to_rev_returns : unit -> unit
   end
 end

@@ -24,7 +24,6 @@
 
 #include "hphp/runtime/ext/collections/ext_collections.h"
 
-#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/arg-group.h"
 #include "hphp/runtime/vm/jit/call-spec.h"
 #include "hphp/runtime/vm/jit/code-gen-cf.h"
@@ -33,6 +32,7 @@
 #include "hphp/runtime/vm/jit/ir-opcode.h"
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/runtime/vm/jit/type.h"
+#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
 #include "hphp/runtime/vm/jit/vasm-instr.h"
 #include "hphp/runtime/vm/jit/vasm-reg.h"
@@ -538,6 +538,18 @@ void cgStrictlyIntegerConv(IRLS& env, const IRInstruction* inst) {
     SyncOptions::None,
     args
   );
+}
+
+void cgConvPtrToLval(IRLS& env, const IRInstruction* inst) {
+  auto& v = vmain(env);
+  auto const srcLoc = irlower::srcLoc(env, inst, 0);
+  auto const dstLoc = irlower::dstLoc(env, inst, 0);
+
+  v << copy{srcLoc.reg(), dstLoc.reg(tv_lval::val_idx)};
+  if (wide_tv_val) {
+    static_assert(TVOFF(m_data) == 0, "");
+    v << lea{srcLoc.reg()[TVOFF(m_type)], dstLoc.reg(tv_lval::type_idx)};
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -27,6 +27,8 @@
 #include "hphp/util/embedded-data.h"
 #include "hphp/util/embedded-vfs.h"
 #include "hphp/util/logger.h"
+#include "hphp/util/process.h"
+#include "hphp/util/process-exec.h"
 #include "hphp/util/stack-trace.h"
 #include "hphp/util/struct-log.h"
 #include "hphp/util/text-util.h"
@@ -55,6 +57,8 @@ int main(int argc, char** argv) {
   if (!argc) {
     return intptr_t(ptr1) + intptr_t(ptr2);
   }
+
+  HPHP::Process::RecordArgv(argv);
   int len = strlen(argv[0]);
   if (len >= 4 && !strcmp(argv[0] + len - 4, "hphp")) {
     return HPHP::compiler_main(argc, argv);
@@ -169,7 +173,9 @@ static FUNC_PTR forking_wrapper(FUNC_PTR* real_func, const char* func_name) {
     logForkAttempt(func_name);
   }
 
-  if (!s_forkDisabledInMainProcess || getpid() != s_mainPid) {
+  if (!s_forkDisabledInMainProcess ||
+      getpid() != s_mainPid ||
+      HPHP::proc::EnableForkInDebuggerGuard::isForkEnabledInDebugger()) {
     if (*real_func) {
       return *real_func;
     } else {

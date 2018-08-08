@@ -130,7 +130,7 @@ struct OutOfMemoryException : Exception {
 // constants are only meaningful when use_addr_to_check_counted is true (which
 // currently depends on USE_JEMALLOC_EXTENT_HOOKS).  We make them available for
 // all modes to avoid having ifdefs everywhere.
-constexpr unsigned kUncountedMaxShift = 40;
+constexpr unsigned kUncountedMaxShift = 38;
 constexpr uintptr_t kLowArenaMinAddr = 1ull << 30;
 constexpr uintptr_t kLowArenaMaxAddr = 1ull << 32;
 constexpr uintptr_t kUncountedMaxAddr = 1ull << kUncountedMaxShift;
@@ -305,16 +305,21 @@ extern __thread size_t s_stackSize;
 void init_stack_limits(pthread_attr_t* attr);
 
 extern const size_t s_pageSize;
-extern unsigned s_hugeStackSizeKb;     // RuntimeOption "Server.HugeStackSizeKb"
 
 /*
  * The numa node this thread is bound to
  */
 extern __thread int32_t s_numaNode;
 /*
- * The optional preallocated first slab
+ * The optional preallocated space collocated with thread stack.
  */
-extern __thread MemBlock s_firstSlab;
+extern __thread MemBlock s_tlSpace;
+/*
+ * The part of thread stack and s_tlSpace that lives on huge pages.  It could be
+ * empty if huge page isn't used for this thread.
+ */
+extern __thread MemBlock s_hugeRange;
+
 /*
  * enable the numa support in hhvm,
  * and determine whether threads should default to using

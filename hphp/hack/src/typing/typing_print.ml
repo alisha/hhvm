@@ -411,11 +411,14 @@ module Full = struct
             TypecheckerOptions.experimental_disable_optional_and_unknown_shape_fields in
       let fields =
         let f_field (shape_map_key, { sft_optional; sft_ty }) =
+        let key_delim =
+          match shape_map_key with Ast.SFlit_str _ -> text "'" | _ -> Nothing
+        in
           Concat [
             if optional_shape_fields_enabled && sft_optional then text "?" else Nothing;
-            text "'";
+            key_delim;
             to_doc (Env.get_shape_field_name shape_map_key);
-            text "'";
+            key_delim;
             Space;
             text "=>";
             Space;
@@ -503,8 +506,8 @@ module Full = struct
           Concat [ty to_doc st env fp_type; Space; text param_name]
     ]
 
-  and tparam: type a. _ -> _ -> _ ->  a Typing_defs.tparam -> _ =
-    fun to_doc st env (_, (_, x), cstrl) ->
+  and tparam: type a. _ -> _ -> _ -> a Typing_defs.tparam -> _ =
+    fun to_doc st env (_, (_, x), cstrl, _) ->
       Concat [text x; list_sep ~split:false Space (tparam_constraint to_doc st env) cstrl]
 
   and tparam_constraint:
@@ -804,12 +807,13 @@ module PrintClass = struct
     | Ast.Contravariant -> "-"
     | Ast.Invariant -> ""
 
-  let tparam tcopt (var, (position, name), cstrl) =
+  let tparam tcopt (var, (position, name), cstrl, reified) =
     variance var^pos position^" "^name^" "^
-    List.fold_right
+    (List.fold_right
       cstrl
       ~f:(fun x acc -> constraint_ty tcopt x^" "^acc)
-      ~init:""
+      ~init:"")
+    ^ (if reified then " reified" else "")
 
   let tparam_list tcopt l =
     List.fold_right l ~f:(fun x acc -> tparam tcopt x^", "^acc) ~init:""

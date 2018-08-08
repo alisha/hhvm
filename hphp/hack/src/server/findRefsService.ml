@@ -39,8 +39,8 @@ let process_fun_id target_fun id =
 let check_if_extends_class tcopt target_class_name class_name =
   let class_ = Typing_lazy_heap.get_class tcopt class_name in
   match class_ with
-  | Some { Typing_defs.tc_ancestors = imps; _ }
-      when SMap.mem imps target_class_name -> true
+  | Some { Typing_defs.tc_ancestors = imps; tc_req_ancestors_extends = req_extends; _ }
+      when (SMap.mem imps target_class_name || SSet.mem req_extends target_class_name) -> true
   | _ -> false
 
 let is_target_class tcopt target_classes class_name =
@@ -102,6 +102,25 @@ let find_child_classes tcopt target_class_name files_info files =
     with Not_found ->
       acc)
   end
+
+let get_origin_class_name tcopt class_name member =
+  let origin = match member with
+    | Method method_name ->
+      begin match Typing_lazy_heap.get_class tcopt class_name with
+      | Some class_ ->
+        let get_origin_class meths meth = match SMap.get meths meth with
+          | Some meth -> Some meth.ce_origin
+          | None -> None
+        in
+        let origin_from_methods = get_origin_class class_.tc_methods method_name in
+        let origin_from_smethods = get_origin_class class_.tc_smethods method_name in
+        let origin = Option.first_some origin_from_methods origin_from_smethods in
+        origin
+      | None -> None
+      end
+    | Property _ | Class_const _ | Typeconst _ -> None
+  in
+  Option.value origin ~default:class_name
 
 let get_child_classes_files class_name =
   match Naming_heap.TypeIdHeap.get class_name with
@@ -214,6 +233,20 @@ let get_definitions tcopt = function
         acc
       | None -> acc
     end
+  | IMember (Class_set classes, Class_const class_const_name) ->
+    SSet.fold classes ~init:[] ~f:begin fun class_name acc ->
+      match Typing_lazy_heap.get_class tcopt class_name with
+      | Some class_ ->
+        let add_class_const class_consts acc = match SMap.get class_consts class_const_name with
+          | Some class_const when class_const.cc_origin = class_.tc_name ->
+            let pos = class_const.cc_pos in
+            (class_const_name, pos) :: acc
+          | _ -> acc
+        in
+        let acc = add_class_const class_.tc_consts acc in
+        acc
+      | None -> acc
+    end
   | IClass class_name ->
     Option.value ~default:[] begin Naming_heap.TypeIdHeap.get class_name >>=
     function (_, `Class) -> Typing_lazy_heap.get_class tcopt class_name >>=
@@ -228,7 +261,7 @@ let get_definitions tcopt = function
     end
   | IGConst _
   | IMember (Subclasses_of _, _)
-  | IMember (_, (Property _ | Class_const _ | Typeconst _)) ->
+  | IMember (_, (Property _ | Typeconst _)) ->
     (* this code path is used only in ServerRefactor, we can update it at some
        later time *)
     []

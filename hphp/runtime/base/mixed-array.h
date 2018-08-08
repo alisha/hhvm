@@ -19,12 +19,11 @@
 
 #include "hphp/runtime/base/array-common.h"
 #include "hphp/runtime/base/array-data.h"
+#include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/hash-table.h"
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/typed-value.h"
-
-#include "hphp/util/hash-map-typedefs.h"
 
 #include <folly/portability/Constexpr.h>
 
@@ -152,7 +151,10 @@ struct MixedArrayElm {
     return offsetof(MixedArrayElm, ikey);
   }
   static constexpr ptrdiff_t dataOff() {
-    return offsetof(MixedArrayElm, data);
+    return offsetof(MixedArrayElm, data) + offsetof(TypedValue, m_data);
+  }
+  static constexpr ptrdiff_t typeOff() {
+    return offsetof(MixedArrayElm, data) + offsetof(TypedValue, m_type);
   }
   static constexpr ptrdiff_t hashOff() {
     return offsetof(MixedArrayElm, data) + offsetof(TypedValue, m_aux);
@@ -257,15 +259,16 @@ struct MixedArray final : ArrayData,
    * If withApcTypedValue is true, space for an APCTypedValue will be
    * allocated in front of the returned pointer.
    */
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  bool withApcTypedValue,
-                                  PointerMap* seen = nullptr);
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  int,
-                                  PointerMap* seen = nullptr) = delete;
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  size_t extra,
-                                  PointerMap* seen = nullptr) = delete;
+  static ArrayData* MakeUncounted(
+      ArrayData* array, bool withApcTypedValue,
+      DataWalker::PointerMap* seen = nullptr
+  );
+  static ArrayData* MakeUncounted(
+      ArrayData* array, int, DataWalker::PointerMap* seen = nullptr
+  ) = delete;
+  static ArrayData* MakeUncounted(
+      ArrayData* array, size_t extra, DataWalker::PointerMap* seen = nullptr
+  ) = delete;
 
   static ArrayData* MakeDictFromAPC(const APCArray* apc);
   static ArrayData* MakeDArrayFromAPC(const APCArray* apc);

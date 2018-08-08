@@ -65,7 +65,16 @@ inline bool is_not_null(const Variant& v) { return !v.isNull();}
 inline bool is_bool(const Variant& v)   { return v.is(KindOfBoolean);}
 inline bool is_int(const Variant& v)    { return v.isInteger();}
 inline bool is_double(const Variant& v) { return v.is(KindOfDouble);}
-inline bool is_string(const Variant& v) { return v.isString();}
+inline bool is_string(const Variant& v) {
+  if (v.isString()) return true;
+  if (v.isFunc()) {
+    if (RuntimeOption::EvalRaiseFuncConversionWarning) {
+      raise_warning("Func to string conversion");
+    }
+    return true;
+  }
+  return false;
+}
 inline bool is_array(const Variant& v)  { return v.isPHPArray();}
 inline bool is_vec(const Variant& v)    { return v.isVecArray();}
 inline bool is_dict(const Variant& v)   { return v.isDict();}
@@ -265,7 +274,8 @@ String resolve_include(const String& file, const char* currentDir,
                        bool (*tryFile)(const String& file, void* ctx),
                        void* ctx);
 Variant include_impl_invoke(const String& file, bool once = false,
-                            const char *currentDir = "");
+                            const char *currentDir = "",
+                            bool callByHPHPInvoke = false);
 Variant require(const String& file, bool once, const char* currentDir,
                 bool raiseNotice);
 

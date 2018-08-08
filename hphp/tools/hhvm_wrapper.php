@@ -159,7 +159,6 @@ function determine_flags(OptionMap $opts): string {
     'no-obj-destruct' => '-v Eval.EnableObjDestructCall=0 ',
     'hphpd'           => '-m debug ',
     'server'          => '-v Eval.JitPGOHotOnly=0 -m server ',
-    'arm'             => '-v Eval.SimulateARM=1 ',
   };
 
   if ($opts->containsKey('pgo-threshold')) {
@@ -300,7 +299,7 @@ function run_hhvm(OptionMap $opts): void {
   } else {
     // Give the return value of the command back to the caller.
     $retval = null;
-    passthru($cmd, $retval);
+    passthru($cmd, &$retval);
     exit($retval);
   }
 }

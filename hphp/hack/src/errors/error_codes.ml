@@ -135,6 +135,11 @@ module Naming                               = struct
   | AttributeClassNameConflict
   | MethodNeedsVisibility
   | ReferenceInStrictMode
+  | ReferenceInRx
+  | DeclareStatement
+  | MisplacedRxOfScope
+  | RxOfScopeAndExplicitRx
+  | UnsupportedFeature
   (* EXTEND HERE WITH NEW VALUES IF NEEDED *)
   [@@ deriving enum, show { with_path = false } ]
   let err_code = to_enum
@@ -210,6 +215,9 @@ module NastCheck                            = struct
   | IllegalReturnByRef
   | IllegalByRefExpr
   | VariadicByRefParam
+  | MaybeMutableAttributeOnFunction
+  | ConflictingMutableAndMaybeMutableAttributes
+  | MaybeMutableMethodsMustBeReactive
   (* EXTEND HERE WITH NEW VALUES IF NEEDED *)
   [@@ deriving enum, show { with_path = false } ]
   let err_code = to_enum
@@ -356,7 +364,7 @@ module Typing                               = struct
   | InvalidShapeFieldNameNumber
   | ShapeFieldsUnknown
   | InvalidShapeRemoveKey
-  | MissingOptionalField
+  | MissingOptionalFieldDEPRECATED
   | ShapeFieldUnset
   | AbstractConcreteOverride
   | LocalVariableModifedAndUsed
@@ -474,6 +482,26 @@ module Typing                               = struct
   | RxParameterConditionMismatch
   | AmbiguousObjectAccess
   | ExtendPPL
+  | ReassignMaybeMutableVar
+  | MaybeMutableArgumentMismatch
+  | ImmutableArgumentMismatch
+  | ImmutableCallOnMutable
+  | InvalidCallMaybeMutable
+  | MutabilityMismatch
+  | InvalidPPLCall
+  | InvalidPPLStaticCall
+  | TypeTestInLambda
+  | InvalidTraversableInRx
+  | ReassignMutableThis
+  | MutableExpressionAsMultipleMutableArguments
+  | InvalidUnsetTargetInRx
+  | CoroutineOutsideExperimental
+  | PPLMethPointer
+  | InvalidTruthinessTest
+  | RePrefixedNonString
+  | BadRegexPattern
+  | SketchyTruthinessTest
+  | LateInitWithDefault
   (* EXTEND HERE WITH NEW VALUES IF NEEDED *)
   [@@ deriving enum, show { with_path = false } ]
   let err_code = to_enum

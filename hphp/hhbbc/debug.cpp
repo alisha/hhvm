@@ -44,7 +44,7 @@ namespace {
 const StaticString s_invoke("__invoke");
 
 template<class Operation>
-void with_file(fs::path dir, borrowed_ptr<const php::Unit> u, Operation op) {
+void with_file(fs::path dir, const php::Unit* u, Operation op) {
   auto const file = dir / fs::path(u->filename->data());
   fs::create_directories(fs::path(file).remove_filename());
 
@@ -66,8 +66,8 @@ void dump_representation(fs::path dir, const php::Program& program) {
   parallel::for_each(
     program.units,
     [&] (const std::unique_ptr<php::Unit>& u) {
-      with_file(dir, borrow(u), [&] (std::ostream& out) {
-        out << show(*u);
+      with_file(dir, u.get(), [&] (std::ostream& out) {
+        out << show(*u, true);
       });
     }
   );
@@ -85,12 +85,14 @@ std::vector<NameTy> sorted_prop_state(const PropState& ps) {
 
 void dump_class_state(std::ostream& out,
                       const Index& index,
-                      borrowed_ptr<const php::Class> c) {
+                      const php::Class* c) {
+  auto const clsName = normalized_class_name(*c);
+
   if (is_closure(*c)) {
     auto const invoke = find_method(c, s_invoke.get());
     auto const useVars = index.lookup_closure_use_vars(invoke);
     for (auto i = size_t{0}; i < useVars.size(); ++i) {
-      out << c->name->data() << "->" << c->properties[i].name->data() << " :: "
+      out << clsName << "->" << c->properties[i].name->data() << " :: "
           << show(useVars[i]) << '\n';
     }
   } else {
@@ -98,7 +100,7 @@ void dump_class_state(std::ostream& out,
       index.lookup_private_props(c)
     );
     for (auto const& kv : pprops) {
-      out << c->name->data() << "->" << kv.first->data() << " :: "
+      out << clsName << "->" << kv.first->data() << " :: "
           << show(kv.second) << '\n';
     }
 
@@ -106,27 +108,35 @@ void dump_class_state(std::ostream& out,
       index.lookup_private_statics(c)
     );
     for (auto const& kv : sprops) {
-      out << c->name->data() << "::$" << kv.first->data() << " :: "
+      out << clsName << "::$" << kv.first->data() << " :: "
           << show(kv.second) << '\n';
+    }
+
+    for (auto const& prop : c->properties) {
+      out << clsName << "::$" << prop.name->data() << " :: "
+          << show(index.lookup_public_static(c, prop.name)) << '\n';
     }
   }
 
   for (auto const& constant : c->constants) {
     if (constant.val) {
       auto const ty = from_cell(*constant.val);
-      out << c->name->data() << "::" << constant.name->data() << " :: "
-          << (ty.subtypeOf(TUninit) ? "<dynamic>" : show(ty)) << '\n';
+      out << clsName << "::" << constant.name->data() << " :: "
+          << (ty.subtypeOf(BUninit) ? "<dynamic>" : show(ty)) << '\n';
     }
   }
 }
 
 void dump_func_state(std::ostream& out,
                      const Index& index,
-                     borrowed_ptr<const php::Func> f) {
+                     const php::Func* f) {
   if (f->unit->pseudomain.get() == f) return;
 
   auto const name = f->cls
-    ? folly::sformat("{}::{}()", f->cls->name->data(), f->name->data())
+    ? folly::sformat(
+        "{}::{}()",
+        normalized_class_name(*f->cls), f->name->data()
+      )
     : folly::sformat("{}()", f->name->toCppString());
 
   auto const retTy = index.lookup_return_type_raw(f);
@@ -134,7 +144,7 @@ void dump_func_state(std::ostream& out,
 
   auto const localStatics = index.lookup_local_static_types(f);
   for (auto i = size_t{0}; i < localStatics.size(); ++i) {
-    if (localStatics[i].subtypeOf(TBottom)) continue;
+    if (localStatics[i].subtypeOf(BBottom)) continue;
     out << name << "::" << local_string(*f, i)
         << " :: " << show(localStatics[i]) << '\n';
   }
@@ -151,16 +161,16 @@ void dump_index(fs::path dir,
         return;
       }
 
-      with_file(dir, borrow(u), [&] (std::ostream& out) {
+      with_file(dir, u.get(), [&] (std::ostream& out) {
         for (auto& c : u->classes) {
-          dump_class_state(out, index, borrow(c));
+          dump_class_state(out, index, c.get());
           for (auto& m : c->methods) {
-            dump_func_state(out, index, borrow(m));
+            dump_func_state(out, index, m.get());
           }
         }
 
         for (auto& f : u->funcs) {
-          dump_func_state(out, index, borrow(f));
+          dump_func_state(out, index, f.get());
         }
       });
     }

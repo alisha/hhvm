@@ -28,10 +28,11 @@
 #include <folly/gen/String.h>
 
 #include "hphp/hhbbc/cfg.h"
-#include "hphp/hhbbc/type-system.h"
-#include "hphp/hhbbc/index.h"
-#include "hphp/hhbbc/func-util.h"
+#include "hphp/hhbbc/class-util.h"
 #include "hphp/hhbbc/context.h"
+#include "hphp/hhbbc/func-util.h"
+#include "hphp/hhbbc/index.h"
+#include "hphp/hhbbc/type-system.h"
 
 #include "hphp/util/text-util.h"
 
@@ -55,7 +56,7 @@ std::string indent(int level, const std::string& s) {
 }
 
 void appendExnTreeString(std::string& ret,
-                         borrowed_ptr<const php::ExnNode> p) {
+                         const php::ExnNode* p) {
   ret += " " + folly::to<std::string>(p->id);
   if (p->parent) appendExnTreeString(ret, p->parent);
 }
@@ -90,198 +91,7 @@ std::string local_string(const Func& func, LocalId lid) {
     : folly::to<std::string>("$<unnamed:", lid, ">");
 };
 
-std::string show(const Func& func, const Block& block) {
-  std::string ret;
-
-  if (block.section != php::Block::Section::Main) {
-    folly::toAppend("(fault funclet)\n", &ret);
-  }
-
-  if (block.exnNode) {
-    ret += "(exnNode:";
-    appendExnTreeString(ret, block.exnNode);
-    ret += ")\n";
-  }
-
-  for (auto& bc : block.hhbcs) ret += show(func, bc) + "\n";
-
-  if (block.fallthrough != NoBlockId) {
-    folly::toAppend(
-      "(fallthrough blk:",
-      block.fallthrough,
-      ")\n",
-      &ret
-    );
-  }
-
-  if (!block.throwExits.empty()) {
-    ret += "(throw:";
-    for (auto ex : block.throwExits) {
-      folly::toAppend(" blk:", ex, &ret);
-    }
-    ret += ")\n";
-  }
-
-  if (!block.unwindExits.empty()) {
-    ret += "(unwind:";
-    for (auto ex : block.unwindExits) {
-      folly::toAppend(" blk:", ex, &ret);
-    }
-    ret += ")\n";
-  }
-
-  return ret;
-}
-
-std::string dot_instructions(const Func& func, const Block& b) {
-  using namespace folly::gen;
-  return from(b.hhbcs)
-    | map([&] (const Bytecode& bc) {
-        return "\"" + folly::cEscape<std::string>(show(func, bc)) + "\\n\"";
-      })
-    | unsplit<std::string>("+\n")
-    ;
-}
-
-// Output DOT-format graph.  Paste into dot -Txlib or similar.
-std::string dot_cfg(const Func& func) {
-  std::string ret;
-  for (auto& b : rpoSortAddDVs(func)) {
-    ret += folly::format(
-      "B{} [ label = \"blk:{}\\n\"+{} ]\n",
-      b->id, b->id, dot_instructions(func, *b)).str();
-    bool outputed = false;
-    forEachNormalSuccessor(*b, [&] (BlockId target) {
-      ret += folly::format("B{} -> B{};", b->id, target).str();
-      outputed = true;
-    });
-    if (outputed) ret += "\n";
-    outputed = false;
-    if (!is_single_nop(*b)) {
-      for (auto ex : b->throwExits) {
-        ret += folly::sformat("B{} -> B{} [color=red];", b->id, ex);
-        outputed = true;
-      }
-      for (auto ex : b->unwindExits) {
-        ret += folly::sformat("B{} -> B{} [color=blue];", b->id, ex);
-        outputed = true;
-      }
-    }
-    if (outputed) ret += "\n";
-  }
-  return ret;
-}
-
-std::string show(const Func& func) {
-  std::string ret;
-
-#define X(what) if (func.what) folly::toAppend(#what "\n", &ret)
-  X(isClosureBody);
-  X(isAsync);
-  X(isGenerator);
-  X(isPairGenerator);
-#undef X
-
-  if (getenv("HHBBC_DUMP_DOT")) {
-    folly::format(&ret,
-                  "digraph {} {{\n  node [shape=box];\n{}}}\n",
-                  func.name, indent(2, dot_cfg(func)));
-  }
-
-  for (auto& blk : func.blocks) {
-    if (blk->id == NoBlockId) continue;
-    folly::format(&ret, "block #{} (section {})\n{}",
-                  blk->id, static_cast<size_t>(blk->section),
-                  indent(2, show(func, *blk)));
-  }
-
-  visitExnLeaves(func, [&] (const php::ExnNode& node) {
-    folly::format(&ret, "exn node #{} ", node.id);
-    if (node.parent) {
-      folly::format(&ret, "(^{}) ", node.parent->id);
-    }
-    ret += match<std::string>(
-      node.info,
-      [&] (const FaultRegion& fr) {
-        return folly::to<std::string>("fault->", fr.faultEntry);
-      },
-      [&] (const CatchRegion& cr) {
-        return folly::to<std::string>("catch->", cr.catchEntry);
-      }
-    ) + '\n';
-  });
-
-  return ret;
-}
-
-std::string show(const Class& cls) {
-  std::string ret;
-  folly::toAppend("class ", cls.name->data(), &ret);
-  if (cls.parentName) {
-    folly::toAppend(" extends ", cls.parentName->data(), &ret);
-  }
-  ret += ":\n";
-  for (auto& i : cls.interfaceNames) {
-    folly::toAppend("  implements ", i->data(), "\n", &ret);
-  }
-  for (auto& m : cls.methods) {
-    folly::toAppend(
-      "  method ",
-      m->name->data(), ":\n",
-      indent(4, show(*m)),
-      &ret
-    );
-  }
-  return ret;
-}
-
-std::string show(const Unit& unit) {
-  std::string ret;
-  folly::toAppend(
-    "Unit ", unit.filename->data(), "\n",
-    "  function pseudomain:\n",
-    indent(4, show(*unit.pseudomain)),
-    &ret
-  );
-
-  for (auto& c : unit.classes) {
-    folly::toAppend(
-      indent(2, show(*c)),
-      &ret
-    );
-  }
-
-  for (auto& f : unit.funcs) {
-    folly::toAppend(
-      "  function ", f->name->data(), ":\n",
-      indent(4, show(*f)),
-      &ret
-    );
-  }
-
-  folly::toAppend("\n", &ret);
-  return ret;
-}
-
-std::string show(const Program& p) {
-  using namespace folly::gen;
-  return from(p.units)
-    | map([] (const std::unique_ptr<php::Unit>& u) { return show(*u); })
-    | unsplit<std::string>("--------------\n")
-    ;
-}
-
-std::string show(SrcLoc loc) {
-  return folly::sformat("{}:{}-{}:{}",
-                        loc.start.line, loc.start.col,
-                        loc.past.line, loc.past.col);
-}
-
-}
-
-//////////////////////////////////////////////////////////////////////
-
-std::string show(const php::Func& func, const Bytecode& bc) {
+std::string show(const Func& func, const Bytecode& bc) {
   std::string ret;
 
   auto append_vsa = [&] (const CompactVector<LSString>& keys) {
@@ -450,10 +260,209 @@ std::string show(const php::Func& func, const Bytecode& bc) {
   return ret;
 }
 
+std::string show(const Func& func, const Block& block) {
+  std::string ret;
+
+  if (block.section != php::Block::Section::Main) {
+    folly::toAppend("(fault funclet)\n", &ret);
+  }
+
+  if (block.exnNode) {
+    ret += "(exnNode:";
+    appendExnTreeString(ret, block.exnNode);
+    ret += ")\n";
+  }
+
+  for (auto& bc : block.hhbcs) ret += show(func, bc) + "\n";
+
+  if (block.fallthrough != NoBlockId) {
+    folly::toAppend(
+      "(fallthrough blk:",
+      block.fallthrough,
+      ")\n",
+      &ret
+    );
+  }
+
+  if (!block.throwExits.empty()) {
+    ret += "(throw:";
+    for (auto ex : block.throwExits) {
+      folly::toAppend(" blk:", ex, &ret);
+    }
+    ret += ")\n";
+  }
+
+  if (!block.unwindExits.empty()) {
+    ret += "(unwind:";
+    for (auto ex : block.unwindExits) {
+      folly::toAppend(" blk:", ex, &ret);
+    }
+    ret += ")\n";
+  }
+
+  return ret;
+}
+
+std::string dot_instructions(const Func& func, const Block& b) {
+  using namespace folly::gen;
+  return from(b.hhbcs)
+    | map([&] (const Bytecode& bc) {
+        return "\"" + folly::cEscape<std::string>(show(func, bc)) + "\\n\"";
+      })
+    | unsplit<std::string>("+\n")
+    ;
+}
+
+// Output DOT-format graph.  Paste into dot -Txlib or similar.
+std::string dot_cfg(const Func& func) {
+  std::string ret;
+  for (auto& b : rpoSortAddDVs(func)) {
+    ret += folly::format(
+      "B{} [ label = \"blk:{}\\n\"+{} ]\n",
+      b->id, b->id, dot_instructions(func, *b)).str();
+    bool outputed = false;
+    forEachNormalSuccessor(*b, [&] (BlockId target) {
+      ret += folly::format("B{} -> B{};", b->id, target).str();
+      outputed = true;
+    });
+    if (outputed) ret += "\n";
+    outputed = false;
+    if (!is_single_nop(*b)) {
+      for (auto ex : b->throwExits) {
+        ret += folly::sformat("B{} -> B{} [color=red];", b->id, ex);
+        outputed = true;
+      }
+      for (auto ex : b->unwindExits) {
+        ret += folly::sformat("B{} -> B{} [color=blue];", b->id, ex);
+        outputed = true;
+      }
+    }
+    if (outputed) ret += "\n";
+  }
+  return ret;
+}
+
+std::string show(const Func& func) {
+  std::string ret;
+
+#define X(what) if (func.what) folly::toAppend(#what "\n", &ret)
+  X(isClosureBody);
+  X(isAsync);
+  X(isGenerator);
+  X(isPairGenerator);
+#undef X
+
+  if (getenv("HHBBC_DUMP_DOT")) {
+    folly::format(&ret,
+                  "digraph {} {{\n  node [shape=box];\n{}}}\n",
+                  func.name, indent(2, dot_cfg(func)));
+  }
+
+  for (auto& blk : func.blocks) {
+    if (blk->id == NoBlockId) continue;
+    folly::format(&ret, "block #{} (section {})\n{}",
+                  blk->id, static_cast<size_t>(blk->section),
+                  indent(2, show(func, *blk)));
+  }
+
+  visitExnLeaves(func, [&] (const php::ExnNode& node) {
+    folly::format(&ret, "exn node #{} ", node.id);
+    if (node.parent) {
+      folly::format(&ret, "(^{}) ", node.parent->id);
+    }
+    ret += match<std::string>(
+      node.info,
+      [&] (const FaultRegion& fr) {
+        return folly::to<std::string>("fault->", fr.faultEntry);
+      },
+      [&] (const CatchRegion& cr) {
+        return folly::to<std::string>("catch->", cr.catchEntry);
+      }
+    ) + '\n';
+  });
+
+  return ret;
+}
+
+std::string show(const Class& cls, bool normalizeClosures) {
+  std::string ret;
+  folly::toAppend(
+    "class ",
+    normalizeClosures ? normalized_class_name(cls) : cls.name->data(),
+    &ret
+  );
+  if (cls.parentName) {
+    folly::toAppend(" extends ", cls.parentName->data(), &ret);
+  }
+  ret += ":\n";
+  for (auto& i : cls.interfaceNames) {
+    folly::toAppend("  implements ", i->data(), "\n", &ret);
+  }
+  for (auto& m : cls.methods) {
+    folly::toAppend(
+      "  method ",
+      m->name->data(), ":\n",
+      indent(4, show(*m)),
+      &ret
+    );
+  }
+  return ret;
+}
+
+std::string show(const Unit& unit, bool normalizeClosures) {
+  std::string ret;
+  folly::toAppend(
+    "Unit ", unit.filename->data(), "\n",
+    "  function pseudomain:\n",
+    indent(4, show(*unit.pseudomain)),
+    &ret
+  );
+
+  for (auto& c : unit.classes) {
+    folly::toAppend(
+      indent(2, show(*c, normalizeClosures)),
+      &ret
+    );
+  }
+
+  for (auto& f : unit.funcs) {
+    folly::toAppend(
+      "  function ", f->name->data(), ":\n",
+      indent(4, show(*f)),
+      &ret
+    );
+  }
+
+  folly::toAppend("\n", &ret);
+  return ret;
+}
+
+std::string show(const Program& p) {
+  using namespace folly::gen;
+  return from(p.units)
+    | map([] (const std::unique_ptr<php::Unit>& u) { return show(*u); })
+    | unsplit<std::string>("--------------\n")
+    ;
+}
+
+std::string show(SrcLoc loc) {
+  return folly::sformat("{}:{}-{}:{}",
+                        loc.start.line, loc.start.col,
+                        loc.past.line, loc.past.col);
+}
+
+}
+
 //////////////////////////////////////////////////////////////////////
 
 std::string show(const Type& t) {
   std::string ret;
+
+  if (t.couldBe(TUninit) && is_nullish(t)) {
+    auto tinit = unnullish(t);
+    if (t.couldBe(TInitNull)) tinit = opt(std::move(tinit));
+    return "TUninit|" + show(tinit);
+  }
 
   assert(t.checkInvariants());
 
@@ -497,7 +506,7 @@ std::string show(const Type& t) {
   }
 
   auto showElem = [&] (const Type& key, const Type& val) -> std::string {
-    if (t.subtypeOf(TOptKeyset)) return show(key);
+    if (t.subtypeOrNull(BKeyset)) return show(key);
     return show(key) + ":" + show(val);
   };
 
@@ -583,6 +592,9 @@ std::string show(const Type& t) {
 //////////////////////////////////////////////////////////////////////
 
 std::string show(Context ctx) {
+  if (!ctx.func) {
+    return ctx.cls->name->toCppString();
+  }
   auto ret = std::string{};
   if (is_pseudomain(ctx.func)) {
     ret = ctx.func->unit->filename->data();
@@ -590,13 +602,13 @@ std::string show(Context ctx) {
     return ret;
   }
   if (ctx.cls) {
-    ret = ctx.cls->name->data();
+    ret = ctx.cls->name->toCppString();
     if (ctx.cls != ctx.func->cls) {
       folly::format(&ret, "({})", ctx.func->cls->name);
     }
     ret += "::";
   }
-  ret += ctx.func->name->data();
+  ret += ctx.func->name->toCppString();
   return ret;
 }
 

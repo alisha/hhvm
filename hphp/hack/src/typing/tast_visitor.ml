@@ -26,6 +26,7 @@ class virtual iter = object (self)
   method! on_static_var env = super#on_static_var (Env.set_static env)
   method! on_static_method env = super#on_static_method (Env.set_static env)
 
+  method! on_Efun env x = super#on_Efun (Env.set_ppl_lambda env) x
   method! on_Do env = super#on_Do (Env.set_in_loop env)
   method! on_While env = super#on_While (Env.set_in_loop env)
   method! on_For env = super#on_For (Env.set_in_loop env)
@@ -47,6 +48,7 @@ class virtual ['a] reduce = object (self)
   method! on_static_var env = super#on_static_var (Env.set_static env)
   method! on_static_method env = super#on_static_method (Env.set_static env)
 
+  method! on_Efun env x = super#on_Efun (Env.set_ppl_lambda env) x
   method! on_Do env = super#on_Do (Env.set_in_loop env)
   method! on_While env = super#on_While (Env.set_in_loop env)
   method! on_For env = super#on_For (Env.set_in_loop env)
@@ -68,6 +70,7 @@ class virtual map = object (self)
   method! on_static_var env = super#on_static_var (Env.set_static env)
   method! on_static_method env = super#on_static_method (Env.set_static env)
 
+  method! on_Efun env x = super#on_Efun (Env.set_ppl_lambda env) x
   method! on_Do env = super#on_Do (Env.set_in_loop env)
   method! on_While env = super#on_While (Env.set_in_loop env)
   method! on_For env = super#on_For (Env.set_in_loop env)
@@ -89,6 +92,7 @@ class virtual endo = object (self)
   method! on_static_var env = super#on_static_var (Env.set_static env)
   method! on_static_method env = super#on_static_method (Env.set_static env)
 
+  method! on_Efun env x = super#on_Efun (Env.set_ppl_lambda env) x
   method! on_Do env = super#on_Do (Env.set_in_loop env)
   method! on_While env = super#on_While (Env.set_in_loop env)
   method! on_For env = super#on_For (Env.set_in_loop env)
@@ -104,10 +108,11 @@ end
 class type handler = object
   method minimum_forward_compat_level : int
 
-  method at_fun_ : Env.t -> Tast.fun_ -> unit
   method at_class_ : Env.t -> Tast.class_ -> unit
   method at_typedef : Env.t -> Tast.typedef -> unit
   method at_gconst : Env.t -> Tast.gconst -> unit
+  method at_fun_def : Env.t -> Tast.fun_def -> unit
+  method at_method_ : Env.t -> Tast.method_ -> unit
 
   method at_expr : Env.t -> Tast.expr -> unit
   method at_stmt : Env.t -> Tast.stmt -> unit
@@ -126,10 +131,11 @@ end
 class virtual handler_base : handler = object
   method minimum_forward_compat_level = 0
 
-  method at_fun_ _ _ = ()
   method at_class_ _ _ = ()
   method at_typedef _ _ = ()
   method at_gconst _ _ = ()
+  method at_fun_def _ _ = ()
+  method at_method_ _ _ = ()
 
   method at_expr _ _ = ()
   method at_stmt _ _ = ()
@@ -147,10 +153,6 @@ let iter_with (handlers : handler list) : iter = object
 
   inherit iter as super
 
-  method! on_fun_ env x =
-    List.iter handlers (if_enabled env (fun v -> v#at_fun_ env x));
-    super#on_fun_ env x;
-
   method! on_class_ env x =
     List.iter handlers (if_enabled env (fun v -> v#at_class_ env x));
     super#on_class_ env x;
@@ -162,6 +164,14 @@ let iter_with (handlers : handler list) : iter = object
   method! on_gconst env x =
     List.iter handlers (if_enabled env (fun v -> v#at_gconst env x));
     super#on_gconst env x;
+
+  method! on_fun_def env x =
+    List.iter handlers (if_enabled env (fun v -> v#at_fun_def env x));
+    super#on_fun_def env x;
+
+  method! on_method_ env x =
+    List.iter handlers (if_enabled env (fun v -> v#at_method_ env x));
+    super#on_method_ env x;
 
   method! on_expr env x =
     List.iter handlers (if_enabled env (fun v -> v#at_expr env x));

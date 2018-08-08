@@ -32,12 +32,12 @@ module WithParser(Parser : Parser_S) = struct
     Make.list parser (pos parser) items
 
   module NextToken : sig
-    val next_token : t -> t * Syntax.Token.t
+    val next_token : ?tokenizer:(Lexer.t ->Lexer.t * Syntax.Token.t) -> t -> t * Syntax.Token.t
     val fetch_token : t -> t * Parser.SC.r
   end = struct
-    let next_token_impl parser =
+    let next_token_impl ~tokenizer parser =
       let lexer = lexer parser in
-      let (lexer, token) = Lexer.next_token lexer in
+      let (lexer, token) = tokenizer lexer in
       let parser = with_lexer parser lexer in
       (* ERROR RECOVERY: Check if the parser's carrying ExtraTokenError trivia.
        * If so, clear it and add it to the leading trivia of the current token. *)
@@ -66,7 +66,7 @@ module WithParser(Parser : Parser_S) = struct
       (parser, token)
 
     let magic_cache = Little_magic_cache.make ()
-    let next_token = Little_magic_cache.memoize magic_cache next_token_impl
+    let next_token ?(tokenizer=Lexer.next_token) = Little_magic_cache.memoize magic_cache (next_token_impl ~tokenizer)
     let fetch_token parser =
       let (parser, token) = next_token parser in
       Make.token parser token
@@ -157,11 +157,7 @@ module WithParser(Parser : Parser_S) = struct
     with_errors parser (error :: errors)
 
   let current_token_text parser =
-    let token = peek_token parser in
-    let token_width = Token.width token in
-    let token_str = Lexer.current_text_at
-      (lexer parser) token_width 0 in
-    token_str
+    Token.text @@ peek_token parser
 
   let skip_and_log_unexpected_token ?(generate_error=true) parser =
     let parser =
@@ -390,7 +386,7 @@ module WithParser(Parser : Parser_S) = struct
       (* found a name, recurse to look for backslash *)
       let (parser, token) = Make.token parser1 token in
       scan_qualified_name_worker parser (Some token) acc false
-    | Some name, _, [] ->
+    | Some _name, _, [] ->
       (* have not found anything - return [] to indicate failure *)
       parser, [], false
     | Some name, _, _ ->
@@ -543,6 +539,8 @@ module WithParser(Parser : Parser_S) = struct
   let require_right_angle parser =
     require_token parser TokenKind.GreaterThan SyntaxError.error1013
 
+  let require_comma parser =
+    require_token parser TokenKind.Comma SyntaxError.error1054
 
   let require_right_bracket parser =
     require_token parser TokenKind.RightBracket SyntaxError.error1032
@@ -596,8 +594,8 @@ module WithParser(Parser : Parser_S) = struct
     else
       Make.missing parser (pos parser)
 
-  let assert_token parser kind =
-    let (parser, token) = next_token parser in
+  let assert_token ?tokenizer parser kind =
+    let (parser, token) = next_token ?tokenizer parser in
     let lexer = lexer parser in
     let source = Lexer.source lexer in
     let file_path = SourceText.file_path source in
@@ -607,6 +605,8 @@ module WithParser(Parser : Parser_S) = struct
         (TokenKind.to_string (Token.kind token))
         (Relative_path.to_absolute file_path));
     Make.token parser token
+
+  let assert_xhp_body_token = assert_token ~tokenizer:Lexer.next_xhp_body_token
 
   type separated_list_kind =
     | NoTrailing
@@ -844,27 +844,29 @@ module WithParser(Parser : Parser_S) = struct
 
   (* Parse with parse_item while a condition is met. *)
   let parse_list_while parser (parse_item : Parser.t -> Parser.t * Parser.SC.r) predicate =
-    let rec aux parser acc (recent_lexer: Lexer.t option) =
+    let rec aux parser acc =
       if peek_token_kind parser = TokenKind.EndOfFile ||
         not (predicate parser)
       then
         (parser, acc)
       else
+        let lexer_before = Parser.lexer parser in
         let (parser, result) = parse_item parser in
         (* ERROR RECOVERY: If the item is was parsed as 'missing', then it means
          * the parser bailed out of that scope. So, pass on whatever's been
          * accumulated so far, but with a 'Missing' SyntaxNode prepended. *)
         if SC.is_missing result
         then (parser, result :: acc)
-        else let current_lexer = Some (Parser.lexer parser) in
+        else let current_lexer = Parser.lexer parser in
         (* INFINITE LOOP PREVENTION: If parse_item does not actually make
          * progress, just bail
          *)
-        if current_lexer = recent_lexer
+        if Lexer.start_offset lexer_before = Lexer.start_offset current_lexer &&
+           Lexer.end_offset lexer_before = Lexer.end_offset current_lexer
         then (parser, result :: acc)
-        else aux parser (result :: acc) current_lexer (* Or if nothing's wrong, recurse. *)
+        else aux parser (result :: acc) (* Or if nothing's wrong, recurse. *)
     in
-    let (parser, items) = aux parser [] None in
+    let (parser, items) = aux parser [] in
     make_list parser (List.rev items)
 
   let parse_terminated_list parser parse_item terminator =
@@ -890,6 +892,9 @@ module WithParser(Parser : Parser_S) = struct
       match maybe_item with
       | None -> (parser, acc)
       | Some item when peek_token_kind parser = TokenKind.EndOfFile ->
+        parser, item :: acc
+      (* exit if parser did not make any progress *)
+      | Some item when SC.is_missing item ->
         parser, item :: acc
       | Some item -> aux parser (item :: acc)
     in

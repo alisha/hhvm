@@ -42,7 +42,7 @@ let kind_of_int x = match x with
   | _ -> assert (x > 0); failwith "kind_of_int: int too large, no corresponding kind"
 let _kind_of_int = kind_of_int
 
-exception Worker_should_exit
+
 exception Out_of_shared_memory
 exception Hash_table_full
 exception Dep_table_full
@@ -53,7 +53,6 @@ exception Less_than_minimum_available of int
 exception Failed_to_use_shm_dir of string
 exception C_assertion_failure of string
 let () =
-  Callback.register_exception "worker_should_exit" Worker_should_exit;
   Callback.register_exception "out_of_shared_memory" Out_of_shared_memory;
   Callback.register_exception "hash_table_full" Hash_table_full;
   Callback.register_exception "dep_table_full" Dep_table_full;
@@ -149,27 +148,6 @@ let init config =
     if !Utils.debug
     then Hh_logger.log "Failed to use anonymous memfd init";
     shm_dir_init config config.shm_dirs
-
-external stop_workers : unit -> unit = "hh_stop_workers"
-external resume_workers : unit -> unit = "hh_resume_workers"
-external set_can_worker_stop : bool -> unit = "hh_set_can_worker_stop"
-
-let on_worker_cancelled = ref (fun () -> ())
-let set_on_worker_cancelled f = on_worker_cancelled := f
-
-let with_no_cancellations f =
-  Utils.try_finally
-  ~f:begin fun () ->
-    set_can_worker_stop false;
-    f ()
-  end
-  ~finally:(fun () -> set_can_worker_stop true)
-
-let with_worker_exit f =
-  try f () with
-  | Worker_should_exit ->
-    !on_worker_cancelled ();
-    exit 0
 
 external allow_removes : bool -> unit = "hh_allow_removes"
 
@@ -481,14 +459,14 @@ end = struct
   external hh_remove      : Key.md5 -> unit            = "hh_remove"
   external hh_move        : Key.md5 -> Key.md5 -> unit = "hh_move"
 
-  let hh_mem_status x = with_worker_exit (fun () -> hh_mem_status x)
+  let hh_mem_status x = WorkerCancel.with_worker_exit (fun () -> hh_mem_status x)
 
   let _ = hh_mem_status
 
-  let hh_mem x = with_worker_exit (fun () -> hh_mem x)
-  let hh_add x y = with_worker_exit (fun () -> hh_add x y)
+  let hh_mem x = WorkerCancel.with_worker_exit (fun () -> hh_mem x)
+  let hh_add x y = WorkerCancel.with_worker_exit (fun () -> hh_add x y)
   let hh_get_and_deserialize x =
-    with_worker_exit (fun () -> hh_get_and_deserialize x)
+    WorkerCancel.with_worker_exit (fun () -> hh_get_and_deserialize x)
 
   let log_serialize compressed original =
     let compressed = float compressed in
@@ -648,7 +626,7 @@ end = struct
     let move stack_opt from_key to_key =
       match stack_opt with
       | None -> hh_move from_key to_key
-      | Some stack ->
+      | Some _stack ->
         assert (mem stack_opt from_key);
         assert (not @@ mem stack_opt to_key);
         let value = get stack_opt from_key in
@@ -828,8 +806,9 @@ module type NoCache = sig
   val find_unsafe      : key -> t
   val get_batch        : KeySet.t -> t option KeyMap.t
   val remove_batch     : KeySet.t -> unit
-  val string_of_key : key -> string
+  val string_of_key    : key -> string
   val mem              : key -> bool
+  val mem_old          : key -> bool
   val oldify_batch     : KeySet.t -> unit
   val revive_batch     : KeySet.t -> unit
 
@@ -932,6 +911,8 @@ module NoCache (UserKeyType : UserKeyType) (Value : Value.Type) = struct
 
   let mem x = New.mem (Key.make Value.prefix x)
 
+  let mem_old x = Old.mem (Key.make_old Value.prefix x)
+
   let remove_old_batch xs =
     KeySet.iter begin fun str_key ->
       let key = Key.make_old Value.prefix str_key in
@@ -983,6 +964,7 @@ module type CacheType = sig
   val clear: unit -> unit
 
   val string_of_key : key -> string
+  val get_size : unit -> int
 end
 
 (*****************************************************************************)
@@ -998,19 +980,21 @@ module FreqCache (Key : sig type t end) (Config:ConfigType) :
     failwith "FreqCache does not support 'string_of_key'"
 
 (* The cache itself *)
-  let (cache: (Key.t, int ref * Config.value) Hashtbl.t)
+  let (cache: (Key.t, int ref * value) Hashtbl.t)
       = Hashtbl.create (2 * Config.capacity)
   let size = ref 0
+  let get_size () =
+    !size
 
   let clear() =
     Hashtbl.clear cache;
     size := 0
 
-(* The collection function is called when we reach twice original capacity
- * in size. When the collection is triggered, we only keep the most recent
- * object.
+(* The collection function is called when we reach twice original
+ * capacity in size. When the collection is triggered, we only keep
+ * the most frequently used objects.
  * So before collection: size = 2 * capacity
- * After collection: size = capacity (with the most recent objects)
+ * After collection: size = capacity (with the most frequently used objects)
  *)
   let collect() =
     if !size < 2 * Config.capacity then () else
@@ -1024,7 +1008,7 @@ module FreqCache (Key : sig type t end) (Config:ConfigType) :
     while !i < Config.capacity do
       match !l with
       | [] -> i := Config.capacity
-      | (k, freq, v) :: rl ->
+      | (k, _freq, v) :: rl ->
           Hashtbl.replace cache k (ref 0, v);
           l := rl;
           incr i;
@@ -1075,6 +1059,8 @@ module OrderedCache (Key : sig type t end) (Config:ConfigType):
 
   let queue = Queue.create()
   let size = ref 0
+  let get_size () =
+    !size
 
   let clear() =
     Hashtbl.clear cache;
@@ -1083,18 +1069,21 @@ module OrderedCache (Key : sig type t end) (Config:ConfigType):
     ()
 
   let add x y =
-    if !size < Config.capacity
+    if !size >= Config.capacity
     then begin
-      incr size;
-      let () = Queue.push x queue in
-      ()
-    end
-    else begin
+      (* Remove oldest element - if it's still around. *)
       let elt = Queue.pop queue in
-      Hashtbl.remove cache elt;
-      Queue.push x queue;
-      Hashtbl.replace cache x y
-    end
+      if Hashtbl.mem cache elt
+      then begin
+        decr size;
+        Hashtbl.remove cache elt
+      end;
+    end;
+    (* Add the new element, but bump the size only if it's a new addition. *)
+    Queue.push x queue;
+    if not (Hashtbl.mem cache x)
+    then incr size;
+    Hashtbl.replace cache x y
 
   let find x = Hashtbl.find cache x
   let get x = try Some (find x) with Not_found -> None
@@ -1210,12 +1199,13 @@ module WithCache (UserKeyType : UserKeyType) (Value:Value.Type) = struct
          Cache.add x v;
          result
       )
-    | Some v as result ->
+    | Some _ as result ->
       result
 
   (* We don't cache old objects, they are not accessed often enough. *)
   let get_old = Direct.get_old
   let get_old_batch = Direct.get_old_batch
+  let mem_old = Direct.mem_old
 
   let find_unsafe x =
     match get x with

@@ -116,12 +116,13 @@ module ServerInitCommon = struct
   let invoke_loading_state_natively ~tiny ?(use_canary=false) ?target genv root =
     let mini_state_handle, tiny = begin match target with
     | None -> None, tiny
-    | Some { ServerMonitorUtils.mini_state_everstore_handle; target_svn_rev; is_tiny; } ->
+    | Some { ServerMonitorUtils.mini_state_everstore_handle; target_svn_rev; is_tiny; watchman_mergebase; } ->
       let handle =
       Some
       {
         State_loader.mini_state_everstore_handle = mini_state_everstore_handle;
         mini_state_for_rev = (Hg.Svn_rev target_svn_rev);
+        watchman_mergebase;
       } in
       handle, is_tiny
     end in
@@ -430,7 +431,7 @@ module ServerInitCommon = struct
    *    not their dependencies since their decl are unchanged
    **)
   let type_check_dirty genv env old_fast fast dirty_files similar_files t =
-    let start_time = Unix.gettimeofday () in
+    let start_t = Unix.gettimeofday () in
     let fast = get_dirty_fast old_fast fast dirty_files in
     let names = Relative_path.Map.fold fast ~f:begin fun _k v acc ->
       FileInfo.merge_names v acc
@@ -441,10 +442,12 @@ module ServerInitCommon = struct
     let to_recheck = Relative_path.Set.union to_recheck similar_files in
     let fast = extend_fast fast env.files_info to_recheck in
     let result = type_check genv env fast t in
-    HackEventLogger.type_check_dirty start_time
-      (Relative_path.Set.cardinal dirty_files);
-    Hh_logger.log "ServerInit type_check_dirty count: %d"
-      (Relative_path.Set.cardinal dirty_files);
+    HackEventLogger.type_check_dirty ~start_t
+      ~dirty_count:(Relative_path.Set.cardinal dirty_files)
+      ~recheck_count:(Relative_path.Set.cardinal to_recheck);
+    Hh_logger.log "ServerInit type_check_dirty count: %d. recheck count: %d"
+      (Relative_path.Set.cardinal dirty_files)
+      (Relative_path.Set.cardinal to_recheck);
     result
 
   let get_build_targets env =
@@ -773,8 +776,21 @@ let run_search genv t =
   else ()
 
 let save_state genv env fn =
-  if not (Errors.is_empty env.errorl)
-    then failwith "Generating save state only works if there are no type errors!";
+  let ignore_errors =
+    ServerArgs.gen_saved_ignore_type_errors genv.ServerEnv.options in
+  let has_errors = not (Errors.is_empty env.errorl) in
+  if ignore_errors then begin
+    if has_errors then
+      Printf.eprintf "WARNING: BROKEN SAVED STATE! Generating saved state. Ignoring type errors.\n%!"
+    else
+      Printf.eprintf "Generating saved state and ignoring type errors, but there were none.\n%!"
+  end else begin
+    if has_errors then begin
+      Printf.eprintf "Refusing to generate saved state. There are type errors\n%!";
+      Printf.eprintf "and --gen-saved-ignore-type-errors was not provided. "
+    end else
+      ()
+  end;
   let file_info_on_disk = ServerArgs.file_info_on_disk genv.ServerEnv.options in
   let _ : int = SaveStateService.save_state
     ~file_info_on_disk env.ServerEnv.files_info fn in

@@ -19,6 +19,7 @@
 
 #include "hphp/runtime/base/array-data.h"
 #include "hphp/runtime/base/array-common.h"
+#include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/hash-table.h"
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/string-data.h"
@@ -134,7 +135,10 @@ struct SetArrayElm {
     return offsetof(SetArrayElm, tv) + offsetof(TypedValue, m_data.pstr);
   }
   static constexpr ptrdiff_t dataOff() {
-    return offsetof(SetArrayElm, tv);
+    return offsetof(SetArrayElm, tv) + offsetof(TypedValue, m_data);
+  }
+  static constexpr ptrdiff_t typeOff() {
+    return offsetof(SetArrayElm, tv) + offsetof(TypedValue, m_type);
   }
   static constexpr ptrdiff_t hashOff() {
     return offsetof(SetArrayElm, tv) + offsetof(TypedValue, m_aux);
@@ -180,7 +184,7 @@ public:
    */
   static ArrayData* MakeUncounted(ArrayData* array,
                                   bool withApcTypedValue = false,
-                                  PointerMap* m = nullptr);
+                                  DataWalker::PointerMap* m = nullptr);
   static ArrayData* MakeUncounted(ArrayData* array, int) = delete;
   static ArrayData* MakeUncounted(ArrayData* array, size_t) = delete;
 

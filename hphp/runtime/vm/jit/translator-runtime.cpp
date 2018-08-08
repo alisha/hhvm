@@ -189,40 +189,10 @@ ArrayData* arrayAdd(ArrayData* a1, ArrayData* a2) {
   return a1;
 }
 
-void setNewElem(TypedValue* base, Cell val) {
-  HPHP::SetNewElem<false>(base, &val);
-}
-
-void setNewElemArray(TypedValue* base, Cell val) {
-  HPHP::SetNewElemArray(base, &val);
-}
-
-void setNewElemVec(TypedValue* base, Cell val) {
-  HPHP::SetNewElemVec(base, &val);
-}
-
 RefData* boxValue(TypedValue tv) {
   assertx(!isRefType(tv.m_type));
   if (tv.m_type == KindOfUninit) tv = make_tv<KindOfNull>();
   return RefData::Make(tv);
-}
-
-int64_t reinterpretDblAsInt(double d) {
-  union {
-    int64_t intval;
-    double dblval;
-  } u;
-  u.dblval = d;
-  return u.intval;
-}
-
-inline double reinterpretIntAsDbl(int64_t i) {
-  union {
-    int64_t intval;
-    double dblval;
-  } u;
-  u.intval = i;
-  return u.dblval;
 }
 
 ArrayData* convCellToArrHelper(TypedValue tv) {
@@ -362,24 +332,24 @@ ArrayData* convObjToKeysetHelper(ObjectData* obj) {
   return a;
 }
 
-int64_t convObjToDblHelper(const ObjectData* o) {
-  return reinterpretDblAsInt(o->toDouble());
+double convObjToDblHelper(const ObjectData* o) {
+  return o->toDouble();
 }
 
-int64_t convArrToDblHelper(ArrayData* a) {
-  return reinterpretDblAsInt(a->empty() ? 0 : 1);
+double convArrToDblHelper(ArrayData* a) {
+  return a->empty() ? 0 : 1;
 }
 
-int64_t convStrToDblHelper(const StringData* s) {
-  return reinterpretDblAsInt(s->toDouble());
+double convStrToDblHelper(const StringData* s) {
+  return s->toDouble();
 }
 
-int64_t convResToDblHelper(const ResourceHdr* r) {
-  return reinterpretDblAsInt(r->getId());
+double convResToDblHelper(const ResourceHdr* r) {
+  return r->getId();
 }
 
-int64_t convCellToDblHelper(TypedValue tv) {
-  return reinterpretDblAsInt(tvCastToDouble(tv));
+double convCellToDblHelper(TypedValue tv) {
+  return tvCastToDouble(tv);
 }
 
 ObjectData* convCellToObjHelper(TypedValue tv) {
@@ -395,8 +365,7 @@ ObjectData* convCellToObjHelper(TypedValue tv) {
   return tv.m_data.pobj;
 }
 
-StringData* convDblToStrHelper(int64_t i) {
-  double d = reinterpretIntAsDbl(i);
+StringData* convDblToStrHelper(double d) {
   return buildStringData(d);
 }
 
@@ -424,6 +393,21 @@ inline void coerceCellFail(DataType expected, DataType actual, int64_t argNum,
   throw TVCoercionException(func, argNum, actual, expected);
 }
 
+void builtinCoercionWarningHelper(DataType ty, DataType expKind,
+                                  const Func* callee, int64_t arg_num) {
+  if (RuntimeOption::EvalWarnOnCoerceBuiltinParams &&
+      !equivDataTypes(ty, expKind)) {
+    raise_warning(
+      "Argument %ld of type %s was passed to %s, "
+      "it was coerced to %s",
+      arg_num,
+      getDataTypeString(ty).data(),
+      callee->fullDisplayName()->data(),
+      getDataTypeString(expKind).data()
+    );
+  }
+}
+
 bool coerceCellToBoolHelper(TypedValue tv, int64_t argNum, const Func* func) {
   assertx(cellIsPlausible(tv));
 
@@ -435,10 +419,12 @@ bool coerceCellToBoolHelper(TypedValue tv, int64_t argNum, const Func* func) {
     not_reached();
   }
 
+  builtinCoercionWarningHelper(tv.m_type, KindOfBoolean, func, argNum);
+
   return cellToBool(tv);
 }
 
-int64_t coerceStrToDblHelper(StringData* sd, int64_t argNum, const Func* func) {
+double coerceStrToDblHelper(StringData* sd, int64_t argNum, const Func* func) {
   DataType type = is_numeric_string(sd->data(), sd->size(), nullptr, nullptr);
 
   if (UNLIKELY(RuntimeOption::PHP7_ScalarTypes)) {
@@ -452,10 +438,12 @@ int64_t coerceStrToDblHelper(StringData* sd, int64_t argNum, const Func* func) {
     not_reached();
   }
 
-  return reinterpretDblAsInt(sd->toDouble());
+  builtinCoercionWarningHelper(KindOfString, KindOfDouble, func, argNum);
+
+  return sd->toDouble();
 }
 
-int64_t coerceCellToDblHelper(Cell tv, int64_t argNum, const Func* func) {
+double coerceCellToDblHelper(Cell tv, int64_t argNum, const Func* func) {
   assertx(cellIsPlausible(tv));
 
   tvCoerceIfStrict(tv, argNum, func);
@@ -465,8 +453,17 @@ int64_t coerceCellToDblHelper(Cell tv, int64_t argNum, const Func* func) {
     case KindOfBoolean:
     case KindOfInt64:
     case KindOfDouble:
+      builtinCoercionWarningHelper(tv.m_type, KindOfDouble, func, argNum);
       return convCellToDblHelper(tv);
 
+    case KindOfFunc: {
+      auto s = funcToStringHelper(tv.m_data.pfunc);
+      return coerceStrToDblHelper(const_cast<StringData*>(s), argNum, func);
+    }
+    case KindOfClass: {
+      auto s = classToStringHelper(tv.m_data.pclass);
+      return coerceStrToDblHelper(const_cast<StringData*>(s), argNum, func);
+    }
     case KindOfPersistentString:
     case KindOfString:
       return coerceStrToDblHelper(tv.m_data.pstr, argNum, func);
@@ -505,6 +502,8 @@ int64_t coerceStrToIntHelper(StringData* sd, int64_t argNum, const Func* func) {
     not_reached();
   }
 
+  builtinCoercionWarningHelper(KindOfString, KindOfInt64, func, argNum);
+
   return sd->toInt64();
 }
 
@@ -518,7 +517,18 @@ int64_t coerceCellToIntHelper(TypedValue tv, int64_t argNum, const Func* func) {
     case KindOfBoolean:
     case KindOfInt64:
     case KindOfDouble:
+      builtinCoercionWarningHelper(tv.m_type, KindOfInt64, func, argNum);
       return cellToInt(tv);
+
+    case KindOfFunc: {
+      auto s = funcToStringHelper(tv.m_data.pfunc);
+      return coerceStrToIntHelper(const_cast<StringData*>(s), argNum, func);
+    }
+
+    case KindOfClass: {
+      auto s = classToStringHelper(tv.m_data.pclass);
+      return coerceStrToIntHelper(const_cast<StringData*>(s), argNum, func);
+    }
 
     case KindOfPersistentString:
     case KindOfString:
@@ -608,7 +618,7 @@ void VerifyParamTypeFail(int paramNum) {
   const Func* func = ar->m_func;
   auto const& tc = func->params()[paramNum].typeConstraint;
   TypedValue* tv = frame_local(ar, paramNum);
-  assertx(!tc.check(tv, func));
+  assertx(!tc.check(tv, func->cls()));
   tc.verifyParamFail(func, tv, paramNum);
 }
 
@@ -634,11 +644,11 @@ void VerifyRetTypeFail(int32_t id, TypedValue* tv) {
   const Func* func = ar->m_func;
   if (id == TypeConstraint::ReturnId) {
     auto const& tc = func->returnTypeConstraint();
-    assertx(!tc.check(tv, func));
+    assertx(!tc.check(tv, func->cls()));
     tc.verifyReturnFail(func, tv);
   } else {
     auto const& tc = func->params()[id].typeConstraint;
-    assertx(!tc.check(tv, func));
+    assertx(!tc.check(tv, func->cls()));
     tc.verifyOutParamFail(func, tv, id);
   }
 }
@@ -722,9 +732,9 @@ TypedValue* getSPropOrNull(const Class* cls,
                            Class* ctx) {
   auto const lookup = cls->getSProp(ctx, name);
 
-  if (UNLIKELY(!lookup.prop || !lookup.accessible)) return nullptr;
+  if (UNLIKELY(!lookup.val || !lookup.accessible)) return nullptr;
 
-  return lookup.prop;
+  return lookup.val;
 }
 
 TypedValue* getSPropOrRaise(const Class* cls,
@@ -755,13 +765,8 @@ static int64_t switchBoundsCheck(T v, int64_t base, int64_t nTargets) {
   return nTargets + 1;
 }
 
-int64_t switchDoubleHelper(int64_t val, int64_t base, int64_t nTargets) {
-  union {
-    int64_t intbits;
-    double dblval;
-  } u;
-  u.intbits = val;
-  return switchBoundsCheck(u.dblval, base, nTargets);
+int64_t switchDoubleHelper(double val, int64_t base, int64_t nTargets) {
+  return switchBoundsCheck(val, base, nTargets);
 }
 
 int64_t switchStringHelper(StringData* s, int64_t base, int64_t nTargets) {
@@ -795,6 +800,8 @@ int64_t switchStringHelper(StringData* s, int64_t base, int64_t nTargets) {
       case KindOfObject:
       case KindOfResource:
       case KindOfRef:
+      case KindOfFunc:
+      case KindOfClass:
         break;
     }
     not_reached();
@@ -969,18 +976,32 @@ void invalidArrayKeyHelper(const ArrayData* ad, TypedValue key) {
 }
 
 namespace MInstrHelpers {
+void setNewElem(tv_lval base, Cell val, const MInstrPropState* pState) {
+  HPHP::SetNewElem<false>(base, &val, pState);
+}
+
+void setNewElemArray(tv_lval base, Cell val) {
+  HPHP::SetNewElemArray(base, &val);
+}
+
+void setNewElemVec(tv_lval base, Cell val) {
+  HPHP::SetNewElemVec(base, &val);
+}
 
 template <bool intishWarn>
-TypedValue setOpElem(TypedValue* base, TypedValue key,
-                     Cell val, SetOpOp op) {
+TypedValue setOpElem(tv_lval base, TypedValue key,
+                     Cell val, SetOpOp op, const MInstrPropState* pState) {
   TypedValue localTvRef;
-  auto result = HPHP::SetOpElem<intishWarn>(localTvRef, op, base, key, &val);
+  auto result =
+    HPHP::SetOpElem<intishWarn>(localTvRef, op, base, key, &val, pState);
 
   return cGetRefShuffle(localTvRef, result);
 }
 
-template TypedValue setOpElem<true>(TypedValue*, TypedValue, Cell, SetOpOp);
-template TypedValue setOpElem<false>(TypedValue*, TypedValue, Cell, SetOpOp);
+template TypedValue setOpElem<true>(tv_lval, TypedValue, Cell, SetOpOp,
+                                    const MInstrPropState*);
+template TypedValue setOpElem<false>(tv_lval, TypedValue, Cell, SetOpOp,
+                                     const MInstrPropState*);
 
 StringData* stringGetI(StringData* base, uint64_t x) {
   if (LIKELY(x < base->size())) {
@@ -1002,10 +1023,12 @@ uint64_t vectorIsset(c_Vector* vec, int64_t index) {
 }
 
 template <bool intishWarn>
-void bindElemC(TypedValue* base, TypedValue key, RefData* val) {
+void bindElemC(tv_lval base, TypedValue key, RefData* val,
+               const MInstrPropState* pState) {
   TypedValue localTvRef;
-  auto elem =
-    HPHP::ElemD<MOpMode::Define, true, intishWarn>(localTvRef, base, key);
+  auto elem = HPHP::ElemD<MOpMode::Define, true, intishWarn>(
+    localTvRef, base, key, pState
+  );
 
   if (UNLIKELY(elem == &localTvRef)) {
     // Skip binding a TypedValue that's about to be destroyed and just destroy
@@ -1017,43 +1040,53 @@ void bindElemC(TypedValue* base, TypedValue key, RefData* val) {
   tvBindRef(val, elem);
 }
 
-template void bindElemC<true>(TypedValue*, TypedValue, RefData*);
-template void bindElemC<false>(TypedValue*, TypedValue, RefData*);
+template void bindElemC<true>(tv_lval, TypedValue, RefData*,
+                              const MInstrPropState*);
+template void bindElemC<false>(tv_lval, TypedValue, RefData*,
+                               const MInstrPropState*);
 
 template <bool intishWarn>
-void setWithRefElem(TypedValue* base, TypedValue keyTV, TypedValue val) {
+void setWithRefElem(tv_lval base, TypedValue keyTV, TypedValue val,
+                    const MInstrPropState* pState) {
   TypedValue localTvRef;
   auto const keyC = tvToCell(keyTV);
 
   if (UNLIKELY(isRefType(val.m_type))) {
     HPHP::SetWithRefMLElem<MOpMode::Define, true, intishWarn>(
-      localTvRef, base, keyC, val);
+      localTvRef, base, keyC, val, pState);
   } else {
     HPHP::SetWithRefMLElem<MOpMode::Define, false, intishWarn>(
-      localTvRef, base, keyC, val);
+      localTvRef, base, keyC, val, pState);
   }
 }
 
-template void setWithRefElem<true>(TypedValue*, TypedValue, TypedValue);
-template void setWithRefElem<false>(TypedValue*, TypedValue, TypedValue);
+template void setWithRefElem<true>(tv_lval, TypedValue, TypedValue,
+                                   const MInstrPropState*);
+template void setWithRefElem<false>(tv_lval, TypedValue, TypedValue,
+                                    const MInstrPropState*);
 
 template <bool intishWarn>
-TypedValue incDecElem(TypedValue* base, TypedValue key, IncDecOp op) {
-  auto const result = HPHP::IncDecElem<intishWarn>(op, base, key);
+TypedValue incDecElem(tv_lval base, TypedValue key,
+                      IncDecOp op, const MInstrPropState* pState) {
+  auto const result = HPHP::IncDecElem<intishWarn>(op, base, key, pState);
   assertx(!isRefType(result.m_type));
   return result;
 }
 
-template TypedValue incDecElem<true>(TypedValue*, TypedValue, IncDecOp);
-template TypedValue incDecElem<false>(TypedValue*, TypedValue, IncDecOp);
+template TypedValue incDecElem<true>(tv_lval, TypedValue, IncDecOp,
+                                     const MInstrPropState* pState);
+template TypedValue incDecElem<false>(tv_lval, TypedValue, IncDecOp,
+                                      const MInstrPropState* pState);
 
-void bindNewElem(TypedValue* base, RefData* val) {
-  if (UNLIKELY(isHackArrayType(base->m_type))) {
-    throwRefInvalidArrayValueException(base->m_data.parr);
+void bindNewElem(tv_lval base,
+                 RefData* val,
+                 const MInstrPropState* pState) {
+  if (UNLIKELY(tvIsHackArray(base))) {
+    throwRefInvalidArrayValueException(HPHP::val(base).parr);
   }
 
   TypedValue localTvRef;
-  auto elem = HPHP::NewElem<true>(localTvRef, base);
+  auto elem = HPHP::NewElem<true>(localTvRef, base, pState);
 
   if (UNLIKELY(elem == &localTvRef)) {
     // Skip binding a TypedValue that's about to be destroyed and just destroy

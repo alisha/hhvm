@@ -64,6 +64,9 @@ val forward_compat_ge : env -> int -> bool
 val error_if_forward_compat_ge : env -> int -> (unit -> unit) -> unit
 (** Call the func if the forward compatibility level is new enough *)
 
+val get_file : env -> Relative_path.t
+(* Return the {!Relative_path.t} of the file the env is from *)
+
 val expand_type : env -> Tast.ty -> env * Tast.ty
 (** Expand a type variable ({!Typing_defs.Tvar}) to the type it refers to. *)
 
@@ -163,8 +166,16 @@ val set_in_loop : env -> env
 (** Return an {!env} for which {!in_loop} will return {true}.
     If you are using {!Tast_visitor}, you should have no need of this. *)
 
+val get_inside_constructor : env -> bool
+(** Returns whether or not the typing environment is inside the
+    constructor of a class *)
+
 val get_decl_env : env -> Decl_env.env
 (** Returns a {!Decl_env.env} *)
+
+val get_inside_ppl_class : env -> bool
+(** Returns whether or not the typing environment is
+    inside a <<__PPL>> annotated class. *)
 
 val save : env -> Tast.saved_env
 (** Return the subset of this {!env} which is persisted in a TAST.
@@ -184,3 +195,12 @@ val restore_method_env : env -> Tast.method_ -> env
 val restore_fun_env : env -> Tast.fun_ -> env
 (** Construct an {!env} from a lambda definition and the {!env} of the context
     it appears in. *)
+
+val set_ppl_lambda : env -> env
+(** Construct an {!env} where inside_ppl_class is {false}. Due to rewriting
+    limitations, we are unable to rewrite lambdas inside <<__PPL>> classes.
+    If you are using {!Tast_visitor}, you should have no need of this. *)
+
+val get_anonymous_lambda_types : env -> int -> Tast.ty list
+
+val typing_env_as_tast_env : Typing_env.env -> env

@@ -139,6 +139,11 @@ WildcardDisallowed = 2084
 AttributeClassNameConflict = 2085
 MethodNeedsVisibility = 2086
 ReferenceInStrictMode = 2087
+ReferenceInRx = 2088
+DeclareStatement = 2089
+MisplacedRxOfScope = 2090
+RxOfScopeAndExplicitRx = 2091
+UnsupportedFeature = 2092
 
 NastCheck Errors:
 AbstractBody = 3001
@@ -209,6 +214,9 @@ CoroutineInConstructor = 3065
 IllegalReturnByRef = 3066
 IllegalByRefExpr = 3067
 VariadicByRefParam = 3068
+MaybeMutableAttributeOnFunction = 3069
+ConflictingMutableAndMaybeMutableAttributes = 3070
+MaybeMutableMethodsMustBeReactive = 3071
 
 Typing Errors:
 AbstractClassFinalDEPRECATED = 4001
@@ -350,7 +358,7 @@ InvalidShapeFieldNameEmpty = 4136
 InvalidShapeFieldNameNumber = 4137
 ShapeFieldsUnknown = 4138
 InvalidShapeRemoveKey = 4139
-MissingOptionalField = 4140
+MissingOptionalFieldDEPRECATED = 4140
 ShapeFieldUnset = 4141
 AbstractConcreteOverride = 4142
 LocalVariableModifedAndUsed = 4143
@@ -468,4 +476,24 @@ CallSiteReactivityMismatch = 4254
 RxParameterConditionMismatch = 4255
 AmbiguousObjectAccess = 4256
 ExtendPPL = 4257
+ReassignMaybeMutableVar = 4258
+MaybeMutableArgumentMismatch = 4259
+ImmutableArgumentMismatch = 4260
+ImmutableCallOnMutable = 4261
+InvalidCallMaybeMutable = 4262
+MutabilityMismatch = 4263
+InvalidPPLCall = 4264
+InvalidPPLStaticCall = 4265
+TypeTestInLambda = 4266
+InvalidTraversableInRx = 4267
+ReassignMutableThis = 4268
+MutableExpressionAsMultipleMutableArguments = 4269
+InvalidUnsetTargetInRx = 4270
+CoroutineOutsideExperimental = 4271
+PPLMethPointer = 4272
+InvalidTruthinessTest = 4273
+RePrefixedNonString = 4274
+BadRegexPattern = 4275
+SketchyTruthinessTest = 4276
+LateInitWithDefault = 4277
   |}]

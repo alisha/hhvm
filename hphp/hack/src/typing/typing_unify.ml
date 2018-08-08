@@ -219,16 +219,14 @@ and unify_ ?(opts=TUtils.default_unify_opt) env r1 ty1 r2 ty2 =
           env, Terr
         end
         else
-          let env, tcstr =
-            match tcstr1, tcstr2 with
-            | None, None -> env, None
-            | Some x1, Some x2 ->
-                let env, x = unify env x1 x2 in
-                env, Some x
-            | _ -> assert false
-          in
+          let implicit_upper_bound r =
+            let r' = Reason.Rimplicit_upper_bound (Reason.to_pos r) in
+            (r', Toption (r', Tnonnull)) in
+          let env, ty = unify env
+            (Option.value tcstr1 ~default:(implicit_upper_bound r1))
+            (Option.value tcstr2 ~default:(implicit_upper_bound r2)) in
           let env, argl = List.map2_env env argl1 argl2 unify in
-          env, Tabstract (AKnewtype (x1, argl), tcstr)
+          env, Tabstract (AKnewtype (x1, argl), Some ty)
   | Tabstract (AKgeneric x1, tcstr1),
     Tabstract (AKgeneric x2, tcstr2)
     when x1 = x2 && (Option.is_none tcstr1 = Option.is_none tcstr2) ->
@@ -314,7 +312,7 @@ and unify_ ?(opts=TUtils.default_unify_opt) env r1 ty1 r2 ty2 =
       | None ->
         Errors.anonymous_recursive_call (Reason.to_pos r1);
         env, Terr
-      | Some (reactivity, is_coroutine, counter, _, anon) ->
+      | Some (reactivity, is_coroutine, ftys, _, anon) ->
         let p1 = Reason.to_pos r1 in
         let p2 = Reason.to_pos r2 in
         if reactivity <> ft.ft_reactive
@@ -326,7 +324,8 @@ and unify_ ?(opts=TUtils.default_unify_opt) env r1 ty1 r2 ty2 =
         if not (unify_arities ~ellipsis_is_variadic:true anon_arity ft.ft_arity)
         then Errors.fun_arity_mismatch p1 p2;
         let env, _, ret = anon env ft.ft_params ft.ft_arity in
-        counter := !counter + 1;
+        let funty = (r2, Tfun ft) in
+        ftys := TUtils.add_function_type env funty !ftys;
         let env, _ = unify env ft.ft_ret ret in
         env, Tfun ft)
   | Tobject, Tobject
@@ -386,6 +385,7 @@ and unify_ ?(opts=TUtils.default_unify_opt) env r1 ty1 r2 ty2 =
         ~on_missing_non_omittable_optional_field:(
           on_missing_non_omittable_optional_field p2
         )
+        ~on_error:(fun x f -> f (); x)
         (env, res) (r1, fields_known1, fdm1) (r2, fields_known2, fdm2) in
       let env, res = TUtils.apply_shape
         ~on_common_field
@@ -393,6 +393,7 @@ and unify_ ?(opts=TUtils.default_unify_opt) env r1 ty1 r2 ty2 =
         ~on_missing_non_omittable_optional_field:(
           on_missing_non_omittable_optional_field p1
         )
+        ~on_error:(fun x f -> f (); x)
         (env, res) (r2, fields_known2, fdm2) (r1, fields_known1, fdm1) in
         (* After doing apply_shape in both directions we can be sure that
          * fields_known1 = fields_known2 *)

@@ -22,6 +22,7 @@ module SyntaxTree = SyntaxTree_.WithSmartConstructors(SCI)
 
 module Token = Syntax.Token
 module SyntaxError = Full_fidelity_syntax_error
+module SyntaxKind = Full_fidelity_syntax_kind
 module TokenKind = Full_fidelity_token_kind
 
 module SN = Naming_special_names
@@ -85,12 +86,14 @@ type env =
   ; is_hh_file           : bool
   ; is_strict            : bool
   ; codegen              : bool
+  ; hhi_mode             : bool
   }
 
 let make_env
   ?(level                = Typical         )
   ?(hhvm_compat_mode     = NoCompat        )
   ?(enable_hh_syntax     = false           )
+  ?(hhi_mode             = false           )
   (syntax_tree : SyntaxTree.t)
   ~(codegen : bool)
   : env
@@ -101,6 +104,7 @@ let make_env
     ; is_hh_file = SyntaxTree.is_hack syntax_tree
     ; is_strict = SyntaxTree.is_strict syntax_tree
     ; codegen
+    ; hhi_mode
     }
 
 and is_hhvm_compat env = env.hhvm_compat_mode <> NoCompat
@@ -114,8 +118,7 @@ let is_typechecker env =
 let global_namespace_name = "\\"
 
 let combine_names n1 n2 =
-  assert (String.length n1 > 0 && String.length n2 > 0);
-  let has_leading_slash = String.get n2 0 = '\\' in
+  let has_leading_slash = String.length n2 > 0 && String.get n2 0 = '\\' in
   let len = String.length n1 in
   let has_trailing_slash = String.get n1 (len - 1) = '\\' in
   match has_leading_slash, has_trailing_slash with
@@ -346,25 +349,6 @@ let is_parameter_with_default_value param =
     not (is_missing parameter_default_value)
   | _ -> false
 
-let param_missing_default_value params =
-  (* TODO: This error is also reported in the type checker; when we switch
-  over to the FFP, we can remove the error detection from the type checker. *)
-  let rec aux seen_default params =
-    match params with
-    | [] -> None
-    | x :: t ->
-      if is_variadic_parameter_declaration x then
-        None (* Stop looking. If this happens to not be the last parameter,
-          we'll give an error in a different check. *)
-      else
-        let has_default = is_parameter_with_default_value x in
-        if seen_default && not has_default then
-          Some x (* We saw a defaulted parameter, and this one has no
-            default value. Give an error, and stop looking for more. *)
-        else
-          aux has_default t in
-  aux false (syntax_to_list_no_separators params)
-
 (* True or false: the first item in this list matches the predicate? *)
 let matches_first f items =
   match items with
@@ -469,6 +453,11 @@ let methodish_contains_private node =
 let is_visibility x =
   is_public x || is_private x || is_protected x
 
+let contains_async_not_last mods =
+  let mod_list = syntax_to_list_no_separators mods in
+  List.exists is_async mod_list
+    && not @@ is_async @@ List.nth mod_list (List.length mod_list - 1)
+
 let has_static node parents f =
   match node with
   | FunctionDeclarationHeader node ->
@@ -476,7 +465,6 @@ let has_static node parents f =
     (f label) &&
     (matches_first (methodish_contains_static) parents)
   | _ -> false
-
 
 (* checks if a methodish decl or property has multiple visibility modifiers *)
 let declaration_multiple_visibility node =
@@ -500,7 +488,7 @@ let clone_cannot_be_static node parents =
 (* Given a function declaration header, confirm that it is NOT a constructor
  * and that the header containing it has visibility modifiers in parameters
  *)
-let class_non_constructor_has_visibility_param node parents =
+let class_non_constructor_has_visibility_param node _parents =
   match node with
   | FunctionDeclarationHeader node ->
     let has_visibility node =
@@ -515,7 +503,7 @@ let class_non_constructor_has_visibility_param node parents =
   | _ -> false
 
 (* check that a constructor or a destructor is type annotated *)
-let class_constructor_destructor_has_non_void_type env node parents =
+let class_constructor_destructor_has_non_void_type env node _parents =
   if not (is_typechecker env) then false
   else
   match node with
@@ -532,7 +520,7 @@ let class_constructor_destructor_has_non_void_type env node parents =
     (is_construct label || is_destruct label) &&
     not (is_missing || is_void)
   | _ -> false
-let async_magic_method node parents =
+let async_magic_method node _parents =
   match node with
   | FunctionDeclarationHeader node ->
     let name = String.lowercase_ascii @@ text node.function_name in
@@ -545,7 +533,7 @@ let async_magic_method node parents =
   | _ -> false
 
 
-let clone_destruct_takes_no_arguments method_name node parents =
+let clone_destruct_takes_no_arguments _method_name node _parents =
   match node with
   | FunctionDeclarationHeader { function_parameter_list = l; function_name = name; _} ->
     let num_params = List.length (syntax_to_list_no_separators l) in
@@ -593,12 +581,13 @@ let methodish_inside_interface parents =
 (* Test whether node is a non-abstract method without a body and not native.
  * Here node is the methodish node
  * And methods inside interfaces are inherently considered abstract *)
-let methodish_non_abstract_without_body_not_native node parents =
+let methodish_non_abstract_without_body_not_native env node parents =
   let non_abstract = not (methodish_contains_abstract node
       || methodish_inside_interface parents) in
   let not_has_body = not (methodish_has_body node) in
   let not_native = not (methodish_is_native node) in
-  non_abstract && not_has_body && not_native
+  let not_hhi  = not (env.hhi_mode) in
+  not_hhi && non_abstract && not_has_body && not_native
 
 (* Test whether node is a method that is both abstract and private
  *)
@@ -613,28 +602,6 @@ let methodish_abstract_conflict_with_final node =
   let is_abstract = methodish_contains_abstract node in
   let has_final = methodish_contains_final node in
   is_abstract && has_final
-
-let rec parameter_type_is_required parents =
-  match parents with
-  | h :: _ when is_function_declaration h -> true
-  | h :: _ when (is_anonymous_function h) || (is_lambda_expression h) -> false
-  | _ :: t -> parameter_type_is_required t
-  | [] -> false
-
-let rec break_is_legal parents =
-  match parents with
-  | h :: _ when is_anonymous_function h -> false
-  | h :: _ when is_switch_statement h -> true
-  | h :: _ when is_loop_statement h -> true
-  | _ :: t -> break_is_legal t
-  | [] -> false
-
-let rec continue_is_legal parents =
-  match parents with
-  | h :: _ when is_anonymous_function h -> false
-  | h :: _ when is_loop_statement h -> true
-  | _ :: t -> continue_is_legal t
-  | [] -> false
 
 let using_statement_function_scoped_is_legal parents =
   match parents with
@@ -786,7 +753,7 @@ let rec is_immediately_in_lambda = function
 let is_in_active_class_scope parents =
   Hh_core.List.exists parents ~f:begin fun node ->
   match syntax node with
-  | ClassishDeclaration cd -> true
+  | ClassishDeclaration _ -> true
   | _ -> false
   end
 
@@ -837,11 +804,6 @@ let extract_keyword modifier declaration_node =
    contains is_abstract keyword *)
 let is_abstract_declaration declaration_node =
   not (Option.is_none (extract_keyword is_abstract declaration_node))
-
-(* Wrapper function that uses above extract_keyword function to test if node
-   contains is_final keyword *)
-let is_final_declaration declaration_node =
-  not (Option.is_none (extract_keyword is_final declaration_node))
 
 (* Given a list of parents, tests if the immediate classish parent is an
  * interface. *)
@@ -941,7 +903,8 @@ let make_name_already_used_error node name short_name original_location
     ~child:(Some original_location_error) s e (report_error ~name ~short_name)
 
 let check_type_name_reference env name_text location names errors =
-  if not (is_hack env && Hh_autoimport.is_hh_autoimport name_text) || strmap_mem name_text names.t_classes
+  if not (is_hack env && Hh_autoimport.is_hh_autoimport name_text)
+    || strmap_mem name_text names.t_classes
   then names, errors
   else
     let def = make_first_use_or_def ~kind:Name_implicit_use location "HH" name_text in
@@ -971,12 +934,6 @@ let is_abstract_and_async_method md_node parents =
     is_generalized_abstract_method md_node parents
         && not (is_missing async_node)
 
-(* Returns the visibility modifier node from a list, or None if the
- * list doesn't contain one. *)
-let extract_visibility_node modifiers_list =
-  Hh_core.List.find ~f:is_visibility (syntax_to_list_no_separators
-    modifiers_list)
-
 let extract_callconv_node node =
   match syntax node with
   | ParameterDeclaration { parameter_call_convention; _ } ->
@@ -987,46 +944,10 @@ let extract_callconv_node node =
     Some variadic_parameter_call_convention
   | _ -> None
 
-(* Tests if visibility modifiers of the node are allowed on
- * methods inside an interface. *)
-let has_valid_interface_visibility node =
-  (* If not a methodish declaration, is vacuously valid *)
-  get_modifiers_of_declaration node
-  |> Option.value_map ~default:true ~f:(fun methodish_modifiers ->
-    let visibility_kind = extract_visibility_node methodish_modifiers in
-    let is_valid_methodish_visibility kind =
-      (is_token_kind kind TokenKind.Public) in
-    (* Defaulting to 'true' allows omitting visibility in method_declarations *)
-    Option.value_map visibility_kind
-      ~f:is_valid_methodish_visibility ~default:true)
-
-(* Test if (a list_expression is the left child of a binary_expression,
- * and the operator is '=') *)
-let is_left_of_simple_assignment le_node p1 =
-  match syntax p1 with
-  | BinaryExpression { binary_left_operand; binary_operator; _ } ->
-    le_node == binary_left_operand  &&
-        is_token_kind binary_operator TokenKind.Equal
-  | _ -> false
-
 (* Test if a list_expression is the value clause of a foreach_statement *)
 let is_value_of_foreach le_node p1 =
   match syntax p1 with
   | ForeachStatement { foreach_value; _ } -> le_node == foreach_value
-  | _ -> false
-
-let is_invalid_list_expression le_node parents =
-  match parents with
-  | p1 :: _ when is_left_of_simple_assignment le_node p1 -> false
-  | p1 :: _ when is_value_of_foreach le_node p1 -> false
-  (* checking p3 is sufficient to test if le_node is a nested list_expression *)
-  | _ :: _ :: p3 :: _ when is_list_expression p3 -> false
-  | _ -> true (* All other deployments of list_expression are invalid *)
-
-(* Given a node, checks if it is a concrete ConstDeclaration *)
-let is_concrete_const declaration =
-  match syntax declaration with
-  | ConstDeclaration x -> is_missing x.const_abstract
   | _ -> false
 
 (* Given a node, checks if it is a abstract ConstDeclaration *)
@@ -1035,33 +956,33 @@ let is_abstract_const declaration =
   | ConstDeclaration x -> not (is_missing x.const_abstract)
   | _ -> false
 
-
 (* Given a ConstDeclarator node, test whether it is abstract, but has an
    initializer. *)
-let abstract_with_initializer init parents =
+let constant_abstract_with_initializer init parents =
   let is_abstract =
     match parents with
-    | _ :: _ :: p3 :: _ when is_abstract_const p3 -> true
+    | _p_list_item :: _p_syntax_list :: p_const_declaration :: _
+      when is_abstract_const p_const_declaration -> true
     | _ -> false
     in
   let has_initializer =
     not (is_missing init) in
   is_abstract && has_initializer
 
-(* Tests if Property contains a modifier p *)
-let property_modifier_contains_helper p node =
-  match syntax node with
-  | PropertyDeclaration syntax ->
-    let node = syntax.property_modifiers in
-    list_contains_predicate p node
+(* Given a node, checks if it is a concrete ConstDeclaration *)
+let is_concrete_const declaration =
+  match syntax declaration with
+  | ConstDeclaration x -> is_missing x.const_abstract
   | _ -> false
 
-(* Tests if parent class is both abstract and final *)
-let abstract_final_parent_class parents =
-  let parent = first_parent_classish_node TokenKind.Class parents in
-    match parent with
-    | None -> false
-    | Some node -> (is_abstract_declaration node) && (is_final_declaration node)
+(* Given a ConstDeclarator node, test whether it is concrete, but has no
+   initializer. *)
+let constant_concrete_without_initializer init parents =
+  let is_concrete = match parents with
+    | _p_list_item :: _p_syntax_list :: p_const_declaration :: _ ->
+      is_concrete_const p_const_declaration
+    | _ -> false in
+  is_concrete && is_missing init
 
 (* Given a PropertyDeclaration node, tests whether parent class is abstract
   final but child variable is non-static *)
@@ -1079,6 +1000,50 @@ let is_param_by_ref node =
   | ParameterDeclaration { parameter_name; _ } ->
     is_byref_parameter_variable parameter_name
   | _ -> false
+
+let attribute_specification_contains node name =
+  match syntax node with
+  | AttributeSpecification { attribute_specification_attributes = attrs; _ } ->
+    Hh_core.List.exists (syntax_node_to_list attrs) ~f:begin fun n ->
+      match syntax n with
+      | ListItem {
+          list_item = { syntax = Attribute { attribute_name; _ }; _ }; _
+        } ->
+        begin match Syntax.extract_text attribute_name with
+        | Some n when n = name -> true
+        | _ -> false
+        end
+      | _ -> false
+    end
+  | _ -> false
+
+let methodish_contains_memoize_lsb node =
+  match syntax node with
+  | MethodishDeclaration { methodish_attribute = attr_spec; _ } ->
+    attribute_specification_contains attr_spec SN.UserAttributes.uaMemoizeLSB
+  | _ -> false
+
+let methodish_memoize_lsb_on_non_static node errors =
+  if methodish_contains_memoize_lsb node &&
+     not (methodish_contains_static node)
+  then
+    let e = make_error_from_node node SyntaxError.memoize_lsb_on_non_static
+    in e :: errors
+  else errors
+
+let function_declaration_contains_memoize_lsb node =
+  match syntax node with
+  | FunctionDeclaration { function_attribute_spec = attr_spec; _ } ->
+    attribute_specification_contains attr_spec SN.UserAttributes.uaMemoizeLSB
+  | _ -> false
+
+let function_declaration_header_memoize_lsb parents errors =
+  let node = List.hd parents in
+  if function_declaration_contains_memoize_lsb node
+  then
+    let e = make_error_from_node node SyntaxError.memoize_lsb_on_non_method
+    in e :: errors
+  else errors
 
 let special_method_param_errors node parents errors =
   match syntax node with
@@ -1132,8 +1097,10 @@ let methodish_errors env node parents errors =
        (class_constructor_destructor_has_non_void_type env)
        node parents SyntaxError.error2018 function_type in
      let errors =
-      produce_error_for_header errors class_non_constructor_has_visibility_param
-      node parents SyntaxError.error2010 function_parameter_list in
+       produce_error_for_header errors class_non_constructor_has_visibility_param
+       node parents SyntaxError.error2010 function_parameter_list in
+     let errors =
+       function_declaration_header_memoize_lsb parents errors in
     errors
   | MethodishDeclaration md ->
     let header_node = md.methodish_function_decl_header in
@@ -1170,7 +1137,7 @@ let methodish_errors env node parents errors =
     let fun_semicolon = md.methodish_semicolon in
     let errors =
       produce_error errors
-      (methodish_non_abstract_without_body_not_native node) parents
+      (methodish_non_abstract_without_body_not_native env node) parents
       (SyntaxError.error2015 class_name method_name) fun_semicolon in
     let errors =
       produce_error errors
@@ -1181,14 +1148,22 @@ let methodish_errors env node parents errors =
       methodish_abstract_conflict_with_final
       node (SyntaxError.error2019 class_name method_name) modifiers in
     let errors =
+      methodish_memoize_lsb_on_non_static node errors in
+    let errors =
       let async_annotation = Option.value (extract_async_node node)
         ~default:node in
       produce_error errors
       (is_abstract_and_async_method node) parents
       SyntaxError.error2046 async_annotation in
     let errors =
+      if is_typechecker env
+      then produce_error errors
+        contains_async_not_last
+        modifiers SyntaxError.async_not_last modifiers
+      else errors in
+    let errors =
       special_method_param_errors
-        md.methodish_function_decl_header parents errors in
+      md.methodish_function_decl_header parents errors in
     errors
   | _ -> errors
 
@@ -1262,7 +1237,7 @@ let param_with_callconv_is_byref node =
     is_byref_parameter_variable parameter_name -> Some node
   | _ -> None
 
-let params_errors env params namespace_name names errors =
+let params_errors _env params _namespace_name names errors =
   let errors =
     produce_error_from_check errors ends_with_variadic_comma
     params SyntaxError.error2022 in
@@ -1323,8 +1298,11 @@ let parameter_errors env node parents namespace_name names errors =
           make_error_from_node ~error_type:SyntaxError.RuntimeError
             node SyntaxError.inout_param_in_construct :: errors
           else errors in
-        let errors = if first_parent_function_attributes_contains
-              parents SN.UserAttributes.uaMemoize &&
+        let inMemoize = first_parent_function_attributes_contains
+          parents SN.UserAttributes.uaMemoize in
+        let inMemoizeLSB = first_parent_function_attributes_contains
+          parents SN.UserAttributes.uaMemoizeLSB in
+        let errors = if (inMemoize || inMemoizeLSB) &&
               not @@ is_immediately_in_lambda parents then
           make_error_from_node ~error_type:SyntaxError.RuntimeError
             node SyntaxError.memoize_with_inout :: errors
@@ -1402,7 +1380,16 @@ let redeclaration_errors env node parents namespace_name names errors =
         in
         { names with
           t_functions = strmap_add function_name def names.t_functions }, errors
-      | _ -> names, errors
+      | _ ->
+        (* Only check this in strict mode. *)
+        let mode_opt = FileInfo.parse_mode @@ SyntaxTree.mode env.syntax_tree in
+        if mode_opt <> Some FileInfo.Mstrict then names, errors else
+        let error = make_error_from_node
+          ~error_type:SyntaxError.ParseError
+          node
+          SyntaxError.decl_outside_global_scope
+        in
+        names, error :: errors
     end
   | _ -> names, errors
 
@@ -1412,7 +1399,7 @@ let is_foreach_in_for for_initializer =
     is_as_expression item
   | _ -> false
 
-let statement_errors env node parents errors =
+let statement_errors _env node parents errors =
   let result = match syntax node with
   | TryStatement { try_catch_clauses; try_finally_clause; _ }
     when (is_missing try_catch_clauses) && (is_missing try_finally_clause) ->
@@ -1472,7 +1459,7 @@ let invalid_shape_initializer_name env node errors =
       end
     in
     if not is_str
-    then make_error_from_node node SyntaxError.error2059 :: errors else begin
+    then make_error_from_node node SyntaxError.invalid_shape_field_name :: errors else begin
       let str = text expr in
       if string_starts_with_int str
       then make_error_from_node node SyntaxError.error2060 :: errors
@@ -1481,20 +1468,20 @@ let invalid_shape_initializer_name env node errors =
   | ScopeResolutionExpression _ -> errors
   | QualifiedName _ ->
       if is_typechecker env then
-      make_error_from_node node SyntaxError.error2059 :: errors
+      make_error_from_node node SyntaxError.invalid_shape_field_name :: errors
       else errors
   | Token _ when is_name node ->
       if is_typechecker env then
-        make_error_from_node node SyntaxError.error2059 :: errors
+        make_error_from_node node SyntaxError.invalid_shape_field_name :: errors
       else
         errors
-  | _ -> make_error_from_node node SyntaxError.error2059 :: errors
+  | _ -> make_error_from_node node SyntaxError.invalid_shape_field_name :: errors
 
 let invalid_shape_field_check env node errors =
   match syntax node with
   | FieldInitializer { field_initializer_name; _} ->
     invalid_shape_initializer_name env field_initializer_name errors
-  | _ -> make_error_from_node node SyntaxError.error2059 :: errors
+  | _ -> make_error_from_node node SyntaxError.invalid_shape_field_name :: errors
 
 let is_in_unyieldable_magic_method parents =
   match first_parent_function_name parents with
@@ -1589,6 +1576,10 @@ let no_memoize_attribute_on_lambda node errors =
           let e =
             make_error_from_node attr SyntaxError.memoize_on_lambda in
           e::errors
+        | Some n when n = SN.UserAttributes.uaMemoizeLSB ->
+          let e =
+            make_error_from_node attr SyntaxError.memoize_on_lambda in
+          e::errors
         | _ -> errors
         end
       | _ -> errors
@@ -1600,6 +1591,76 @@ let is_assignment node =
   | BinaryExpression { binary_operator = { syntax = Token token; _ }; _ } ->
     Token.kind token = TokenKind.Equal
   | _ -> false
+
+let is_good_scope_resolution_qualifier node =
+  match syntax node with
+  | QualifiedName _ -> true
+  | Token token ->
+    let open TokenKind in
+    (match Token.kind token with
+    | XHPClassName | Name | Self | Parent | Static -> true
+    | _ -> false
+    )
+  | _ -> false
+
+let new_variable_errors node =
+  let rec helper node ~inside_scope_resolution =
+    match syntax node with
+    | SimpleTypeSpecifier _ -> []
+    | VariableExpression _ -> []
+    | GenericTypeSpecifier _ -> []
+    | PipeVariableExpression _ -> []
+    | SubscriptExpression { subscript_index = { syntax = Missing; _ }; _ } ->
+      [ make_error_from_node node SyntaxError.instanceof_missing_subscript_index ]
+    | SubscriptExpression { subscript_receiver; _ } ->
+      helper subscript_receiver ~inside_scope_resolution
+    | MemberSelectionExpression { member_object; _ } ->
+      if inside_scope_resolution
+      then [
+        make_error_from_node node SyntaxError.instanceof_memberselection_inside_scoperesolution
+      ]
+      else helper member_object ~inside_scope_resolution
+    | ScopeResolutionExpression
+      {
+        scope_resolution_qualifier;
+        scope_resolution_name = { syntax = Token name; _ };
+        _
+      } when is_good_scope_resolution_qualifier scope_resolution_qualifier
+        && Token.kind name = TokenKind.Variable -> []
+    | ScopeResolutionExpression
+      {
+        scope_resolution_qualifier;
+        scope_resolution_name = { syntax = Token name; _ };
+        _
+      } when Token.kind name = TokenKind.Variable ->
+      helper scope_resolution_qualifier ~inside_scope_resolution:true
+    | ScopeResolutionExpression _ ->
+      [ make_error_from_node node SyntaxError.instanceof_invalid_scope_resolution ]
+
+    | _ ->
+      let error_msg = SyntaxError.instanceof_unknown_node (SyntaxKind.to_string @@ kind node) in
+      [ make_error_from_node node error_msg ]
+  in
+  helper node ~inside_scope_resolution:false
+
+let class_type_designator_errors node =
+  if is_good_scope_resolution_qualifier node then [] else
+  match syntax node with
+  | ParenthesizedExpression
+    {
+      parenthesized_expression_expression = {
+        syntax = PrefixUnaryExpression { prefix_unary_operator = { syntax = Token token; _ }; _ };
+        _
+      };
+      _
+    }
+    when Token.kind token = TokenKind.Ampersand ->
+    [make_error_from_node node SyntaxError.instanceof_reference]
+  | ParenthesizedExpression _ ->
+    (* A parenthesized expression that evaluates to a string or object is a
+       valid RHS for instanceof and new. *)
+    []
+  | _ -> new_variable_errors node
 
 let expression_errors env namespace_name node parents errors =
   let is_decimal_or_hexadecimal_literal token =
@@ -1621,6 +1682,27 @@ let expression_errors env namespace_name node parents errors =
     ; _ } when not env.codegen ->
     let in_paren = text in_paren in
     make_error_from_node node (SyntaxError.instanceof_paren in_paren) :: errors
+  (* We parse the right hand side of `new` and `instanceof` as a generic
+     expression, but PHP (and therefore Hack) only allow a certain subset of
+     expressions, so we should verify here that the expression we parsed is in
+     that subset.
+     Refer: https://github.com/php/php-langspec/blob/master/spec/10-expressions.md#instanceof-operator*)
+  | ConstructorCall ctr_call ->
+    let typechecker_errors =
+      if is_typechecker env then
+        if is_missing ctr_call.constructor_call_left_paren ||
+            is_missing ctr_call.constructor_call_right_paren
+        then
+          let node = ctr_call.constructor_call_type in
+          let constructor_name = text ctr_call.constructor_call_type in
+          [make_error_from_node node (SyntaxError.error2038 constructor_name)]
+        else []
+      else []
+    in
+    let designator_errors = class_type_designator_errors ctr_call.constructor_call_type in
+    typechecker_errors @ designator_errors @ errors
+  | InstanceofExpression { instanceof_right_operand = operand; _ } ->
+    (class_type_designator_errors operand) @ errors
   | LiteralExpression { literal_expression = {syntax = Token token; _} as e ; _}
     when env.is_hh_file && is_decimal_or_hexadecimal_literal token ->
     let text = text e in
@@ -1664,16 +1746,6 @@ let expression_errors env namespace_name node parents errors =
     in
     let errors =
       function_call_on_xhp_name_errors function_call_receiver errors in
-    errors
-  | ConstructorCall ctr_call when (is_typechecker env) ->
-  if is_missing ctr_call.constructor_call_left_paren ||
-      is_missing ctr_call.constructor_call_right_paren
-  then
-    let node = ctr_call.constructor_call_type in
-    let constructor_name = text ctr_call.constructor_call_type in
-    make_error_from_node node
-      (SyntaxError.error2038 constructor_name) :: errors
-  else
     errors
   | ListExpression { list_members; _ }
     when is_hhvm_compat env ->
@@ -1791,8 +1863,27 @@ let expression_errors env namespace_name node parents errors =
         when token_kind scope_resolution_name = Some TokenKind.Name ->
         make_error_from_node node
           SyntaxError.reference_to_static_scope_resolution :: errors
+      | PrefixUnaryExpression { prefix_unary_operator; _ }
+        when token_kind prefix_unary_operator <> Some TokenKind.Dollar ->
+        make_error_from_node node SyntaxError.nested_unary_reference :: errors
       | _ -> errors
     end
+  | PrefixUnaryExpression { prefix_unary_operator; prefix_unary_operand }
+    when token_kind prefix_unary_operator = Some TokenKind.Dollar ->
+    let original_node = node in
+    let rec check_prefix_unary_dollar node =
+      match syntax node with
+      | PrefixUnaryExpression { prefix_unary_operator; prefix_unary_operand }
+        when token_kind prefix_unary_operator = Some TokenKind.Dollar ->
+        check_prefix_unary_dollar prefix_unary_operand
+      | BracedExpression _
+      | SubscriptExpression _
+      | VariableExpression _ -> errors (* these ones are valid *)
+      | LiteralExpression _
+      | PipeVariableExpression _ -> errors (* these ones get caught later *)
+      | _ -> make_error_from_node original_node SyntaxError.dollar_unary :: errors
+    in
+    check_prefix_unary_dollar prefix_unary_operand
   (* TODO(T21285960): Remove this bug-port, stemming from T22184312 *)
   | LambdaExpression { lambda_async; lambda_coroutine; lambda_signature; _ }
     when is_hhvm_compat env
@@ -1838,7 +1929,10 @@ let expression_errors env namespace_name node parents errors =
   | Php7AnonymousFunction { php7_anonymous_attribute_spec = s; _ }
   | AwaitableCreationExpression { awaitable_attribute_spec = s; _ }
     -> no_memoize_attribute_on_lambda s errors
-  | CollectionLiteralExpression { collection_literal_name = n; _ } ->
+  | CollectionLiteralExpression
+    { collection_literal_name = n
+    ; collection_literal_initializers = initializers
+    ; _ } ->
     let is_standard_collection lc_name =
       lc_name = "pair" || lc_name = "vector" || lc_name = "map" ||
       lc_name = "set"  || lc_name = "immvector" || lc_name = "immmap" ||
@@ -1860,7 +1954,7 @@ let expression_errors env namespace_name node parents errors =
         when Token.kind t = TokenKind.Name ->
         begin match String.lowercase_ascii (text n) with
         | "dict" | "vec" | "keyset" -> `InvalidBraceKind
-        | n -> if is_standard_collection n then `Ok else `Error
+        | n -> if is_standard_collection n then `ValidClass n else `InvalidClass
         end
       (* qualified name *)
       | SimpleTypeSpecifier { simple_type_specifier = {
@@ -1873,20 +1967,33 @@ let expression_errors env namespace_name node parents errors =
         (* HH\Vector in global namespace *)
         | [l; r]
           when namespace_name = global_namespace_name &&
-          is_qualified_std_collection l r -> `Ok
+          is_qualified_std_collection l r ->
+          `ValidClass (String.lowercase_ascii (text r))
         (* \HH\Vector *)
         | [{ syntax = Missing; _}; l; r]
-          when is_qualified_std_collection l r -> `Ok
-        | _ -> `Error
+          when is_qualified_std_collection l r ->
+          `ValidClass (String.lowercase_ascii (text r))
+        | _ -> `InvalidClass
         end
-      | _ -> `Error in
+      | _ -> `InvalidClass in
+    let num_initializers =
+      List.length (syntax_to_list_no_separators initializers) in
     begin match status with
-    | `Ok -> errors
+    | `ValidClass "pair" when num_initializers <> 2 ->
+      let msg =
+        if num_initializers = 0
+        then SyntaxError.pair_initializer_needed
+        else SyntaxError.pair_initializer_arity
+      in
+      let e =
+        make_error_from_node node msg ~error_type:SyntaxError.RuntimeError in
+      e :: errors
+    | `ValidClass _ -> errors
     | `InvalidBraceKind ->
       let e =
         make_error_from_node node SyntaxError.invalid_brace_kind_in_collection_initializer in
       e :: errors
-    | `Error ->
+    | `InvalidClass ->
       let e =
         make_error_from_node node SyntaxError.invalid_class_in_collection_initializer in
       e :: errors
@@ -1946,7 +2053,7 @@ let check_repeated_properties namespace_name class_name (errors, p_names) prop =
             | _ -> errors, p_names
           end
   | _ -> (errors, p_names)
-let require_errors env node parents trait_use_clauses errors =
+let require_errors _env node parents trait_use_clauses errors =
   match syntax node with
   | RequireClause p ->
     let name = text p.require_name in
@@ -1996,6 +2103,60 @@ let check_type_name syntax_tree name namespace_name name_text location names err
     names, errors
   end
 
+let get_type_params_and_emit_shadowing_errors l errors =
+  syntax_to_list_no_separators l
+  |> Hh_core.List.fold_right ~init:(SSet.empty, errors)
+      ~f:(fun p (s, e) -> match syntax p with
+        | TypeParameter { type_reified; type_name; _}
+          when not @@ is_missing type_reified ->
+          let name = text type_name in
+          if SSet.mem name s then
+            (s, make_error_from_node p SyntaxError.shadowing_reified :: e)
+          else (SSet.add name s, e)
+        | _ -> s, e)
+
+let reified_parameter_errors node errors =
+  match syntax node with
+  | FunctionDeclarationHeader {
+    function_type_parameter_list = {
+      syntax = TypeParameters {
+        type_parameters_parameters; _}; _}; _} ->
+        snd @@ get_type_params_and_emit_shadowing_errors
+          type_parameters_parameters errors
+  | _ -> errors
+
+let class_reified_param_errors node errors =
+  match syntax node with
+  | ClassishDeclaration cd ->
+    let reified_params, errors = match syntax cd.classish_type_parameters with
+      | TypeParameters { type_parameters_parameters; _ } ->
+        get_type_params_and_emit_shadowing_errors
+          type_parameters_parameters errors
+      | _ -> SSet.empty, errors in
+    let add_error e acc = match syntax e with
+      | TypeParameter { type_reified; type_name; _}
+        when not @@ is_missing type_reified &&
+          SSet.mem (text type_name) reified_params ->
+          make_error_from_node e SyntaxError.shadowing_reified :: acc
+      |_ -> acc in
+    let check_method e acc = match syntax e with
+      | MethodishDeclaration {
+          methodish_function_decl_header =  {
+            syntax = FunctionDeclarationHeader {
+              function_type_parameter_list = {
+                syntax = TypeParameters {
+                  type_parameters_parameters; _}; _}; _}; _}; _} ->
+        syntax_to_list_no_separators type_parameters_parameters
+        |> Hh_core.List.fold_right ~init:acc ~f:add_error
+      | _ -> acc in
+    let errors = match syntax cd.classish_body with
+      | ClassishBody { classish_body_elements; _} ->
+        syntax_to_list_no_separators classish_body_elements
+        |> Hh_core.List.fold_right ~init:errors ~f:check_method
+      | _ -> errors in
+    errors
+  | _ -> errors
+
 let classish_errors env node parents namespace_name names errors =
   match syntax node with
   | ClassishDeclaration cd ->
@@ -2006,9 +2167,21 @@ let classish_errors env node parents namespace_name names errors =
       token_kind cd.classish_extends_keyword = Some TokenKind.Extends &&
         token_kind cd.classish_keyword = Some TokenKind.Trait in
 
+    (* Given a ClassishDeclaration node, test whether it's declared in the
+       global scope. *)
+    let classish_declaration_check _ =
+      (* Only check this in strict mode. *)
+      let mode_opt = FileInfo.parse_mode @@ SyntaxTree.mode env.syntax_tree in
+      if mode_opt <> Some FileInfo.Mstrict then false else
+      match List.map syntax parents with
+      | [SyntaxList _; Script _]
+      | [SyntaxList _; NamespaceBody _; NamespaceDeclaration _; SyntaxList _; Script _] -> false
+      | _ -> true
+    in
+
     (* Given a sealed ClassishDeclaration node, test whether all the params
      * are classnames. *)
-    let classish_sealed_arg_not_classname env _ =
+    let classish_sealed_arg_not_classname _env _ =
       match cd.classish_attribute.syntax with
       | AttributeSpecification { attribute_specification_attributes = attrs; _ } ->
         let attrs = syntax_to_list_no_separators attrs in
@@ -2043,7 +2216,7 @@ let classish_errors env node parents namespace_name names errors =
       token_kind cd.classish_keyword = Some TokenKind.Class &&
         token_kind cd.classish_extends_keyword = Some TokenKind.Extends &&
         match syntax_to_list_no_separators cd.classish_extends_list with
-        | [x1] -> false
+        | [_] -> false
         | _ -> true (* General bc empty list case is already caught by error1007 *) in
     let abstract_keyword =
       Option.value (extract_keyword is_abstract node) ~default:node  in
@@ -2051,7 +2224,7 @@ let classish_errors env node parents namespace_name names errors =
       (is_classish_kind_declared_abstract env)
       node SyntaxError.error2042 abstract_keyword in
     (* Given a ClassishDeclaration node, test whether it is sealed and final. *)
-    let classish_sealed_final env _ =
+    let classish_sealed_final _env _ =
       list_contains_predicate is_final cd.classish_modifiers &&
       classish_is_sealed in
     let errors = produce_error errors (classish_invalid_extends_list env) ()
@@ -2076,6 +2249,10 @@ let classish_errors env node parents namespace_name names errors =
       produce_error errors
       (is_reserved_keyword env) cd.classish_name
       SyntaxError.reserved_keyword_as_class_name cd.classish_name in
+    let errors =
+      produce_error errors
+      classish_declaration_check ()
+      SyntaxError.decl_outside_global_scope cd.classish_name in
     let errors =
       if is_token_kind cd.classish_keyword TokenKind.Interface &&
         not (is_missing cd.classish_implements_keyword)
@@ -2133,6 +2310,7 @@ let classish_errors env node parents namespace_name names errors =
         check_type_name env.syntax_tree cd.classish_name namespace_name name location names errors
       | _ ->
         names, errors in
+    let errors = class_reified_param_errors node errors in
     names, errors
   | _ -> names, errors
 
@@ -2356,17 +2534,6 @@ let rec check_constant_expression errors node =
     TokenKind.Name -> true
     | _ -> false
   in
-  let is_good_scope_resolution_qualifier node =
-    match syntax node with
-    | QualifiedName _ -> true
-    | Token token ->
-      let open TokenKind in
-      (match Token.kind token with
-      | XHPClassName | Name | Self | Parent | Static -> true
-      | _ -> false
-      )
-    | _ -> false
-  in
   let is_good_scope_resolution_name node =
     match syntax node with
     | QualifiedName _ -> true
@@ -2489,12 +2656,17 @@ let check_static_in_constant_decl constant_declarator_initializer  =
     end
   | _ -> false
 
-let const_decl_errors env node parents namespace_name names errors =
+let const_decl_errors _env node parents namespace_name names errors =
   match syntax node with
   | ConstantDeclarator cd ->
     let errors =
-      produce_error_parents errors abstract_with_initializer cd.constant_declarator_initializer parents
+      produce_error_parents errors constant_abstract_with_initializer
+      cd.constant_declarator_initializer parents
       SyntaxError.error2051 cd.constant_declarator_initializer in
+    let errors =
+      produce_error_parents errors constant_concrete_without_initializer
+      cd.constant_declarator_initializer parents SyntaxError.error2050
+      cd.constant_declarator_initializer in
     let errors =
       produce_error errors is_global_in_const_decl cd.constant_declarator_initializer
       SyntaxError.global_in_const_decl cd.constant_declarator_initializer in
@@ -2742,9 +2914,40 @@ let assignment_errors _env node errors =
   | BinaryExpression
     { binary_left_operand = loperand
     ; binary_operator = op
-    ; _
+    ; binary_right_operand = roperand
     } when does_op_create_write_on_left (token_kind op) ->
-    check_lvalue loperand errors
+      let errors = check_lvalue loperand errors in
+      let errors = match syntax roperand with
+        | PrefixUnaryExpression
+          { prefix_unary_operator = op
+          ; prefix_unary_operand = operand
+          } when token_kind op = Some TokenKind.Ampersand ->
+            begin match syntax operand with
+            | FunctionCallExpression _
+            | FunctionCallWithTypeArgumentsExpression _
+            | MemberSelectionExpression _
+            | ObjectCreationExpression _
+            | SafeMemberSelectionExpression _
+            | ScopeResolutionExpression _
+            | SubscriptExpression _
+            | VariableExpression _ -> errors
+            | PrefixUnaryExpression {
+              prefix_unary_operator = { syntax = Token token; _ };
+              prefix_unary_operand = {
+                syntax = PrefixUnaryExpression { prefix_unary_operator = op; _ };
+                _
+              }
+            } when Token.kind token = TokenKind.Dollar && token_kind op = Some TokenKind.Dollar ->
+              errors
+            | PrefixUnaryExpression {
+              prefix_unary_operator = { syntax = Token token; _ };
+              prefix_unary_operand = { syntax = BracedExpression _ | VariableExpression _; _ }
+            } when Token.kind token = TokenKind.Dollar -> errors
+            | _ -> (make_error_from_node operand SyntaxError.incorrect_byref_assignment) :: errors
+            end
+        | _ -> errors
+      in
+      errors
   | ForeachStatement
     { foreach_key = k;
       foreach_value = v;
@@ -2757,7 +2960,7 @@ let assignment_errors _env node errors =
         } when token_kind op = Some (TokenKind.Ampersand) ->
         check_lvalue loperand errors
       | Missing -> errors
-      | loperand -> check_lvalue node errors
+      | _loperand -> check_lvalue node errors
     in
       let errors = allow_ref k errors in
       let errors = allow_ref v errors in
@@ -2765,7 +2968,7 @@ let assignment_errors _env node errors =
   | _ -> errors
 
 
-let declare_errors env node parents errors =
+let declare_errors _env node parents errors =
   match syntax node with
   | DeclareDirectiveStatement { declare_directive_expression = expr; _}
   | DeclareBlockStatement { declare_block_expression = expr; _} ->
@@ -2812,6 +3015,15 @@ let get_namespace_name parents current_namespace_name =
     else combine_names current_namespace_name (text ns)
   | _ -> current_namespace_name
 
+let is_invalid_hack_mode env errors =
+  let mode = FileInfo.parse_mode @@ SyntaxTree.mode env.syntax_tree in
+  if Option.is_none mode then
+    let root = SyntaxTree.root env.syntax_tree in
+    let e = make_error_from_node root SyntaxError.invalid_hack_mode in
+    e::errors
+  else
+    errors
+
 let find_syntax_errors env =
   let rec folder acc node parents =
     let { errors
@@ -2820,7 +3032,6 @@ let find_syntax_errors env =
         ; namespace_name
         ; trait_require_clauses
         } = acc in
-
     let names, errors =
       parameter_errors env node parents namespace_name names errors in
     let trait_require_clauses, names, errors =
@@ -2832,6 +3043,7 @@ let find_syntax_errors env =
         trait_require_clauses, names, errors
       | MethodishDeclaration _
       | FunctionDeclarationHeader _ ->
+        let errors = reified_parameter_errors node errors in
         let names, errors =
           redeclaration_errors env node parents namespace_name names errors in
         let errors =
@@ -2995,8 +3207,12 @@ let find_syntax_errors env =
           namespace_name trait_require_clauses
       in
       fold_child_nodes folder node parents acc in
+  let errors =
+    if is_typechecker env then is_invalid_hack_mode env []
+    else []
+  in
   let acc = fold_child_nodes folder (SyntaxTree.root env.syntax_tree) []
-    { errors = []
+    { errors
     ; namespace_type = Unspecified
     ; names = empty_names
     ; namespace_name = global_namespace_name

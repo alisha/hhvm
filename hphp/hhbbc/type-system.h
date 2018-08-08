@@ -202,39 +202,40 @@ enum trep : uint64_t {
   BDbl      = 1ULL << 5,
   BSStr     = 1ULL << 6,  // static string
   BCStr     = 1ULL << 7,  // counted string
+  BFunc     = 1ULL << 8,
 
-  BSPArrE   = 1ULL << 8, // static empty "plain" array
-  BCPArrE   = 1ULL << 9, // counted empty "plain" array
-  BSPArrN   = 1ULL << 10, // static non-empty "plain" array
-  BCPArrN   = 1ULL << 11ULL, // counted non-empty "plain array"
+  BSPArrE   = 1ULL << 9, // static empty "plain" array
+  BCPArrE   = 1ULL << 10, // counted empty "plain" array
+  BSPArrN   = 1ULL << 11, // static non-empty "plain" array
+  BCPArrN   = 1ULL << 12ULL, // counted non-empty "plain array"
 
-  BSVArrE   = 1ULL << 12, // static empty varray
-  BCVArrE   = 1ULL << 13, // counted empty varray
-  BSVArrN   = 1ULL << 14, // static non-empty varray
-  BCVArrN   = 1ULL << 15, // counted non-empty varray
+  BSVArrE   = 1ULL << 13, // static empty varray
+  BCVArrE   = 1ULL << 14, // counted empty varray
+  BSVArrN   = 1ULL << 15, // static non-empty varray
+  BCVArrN   = 1ULL << 16, // counted non-empty varray
 
-  BSDArrE   = 1ULL << 16, // static empty darray
-  BCDArrE   = 1ULL << 17, // counted empty darray
-  BSDArrN   = 1ULL << 18, // static non-empty darray
-  BCDArrN   = 1ULL << 19, // counted non-empty darray
+  BSDArrE   = 1ULL << 17, // static empty darray
+  BCDArrE   = 1ULL << 18, // counted empty darray
+  BSDArrN   = 1ULL << 19, // static non-empty darray
+  BCDArrN   = 1ULL << 20, // counted non-empty darray
 
-  BObj      = 1ULL << 20,
-  BRes      = 1ULL << 21,
-  BCls      = 1ULL << 22,
-  BRef      = 1ULL << 23,
+  BObj      = 1ULL << 21,
+  BRes      = 1ULL << 22,
+  BCls      = 1ULL << 23,
+  BRef      = 1ULL << 24,
 
-  BSVecE    = 1ULL << 24, // static empty vec
-  BCVecE    = 1ULL << 25, // counted empty vec
-  BSVecN    = 1ULL << 26, // static non-empty vec
-  BCVecN    = 1ULL << 27, // counted non-empty vec
-  BSDictE   = 1ULL << 28, // static empty dict
-  BCDictE   = 1ULL << 29, // counted empty dict
-  BSDictN   = 1ULL << 30, // static non-empty dict
-  BCDictN   = 1ULL << 31, // counted non-empty dict
-  BSKeysetE = 1ULL << 32, // static empty keyset
-  BCKeysetE = 1ULL << 33, // counted empty keyset
-  BSKeysetN = 1ULL << 34, // static non-empty keyset
-  BCKeysetN = 1ULL << 35, // counted non-empty keyset
+  BSVecE    = 1ULL << 25, // static empty vec
+  BCVecE    = 1ULL << 26, // counted empty vec
+  BSVecN    = 1ULL << 27, // static non-empty vec
+  BCVecN    = 1ULL << 28, // counted non-empty vec
+  BSDictE   = 1ULL << 29, // static empty dict
+  BCDictE   = 1ULL << 30, // counted empty dict
+  BSDictN   = 1ULL << 31, // static non-empty dict
+  BCDictN   = 1ULL << 32, // counted non-empty dict
+  BSKeysetE = 1ULL << 33, // static empty keyset
+  BCKeysetE = 1ULL << 34, // counted empty keyset
+  BSKeysetN = 1ULL << 35, // static non-empty keyset
+  BCKeysetN = 1ULL << 36, // counted non-empty keyset
 
   BSPArr    = BSPArrE | BSPArrN,
   BCPArr    = BCPArrE | BCPArrN,
@@ -305,6 +306,7 @@ enum trep : uint64_t {
   BOptArr      = BInitNull | BArr,       // may have value / data
   BOptObj      = BInitNull | BObj,       // may have data
   BOptRes      = BInitNull | BRes,
+  BOptFunc     = BInitNull | BFunc,
   BOptSVecE    = BInitNull | BSVecE,
   BOptCVecE    = BInitNull | BCVecE,
   BOptSVecN    = BInitNull | BSVecN,
@@ -373,7 +375,7 @@ enum trep : uint64_t {
   BInitUnc  = BInitPrim | BSStr | BSArr | BSVec | BSDict | BSKeyset,
   BUnc      = BInitUnc | BUninit,
   BInitCell = BInitNull | BBool | BInt | BDbl | BStr | BArr | BObj | BRes |
-              BVec | BDict | BKeyset,
+              BVec | BDict | BKeyset | BFunc,
   BCell     = BUninit | BInitCell,
   BInitGen  = BInitCell | BRef,
   BGen      = BUninit | BInitGen,
@@ -539,6 +541,13 @@ struct Type {
   bool strictSubtypeOf(const Type& o) const;
 
   /*
+   * Similar, but only check the trep (same as subtypeOf(Type{bits}),
+   * but cheaper).
+   */
+  bool subtypeOf(trep bits) const { return (m_bits & bits) == m_bits; }
+  bool subtypeOrNull(trep bits) const { return subtypeOf(bits | BNull); }
+
+  /*
    * Subtype of any of the list of types.
    */
   template<class... Types>
@@ -563,6 +572,7 @@ struct Type {
    * precise when returning false.
    */
   bool couldBe(const Type& o) const;
+  bool couldBe(trep bits) const { return m_bits & bits; }
 
   /*
    * Could-be any of the list of types.
@@ -613,7 +623,9 @@ private:
   friend Emptiness emptiness(const Type&);
   friend Type opt(Type);
   friend Type unopt(Type);
+  friend Type unnullish(Type);
   friend bool is_opt(const Type&);
+  friend bool is_nullish(const Type&);
   template<typename R>
   friend R tvImpl(const Type&);
   friend Type scalarize(Type t);
@@ -629,7 +641,8 @@ private:
   friend std::pair<Type,bool> arr_packedn_elem(const Type& pack,
                                                const ArrKey& key);
   friend std::pair<Type,ThrowMode> array_like_elem(const Type& arr,
-                                                    const ArrKey& key);
+                                                   const ArrKey& key,
+                                                   const Type& defaultTy);
   friend std::pair<Type,ThrowMode> array_like_set(Type arr,
                                                   const ArrKey& key,
                                                   const Type& val);
@@ -647,14 +660,13 @@ private:
   friend struct ArrKey disect_vec_key(const Type&);
   friend struct ArrKey disect_strict_key(const Type&);
 
-  friend Type spec_array_like_union(Type&, Type&, const Type&, const Type&);
+  friend Type spec_array_like_union(Type&, Type&, trep, trep);
   friend Type vec_val(SArray);
   friend Type dict_val(SArray);
   friend Type keyset_val(SArray);
   friend bool could_contain_objects(const Type&);
   friend bool could_copy_on_write(const Type&);
   friend Type loosen_staticness(Type);
-  friend Type loosen_unstaticness(Type);
   friend Type loosen_dvarrayness(Type);
   friend Type loosen_values(Type);
   friend Type loosen_emptiness(Type);
@@ -662,6 +674,8 @@ private:
   friend Type assert_emptiness(Type);
   friend Type assert_nonemptiness(Type);
   friend Type set_trep(Type&, trep);
+  friend Type remove_uninit(Type t);
+  friend Type to_cell(Type t);
 
 private:
   union Data {
@@ -764,6 +778,7 @@ X(Obj)                                          \
 X(Res)                                          \
 X(Cls)                                          \
 X(Ref)                                          \
+X(Func)                                         \
 X(SVecE)                                        \
 X(SVecN)                                        \
 X(SDictE)                                       \
@@ -830,6 +845,7 @@ X(OptArrN)                                      \
 X(OptArr)                                       \
 X(OptObj)                                       \
 X(OptRes)                                       \
+X(OptFunc)                                      \
 X(OptSVecE)                                     \
 X(OptSVecN)                                     \
 X(OptSVec)                                      \
@@ -1071,6 +1087,19 @@ Type unopt(Type t);
  * TInitUnc---it's only the TOpt* types.)
  */
 bool is_opt(const Type& t);
+
+/*
+ * Return t with BNull removed from its trep.
+ *
+ * Pre: is_nullish(t)
+ */
+Type unnullish(Type t);
+
+/*
+ * Returns whether a given type couldBe TNull, and would still be
+ * predefined if BNull was removed from its trep.
+ */
+bool is_nullish(const Type& t);
 
 /*
  * Improves the type `t` given the current context.  This returns the
@@ -1322,17 +1351,11 @@ bool could_have_magic_bool_conversion(const Type&);
 Type stack_flav(Type a);
 
 /*
- * Discard any countedness information about the type. Force any type which
- * contains only static or counted variants to contain both. Doesn't change the
- * type otherwise.
+ * Discard any countedness information about the type. Force any type
+ * (recursively) which contains only static or counted variants to contain
+ * both. Doesn't change the type otherwise.
  */
 Type loosen_staticness(Type);
-
-/*
- * Make sure the corresponding static type is present for any
- * non-static type that is present.
- */
-Type loosen_unstaticness(Type);
 
 /*
  * Discard any specific knowledge about whether the type is a d/varray. Force
@@ -1372,10 +1395,14 @@ Type loosen_all(Type t);
  * If t contains TUninit, returns the best type we can that contains
  * at least everything t contains, but doesn't contain TUninit.  Note
  * that this function will return TBottom for TUninit.
- *
- * Pre: t.subtypeOf(TCell)
  */
 Type remove_uninit(Type t);
+
+/*
+ * If t is not a TCell, returns TInitCell. Otherwise, if t contains
+ * TUninit, return union_of(remove_uninit(t), TInitCell).
+ */
+Type to_cell(Type t);
 
 /*
  * Add non-empty variants of the type to the type if not already
@@ -1401,10 +1428,14 @@ Type assert_nonemptiness(Type);
  *
  * Pre: first arg is a subtype of TArr, TVec, TDict, TKeyset respectively.
  */
-std::pair<Type,ThrowMode> array_elem(const Type& arr, const Type& key);
-std::pair<Type, ThrowMode> vec_elem(const Type& vec, const Type& key);
-std::pair<Type, ThrowMode> dict_elem(const Type& dict, const Type& key);
-std::pair<Type, ThrowMode> keyset_elem(const Type& keyset, const Type& key);
+std::pair<Type,ThrowMode> array_elem(const Type& arr, const Type& key,
+                                     const Type& defaultTy = TInitNull);
+std::pair<Type, ThrowMode> vec_elem(const Type& vec, const Type& key,
+                                    const Type& defaultTy = TBottom);
+std::pair<Type, ThrowMode> dict_elem(const Type& dict, const Type& key,
+                                     const Type& defaultTy = TBottom);
+std::pair<Type, ThrowMode> keyset_elem(const Type& keyset, const Type& key,
+                                       const Type& defaultTy = TBottom);
 
 /*
  * (array|vec|dict|keyset)_set
@@ -1472,8 +1503,8 @@ IterTypes iter_types(const Type&);
  * SStrings for class names.  The emit code needs to handle making
  * sure these things are merged into the appropriate unit or repo.
  *
- * Pre: !t.couldBe(TCls)
- *      !t.subtypeOf(TBottom)
+ * Pre: !t.couldBe(BCls)
+ *      !t.subtypeOf(BBottom)
  */
 RepoAuthType make_repo_type(ArrayTypeTable::Builder&, const Type& t);
 

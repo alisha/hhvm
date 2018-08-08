@@ -195,19 +195,21 @@ let instr_entrynop = instr (IBasic EntryNop)
 let instr_typedvalue xs = instr (ILitConst (TypedValue xs))
 let instr_staticlocinit local text = instr (IMisc (StaticLocInit(local, text)))
 let instr_basel local mode = instr (IBase(BaseL(local, mode)))
-let instr_basec stack_index = instr (IBase (BaseC stack_index))
+let instr_basec stack_index mode = instr (IBase (BaseC(stack_index, mode)))
 let instr_basenl local mode = instr (IBase(BaseNL(local, mode)))
 let instr_basenc idx mode = instr (IBase(BaseNC(idx, mode)))
-let instr_basesc y =
-  instr (IBase(BaseSC(y, class_ref_rewrite_sentinel)))
-let instr_basesl local =
-  instr (IBase(BaseSL(local, class_ref_rewrite_sentinel)))
+let instr_basesc y mode =
+  instr (IBase(BaseSC(y, class_ref_rewrite_sentinel, mode)))
+let instr_basesl local mode =
+  instr (IBase(BaseSL(local, class_ref_rewrite_sentinel, mode)))
 let instr_baseh = instr (IBase BaseH)
-let instr_baser i = instr (IBase (BaseR i))
+let instr_baser i mode = instr (IBase (BaseR(i, mode)))
 let instr_fpushfunc n param_locs = instr (ICall(FPushFunc(n, param_locs)))
 let instr_fpushfuncd count text = instr (ICall(FPushFuncD(count, text)))
-let instr_fcall count = instr (ICall(FCall count))
-let instr_fcallunpack count = instr (ICall(FCallUnpack count))
+let instr_fcall count has_unpack nrets =
+  let no_class = Hhbc_id.Class.from_raw_string "" in
+  let no_func = Hhbc_id.Function.from_raw_string "" in
+  instr (ICall(FCall(count, has_unpack, nrets, no_class, no_func)))
 let instr_cgetcunop = instr (IMisc CGetCUNop)
 let instr_ugetcunop = instr (IMisc UGetCUNop)
 let instr_memoget label range =
@@ -242,7 +244,9 @@ let instr_querym_cget_pt num_params key =
   instr_querym num_params QueryOp.CGet (MemberKey.PT key)
 let instr_setm num_params key = instr (IFinal (SetM (num_params, key)))
 let instr_setm_pt num_params key = instr_setm num_params (MemberKey.PT key)
-
+let instr_resolve_func func_id = instr (IOp (ResolveFunc func_id))
+let instr_resolve_obj_method = instr (IOp (ResolveObjMethod))
+let instr_resolve_cls_method = instr (IOp (ResolveClsMethod))
 let instr_await = instr (IAsync Await)
 let instr_yield = instr (IGenerator Yield)
 let instr_yieldk = instr (IGenerator YieldK)
@@ -532,8 +536,8 @@ let rewrite_class_refs_instr num = function
 | IMutator (SetOpS (o, _)) -> (num - 1, IMutator (SetOpS (o, num)))
 | IMutator (IncDecS (o, _)) -> (num - 1, IMutator (IncDecS (o, num)))
 | IMutator (BindS _) -> (num - 1, IMutator (BindS num))
-| IBase (BaseSC (si, _)) -> (num - 1, IBase (BaseSC (si, num)))
-| IBase (BaseSL (l, _)) -> (num - 1, IBase (BaseSL (l, num)))
+| IBase (BaseSC (si, _, m)) -> (num - 1, IBase (BaseSC (si, num, m)))
+| IBase (BaseSL (l, _, m)) -> (num - 1, IBase (BaseSL (l, num, m)))
 | ICall (FPushCtor (np, _)) -> (num - 1, ICall (FPushCtor (np, num)))
 | ICall (FPushClsMethod (np, _, pl)) ->
   (num - 1, ICall (FPushClsMethod (np, num, pl)))
@@ -756,13 +760,15 @@ let get_input_output_count i =
     begin match i with
     | Concat | Add | Sub | Mul | AddO | SubO | MulO | Div | Mod | Xor | Same
     | NSame | Eq | Neq | Lt | Lte | Gt | Gte | Cmp | BitAnd | BitOr | BitXor
-    | Shl | Shr | InstanceOf | Pow -> (2, 1)
+    | Shl | Shr | InstanceOf | Pow
+    | ResolveObjMethod | ResolveClsMethod -> (2, 1)
     | Sqrt | Not | BitNot | Floor | Ceil | CastBool | CastInt | CastDouble
     | CastString | CastArray | CastObject | CastVec | CastDict | CastKeyset
     | CastVArray | CastDArray | InstanceOfD _ | IsTypeStruct _ | AsTypeStruct _
     | Print | Clone | Hhbc_ast.Exit | Abs -> (1, 1)
     | Fatal _ -> (1, 0)
     | ConcatN n -> (n, 1)
+    | ResolveFunc _ -> (0, 1)
     end
   | ICall i ->
     begin match i with
@@ -773,9 +779,8 @@ let get_input_output_count i =
     | FPushObjMethod _ -> (2, 0)
     | FPushCtor _ | FPushCtorD _ | FPushCtorI _ | FPushCtorS _
     | FIsParamByRef _ | FIsParamByRefCufIter _ -> (0, 1)
-    | FCall n | FCallD (n, _, _) | FCallAwait (n, _, _)| FCallUnpack n
-    | FCallBuiltin (n, _, _) -> (n, 1) | FCallM (n1, n2) -> (n1, n2)
-    | FCallDM (n1, n2, _, _) -> (n1, n2) | FCallUnpackM (n1, n2) -> (n1, n2)
+    | FCall (n1, u, n2, _, _) -> (n1 + (if u then 1 else 0), n2)
+    | FCallAwait (n, _, _) | FCallBuiltin (n, _, _) -> (n, 1)
     end
   | IMisc i ->
     begin match i with

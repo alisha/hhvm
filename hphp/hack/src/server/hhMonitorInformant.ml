@@ -192,6 +192,7 @@ module Revision_map = struct
         let handle = {
           State_loader.mini_state_for_rev = Hg.Svn_rev (xdb_result.Xdb.svn_rev);
           mini_state_everstore_handle = xdb_result.Xdb.everstore_handle;
+          watchman_mergebase = None;
         } in
         State_loader_prefetcher.fetch
           ~hhconfig_hash:xdb_result.Xdb.hhconfig_hash
@@ -217,9 +218,10 @@ module Revision_map = struct
         match query, !prefetcher with
         | query, Some prefetcher -> begin
           match Future.check_status prefetcher with
-          | Future.In_progress age when age > 30.0 ->
-            (** If prefetcher has taken longer than 30 seconds, we consider
+          | Future.In_progress age when age > 90.0 ->
+            (** If prefetcher has taken longer than 90 seconds, we consider
              * this as having no saved states. *)
+            let () = Hh_logger.log "Informant prefetcher timed out" in
             let () = HackEventLogger.informant_prefetcher_timed_out (Future.start_t prefetcher) in
             no_good_xdb_result ~is_tiny
           | Future.In_progress _ ->
@@ -250,6 +252,8 @@ module Revision_map = struct
           | Future.Complete_with_result _ ->
             let result = query_to_result_list query in
             if result = [] then
+              let () = Hh_logger.log "Got no XDB results on merge base change to %d" svn_rev in
+              let () = HackEventLogger.informant_no_xdb_result () in
               no_good_xdb_result ~is_tiny
             else
               let () = HackEventLogger.find_xdb_match_success (Future.start_t query) in
@@ -266,11 +270,22 @@ module Revision_map = struct
         if t.use_xdb then
           find_xdb_match svn_rev t
           >>= fun (xdb_results, is_tiny) -> begin
+            (** We log the mergebase after the XDB lookup and prefetch has
+             * completed to avoid log spam, since the "find_svn_rev" result
+             * is pinged once per second until completion. *)
+            let () = Hh_logger.log "Informant Mergebase: %s -> %d" hg_rev svn_rev in
             let () = match xdb_results with
               | [] ->
+                let () = Hh_logger.log
+                  "Informant Saved State not found or prefetcher failed for svn_rev %d"
+                  svn_rev in
                 HackEventLogger.informant_find_saved_state_failed start_t
               | result :: _ ->
                 let distance = abs (svn_rev - result.Xdb.svn_rev) in
+                let () = Hh_logger.log
+                  "Informant found Saved State and prefetched for svn_rev %d at distance %d"
+                  svn_rev
+                  distance in
                 HackEventLogger.informant_find_saved_state_success ~distance start_t
             in
             Some(svn_rev, xdb_results, is_tiny)
@@ -329,7 +344,7 @@ module Revision_tracker = struct
   type repo_transition =
     | State_enter of Hg.hg_rev
     | State_leave of Hg.hg_rev
-    | Changed_merge_base of Hg.hg_rev
+    | Changed_merge_base of Hg.hg_rev * SSet.t * Watchman.clock
 
   type init_settings = {
     watchman : Watchman.watchman_instance ref;
@@ -420,14 +435,17 @@ module Revision_tracker = struct
       state_changes = Queue.create() ;
     }
 
-  let get_distance svn_rev env =
+  let get_jump_distance svn_rev env =
     abs @@ svn_rev - !(env.current_base_revision)
 
-  let is_significant ~min_distance_restart distance elapsed_t =
+  let is_significant ~min_distance_restart ~jump_distance elapsed_t =
+    let () = Hh_logger.log "Informant: jump distance %d. elapsed_t: %2f"
+      jump_distance elapsed_t in
     (** Allow up to 2 revisions per second for incremental. More than that,
      * prefer a server restart. *)
-    distance > (float_of_int min_distance_restart)
-      && (elapsed_t <= 0.0 || ((distance /. elapsed_t) > 2.0))
+    let result = (jump_distance > min_distance_restart)
+        && (elapsed_t <= 0.0 || (((float_of_int jump_distance) /. elapsed_t) > 2.0)) in
+    result
 
   let cached_svn_rev ~start_t revision_map hg_rev =
     Revision_map.find ~start_t hg_rev revision_map
@@ -437,10 +455,11 @@ module Revision_tracker = struct
    * svn_rev: The corresponding SVN rev for this transition's hg rev.
    * xdb_results: The nearest saved states for this svn_rev provided by the XDB table.
    *)
-  let form_decision ~is_tiny is_significant transition server_state xdb_results svn_rev env =
+  let form_decision ~start_t ~is_tiny ~significant transition
+  server_state xdb_results svn_rev env =
     let use_xdb = env.inits.use_xdb in
     let open Informant_sig in
-    match is_significant, transition, server_state, xdb_results with
+    match significant, transition, server_state, xdb_results with
     | _, State_leave _, Server_not_yet_started, _ ->
      (** This case should be unreachable since Server_not_yet_started
       * should be handled by "should_start_first_server" and not by the
@@ -454,6 +473,7 @@ module Revision_tracker = struct
        * server is not alive, we restart it on a state leave.*)
       Restart_server None
     | false, _, _, _ ->
+      let () = Hh_logger.log "Informant insignificant transition" in
       Move_along
     | true, State_enter _, _, _
     | true, State_leave _, _, _ ->
@@ -463,19 +483,29 @@ module Revision_tracker = struct
       Move_along
     | true, Changed_merge_base _, _, [] when use_xdb ->
       (** No XDB results, so w don't restart. *)
-      let () = Printf.eprintf "Got no XDB results on merge base change\n" in
       Move_along
-    | true, Changed_merge_base _, _, (nearest_xdb_result :: _) when use_xdb ->
+    | true, Changed_merge_base (_rev, files_changed, watchman_clock), _,
+      (nearest_xdb_result :: _) when use_xdb ->
       let state_distance = abs @@ nearest_xdb_result.Xdb.svn_rev - svn_rev in
       let incremental_distance = abs @@ svn_rev - !(env.current_base_revision) in
+      let () = HackEventLogger.informant_decision_on_saved_state
+        ~start_t ~state_distance ~incremental_distance in
       if incremental_distance > state_distance then
+        let watchman_mergebase = {
+          ServerMonitorUtils.mergebase_svn_rev = svn_rev;
+          files_changed;
+          watchman_clock;
+        } in
         let target_state = {
           ServerMonitorUtils.mini_state_everstore_handle = nearest_xdb_result.Xdb.everstore_handle;
           target_svn_rev = nearest_xdb_result.Xdb.svn_rev;
           is_tiny;
+          watchman_mergebase = Some watchman_mergebase;
         } in
         Restart_server (Some target_state)
       else
+        let () = Hh_logger.log
+          "Informant: Incremental distance <= state distance. Ignoring fetched Saved State." in
         Move_along
     | true, Changed_merge_base _, _, _ ->
       Restart_server None
@@ -490,18 +520,18 @@ module Revision_tracker = struct
     let hg_rev = match transition with
       | State_enter hg_rev
       | State_leave hg_rev
-      | Changed_merge_base hg_rev -> hg_rev
+      | Changed_merge_base (hg_rev, _, _) -> hg_rev
     in
     match cached_svn_rev ~start_t:timestamp env.rev_map hg_rev with
     | None ->
       None
     | Some (svn_rev, xdb_results, is_tiny) ->
-      let distance = float_of_int @@ get_distance svn_rev env in
+      let jump_distance = get_jump_distance svn_rev env in
       let elapsed_t = (Unix.time () -. timestamp) in
       let significant = is_significant
         ~min_distance_restart:env.inits.min_distance_restart
-        distance elapsed_t in
-      Some (form_decision ~is_tiny significant
+        ~jump_distance elapsed_t in
+      Some (form_decision ~start_t:timestamp ~is_tiny ~significant
         transition server_state xdb_results svn_rev env, svn_rev)
 
   (**
@@ -560,9 +590,9 @@ module Revision_tracker = struct
     | Watchman.Watchman_unavailable
     | Watchman.Watchman_synchronous _ ->
       None
-    | Watchman.Watchman_pushed (Watchman.Changed_merge_base (rev, _)) ->
+    | Watchman.Watchman_pushed (Watchman.Changed_merge_base (rev, files, clock)) ->
       let () = Hh_logger.log "Changed_merge_base: %s" rev in
-      Some (Changed_merge_base rev)
+      Some (Changed_merge_base (rev, files, clock))
     | Watchman.Watchman_pushed (Watchman.State_enter (state, json))
         when state = "hg.update" ->
         let open Option in
@@ -598,8 +628,8 @@ module Revision_tracker = struct
       Queue.add (State_enter hg_rev, Unix.time ()) env.state_changes
     | Some (State_leave hg_rev) ->
       Queue.add (State_leave hg_rev, Unix.time ()) env.state_changes
-    | Some (Changed_merge_base hg_rev) ->
-      Queue.add (Changed_merge_base hg_rev, Unix.time ()) env.state_changes
+    | Some (Changed_merge_base _ as change) ->
+      Queue.add (change, Unix.time ()) env.state_changes
     in
     churn_changes server_state env
   end
@@ -629,9 +659,9 @@ module Revision_tracker = struct
     | Some (State_leave hg_rev) ->
       let () = Revision_map.add_query ~hg_rev env.inits.root env.rev_map in
       preprocess server_state (State_leave hg_rev) env
-    | Some (Changed_merge_base hg_rev) ->
+    | Some (Changed_merge_base (hg_rev, _, _) as change) ->
       let () = Revision_map.add_query ~hg_rev env.inits.root env.rev_map in
-      preprocess server_state (Changed_merge_base hg_rev) env
+      preprocess server_state change env
     in
     (** If we make an "early" decision to either kill or restart, we toss
      * out earlier state changes and don't need to pump the queue anymore.
@@ -758,7 +788,7 @@ let init {
       debug_logging = watchman_debug_logging;
       subscription_prefix = "hh_informant_watcher";
       roots = [root];
-    } in
+    } () in
     match watchman with
     | None ->
       let () = Printf.eprintf "Watchman failed to init - Informant resigning\n" in

@@ -14,10 +14,15 @@
    +----------------------------------------------------------------------+
 */
 
-#include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/ext/vsdebug/breakpoint.h"
+
 #include "hphp/runtime/ext/vsdebug/command.h"
-#include "hphp/runtime/vm/runtime.h"
+#include "hphp/runtime/ext/vsdebug/debugger.h"
+#include "hphp/runtime/ext/vsdebug/logging.h"
+
+#include "hphp/runtime/vm/runtime-compiler.h"
+
+#include "hphp/runtime/base/execution-context.h"
 
 namespace HPHP {
 namespace VSDEBUG {
@@ -65,6 +70,22 @@ Breakpoint::Breakpoint(
     m_hitCount(0) {
 
     updateConditions(condition, hitCondition);
+}
+
+Breakpoint::~Breakpoint() {
+  for (const auto& pair : m_unitCache) {
+    clearCachedConditionUnit(pair.first);
+  }
+}
+
+void Breakpoint::clearCachedConditionUnit(request_id_t requestId) {
+  auto it = m_unitCache.find(requestId);
+  if (it != m_unitCache.end()) {
+    if (it->second != nullptr) {
+      delete it->second;
+    }
+    m_unitCache.erase(it);
+  }
 }
 
 void Breakpoint::updateConditions(
@@ -700,11 +721,9 @@ bool BreakpointManager::isBreakConditionSatisified(
   HPHP::Unit* unit = bp->getCachedConditionUnit(requestId);
   if (unit == nullptr && !condition.empty()) {
     try {
-      EvaluateCommand::preparseEvalExpression(&condition);
-      if (!condition.empty()) {
-        unit = compile_string(condition.c_str(), condition.size());
-        bp->cacheConditionUnit(requestId, unit);
-      }
+      auto const cond = EvaluateCommand::prepareEvalExpression(condition);
+      unit = compile_string(cond.c_str(), cond.size(), nullptr, true);
+      bp->cacheConditionUnit(requestId, unit);
     } catch (...) {
       // Errors will be printed to stderr already, and we'll err on the side
       // of breaking when the bp is hit.

@@ -51,6 +51,9 @@ SSATmp* staticTVCns(IRGS& env, const TypedValue* tv) {
     case KindOfObject:
     case KindOfResource:
     case KindOfRef:
+    // TODO (T29639296)
+    case KindOfFunc:
+    case KindOfClass:
       break;
   }
   always_assert(false);

@@ -57,7 +57,7 @@ struct PreClassEmitter {
       : m_name(nullptr)
       , m_mangledName(nullptr)
       , m_attrs(AttrNone)
-      , m_typeConstraint(nullptr)
+      , m_userType(nullptr)
       , m_docComment(nullptr)
       , m_repoAuthType{}
       , m_userAttributes{}
@@ -66,7 +66,8 @@ struct PreClassEmitter {
     Prop(const PreClassEmitter* pce,
          const StringData* n,
          Attr attrs,
-         const StringData* typeConstraint,
+         const StringData* userType,
+         const TypeConstraint& typeConstraint,
          const StringData* docComment,
          const TypedValue* val,
          RepoAuthType repoAuthType,
@@ -76,7 +77,8 @@ struct PreClassEmitter {
     const StringData* name() const { return m_name; }
     const StringData* mangledName() const { return m_mangledName; }
     Attr attrs() const { return m_attrs; }
-    const StringData* typeConstraint() const { return m_typeConstraint; }
+    const StringData* userType() const { return m_userType; }
+    const TypeConstraint& typeConstraint() const { return m_typeConstraint; }
     const StringData* docComment() const { return m_docComment; }
     const TypedValue& val() const { return m_val; }
     RepoAuthType repoAuthType() const { return m_repoAuthType; }
@@ -86,10 +88,11 @@ struct PreClassEmitter {
       sd(m_name)
         (m_mangledName)
         (m_attrs)
-        (m_typeConstraint)
+        (m_userType)
         (m_docComment)
         (m_val)
         (m_repoAuthType)
+        (m_typeConstraint)
         (m_userAttributes)
         ;
     }
@@ -104,10 +107,11 @@ struct PreClassEmitter {
     LowStringPtr m_name;
     LowStringPtr m_mangledName;
     Attr m_attrs;
-    LowStringPtr m_typeConstraint;
+    LowStringPtr m_userType;
     LowStringPtr m_docComment;
     TypedValue m_val;
     RepoAuthType m_repoAuthType;
+    TypeConstraint m_typeConstraint;
     UserAttributeMap m_userAttributes;
   };
 
@@ -179,13 +183,23 @@ struct PreClassEmitter {
   Id id() const { return m_id; }
   void setIfaceVtableSlot(Slot s) { m_ifaceVtableSlot = s; }
   const MethodVec& methods() const { return m_methods; }
-  bool hasMethod(const StringData* name) {
+  bool hasMethod(const StringData* name) const {
     return m_methodMap.find(name) != m_methodMap.end();
+  }
+  FuncEmitter* lookupMethod(const StringData* name) const {
+    return folly::get_default(m_methodMap, name);
+  }
+  size_t numProperties() const { return m_propMap.size(); }
+  bool hasProp(const StringData* name) const {
+    return m_propMap.find(name) != m_propMap.end();
   }
   const PropMap::Builder& propMap() const { return m_propMap; }
   const ConstMap::Builder& constMap() const { return m_constMap; }
   const StringData* docComment() const { return m_docComment; }
   const StringData* parentName() const { return m_parent; }
+  static bool IsAnonymousClassName(const std::string& name) {
+    return name.find('$') != std::string::npos;
+  }
 
   void setDocComment(const StringData* sd) { m_docComment = sd; }
 
@@ -197,7 +211,8 @@ struct PreClassEmitter {
   void renameMethod(const StringData* oldName, const StringData *newName);
   bool addProperty(const StringData* n,
                    Attr attrs,
-                   const StringData* typeConstraint,
+                   const StringData* userType,
+                   const TypeConstraint& typeConstraint,
                    const StringData* docComment,
                    const TypedValue* val,
                    RepoAuthType,

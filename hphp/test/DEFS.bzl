@@ -1,15 +1,15 @@
 # -*- mode: python -*-
 
-import os
-
+load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@fbcode_macros//build_defs:compiler.bzl", "compiler")
+
 include_defs("//hphp/DEFS.bzl")
 
 def verify_unittest(suite, repo, dir, mode='interp,jit',
                     relocate=0, recycle_tc=0,
                     retranslate_all=0,
                     jit_serialize=0,
-                    cli_server=0, hhcodegen=False, use_hackc=False,
+                    cli_server=0,
                     hhas_roundtrip=False, target_suffix='',
                     extra_args=[], blacklist=None,
                     noop_rule=False):
@@ -17,10 +17,10 @@ def verify_unittest(suite, repo, dir, mode='interp,jit',
   # hphp_skip_repo_test and hphp_skip_non_repo_test let us enable or disable
   # tests based on repo mode. This is useful to shard our tests into different
   # sets for CI runs.
-  if repo and read_config('fbcode', 'hphp_skip_repo_test'):
+  if repo and native.read_config('hhvm', 'skip_repo_test'):
     noop_rule = True
 
-  if not repo and read_config('fbcode', 'hphp_skip_non_repo_test'):
+  if not repo and native.read_config('hhvm', 'skip_non_repo_test'):
     noop_rule = True
 
   target_name = 'verify_' + suite + '_' + mode + \
@@ -30,8 +30,6 @@ def verify_unittest(suite, repo, dir, mode='interp,jit',
        ('_jit-serialize' if jit_serialize else '') + \
        ('_recycle-tc' if recycle_tc else '') + \
        ('_cli-server' if cli_server else '') + \
-       ('_hhcodegen-compare' if hhcodegen else '') + \
-       ('_hackc' if use_hackc else '') + \
        ('_hhas_roundtrip' if hhas_roundtrip else '') + \
        target_suffix
 
@@ -42,7 +40,8 @@ def verify_unittest(suite, repo, dir, mode='interp,jit',
     compiler.get_compiler_for_current_buildfile() == 'clang'
 
   command = [
-    '$(location //hphp/test:run)',
+    '/usr/local/hphpi/bin/hhvm',
+    '$(location //hphp/test:run.php)',
     suite,
     '-m',
     mode,
@@ -51,7 +50,8 @@ def verify_unittest(suite, repo, dir, mode='interp,jit',
     []
   )
   if repo:
-    command.extend(['-r'])
+    command.extend(['-r',
+                    '--repo-threads', '5'])
   if relocate != 0:
     command.extend(['--relocate', '%d' % relocate,
                     '--exclude-pattern', '=/debugger|ext_vsdebug/='])
@@ -89,25 +89,12 @@ def verify_unittest(suite, repo, dir, mode='interp,jit',
     ('' if dir.startswith('//') else '//hphp/test:') + dir,
   ]
 
-  if hhcodegen == True:
-    blacklist = 'hphp/test/hhcodegen_failing_tests_' + suite
-    deplist.extend([
-        '//hphp/hack/src:hh_single_compile',
-        '//hphp/hack/src/hhbc/semdiff:semdiff',
-    ])
-  elif use_hackc == True:
-      blacklist = 'hphp/test/hackc_failing_tests_' + suite
-      deplist.append('//hphp/hack/src:hh_single_compile')
-
-  if blacklist is not None:
+  if blacklist != None:
       command.extend(['-x', blacklist])
-      head, tail = os.path.split(blacklist)
+      head = paths.dirname(blacklist)
+      tail = paths.basename(blacklist)
       deplist.append('//' + head + ':' + tail)
 
-  if hhcodegen == True:
-    command.extend(['--compare-hh-codegen'])
-  elif use_hackc == True:
-    command.extend(['--hackc', '--exclude-pattern', '=/debugger|ext_vsdebug/='])
   if noop_rule:
     custom_unittest(
       name=target_name,
@@ -120,5 +107,5 @@ def verify_unittest(suite, repo, dir, mode='interp,jit',
       name=target_name,
       command=command,
       deps=deplist,
-      tags=['serialize', 'run_as_bundle', 'hphp-test'],
+      tags=['hphp-test'] + (['run_as_bundle'] if cli_server != 0 else []),
     )

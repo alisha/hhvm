@@ -29,6 +29,7 @@
 #include "hphp/util/alloc.h" // must be included before USE_JEMALLOC is used
 #include "hphp/util/compilation-flags.h"
 #include "hphp/util/radix-map.h"
+#include "hphp/util/struct-log.h"
 #include "hphp/util/thread-local.h"
 #include "hphp/util/trace.h"
 #include "hphp/util/type-scan.h"
@@ -38,7 +39,6 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/sweepable.h"
 #include "hphp/runtime/base/header-kind.h"
-#include "hphp/runtime/base/req-containers.h"
 #include "hphp/runtime/base/req-malloc.h"
 #include "hphp/runtime/base/req-ptr.h"
 #include "hphp/runtime/base/slab-manager.h"
@@ -530,7 +530,7 @@ struct SparseHeap {
   /*
    * Return the (likely sparse) address range that contains every slab.
    */
-  MemBlock slab_range() const;
+  MemBlock slab_range() const { return m_slab_range; }
 
  protected:
   struct SlabInfo {
@@ -542,9 +542,8 @@ struct SparseHeap {
     uint16_t version{0};                // tag used with SlabManager
   };
   std::vector<SlabInfo> m_pooled_slabs;
-  RadixMap<HeapObject*,4,8> m_bigs;
-  uintptr_t m_slab_min{std::numeric_limits<uintptr_t>::max()};
-  uintptr_t m_slab_max{0};
+  RadixMap<HeapObject*,kLgSmallSizeQuantum,8> m_bigs;
+  MemBlock m_slab_range;
   int64_t m_hugeBytes{0};             // compare with RequestHugeMaxBytes
   SlabManager* m_slabManager{nullptr};
 };
@@ -757,6 +756,11 @@ struct MemoryManager {
    * allocation counters passively.
    */
   MemoryUsageStats getStatsCopy();
+
+  /*
+   * Record a small set of important stats to the given StructuredLogEntry.
+   */
+  void recordStats(StructuredLogEntry&);
 
   /*
    * Get a reference to the current stats data. This does not require any

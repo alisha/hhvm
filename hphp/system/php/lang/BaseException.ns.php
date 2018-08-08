@@ -20,7 +20,8 @@ trait BaseException {
   protected string $file;         // source filename of exception
   protected int $line;            // source line of exception
   private $trace = array();       // full stacktrace
-  private ?Exception $previous = null;
+  private ?\Exception $previous = null;
+  protected $userMetadata = null;
 
   /*
    * There is no constructor in this trait-- It should be possible to extend
@@ -36,7 +37,7 @@ trait BaseException {
    *
    * @return     mixed   Returns the Exception message as a string.
    */
-  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class)>>
+  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class), __MaybeMutable>>
   public function getMessage() {
     return $this->message;
   }
@@ -83,7 +84,7 @@ trait BaseException {
    *                     but possibly as other type in Exception descendants
    *                     (for example as string in PDOException).
    */
-  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class)>>
+  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class), __MaybeMutable>>
   public function getCode() {
     return $this->code;
   }
@@ -97,7 +98,7 @@ trait BaseException {
    * @return     mixed   Returns the filename in which the exception was
    *                     created.
    */
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getFile() {
     return $this->file;
   }
@@ -111,7 +112,7 @@ trait BaseException {
    * @return     mixed   Returns the line number where the exception was
    *                     created.
    */
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getLine() {
     return $this->line;
   }
@@ -161,6 +162,20 @@ trait BaseException {
     }
     $s .= "#$i {main}";
     return $s;
+  }
+
+  /**
+   * Set metadata property on this exception
+   */
+  final public function setUserMetadata(mixed $user_metadata): void {
+    $this->userMetadata = $user_metadata;
+  }
+
+  /**
+   * Get metadata from this exception
+   */
+  final public function getUserMetadata(): mixed {
+    return $this->userMetadata;
   }
 
   /* Overrideable */

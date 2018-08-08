@@ -21,7 +21,10 @@
             ">",
             "\\",
             ":",
-            "<"
+            "<",
+            "[",
+            "'",
+            "\""
           ]
         },
         "signatureHelpProvider": {
@@ -55,7 +58,7 @@
     "id": 11,
     "result": [
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
             "line": 5,
@@ -68,7 +71,7 @@
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
             "line": 6,
@@ -87,106 +90,170 @@
     "id": 12,
     "result": [
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 18,
+            "line": 9,
+            "character": 18
+          },
+          "end": {
+            "line": 9,
+            "character": 33
+          }
+        }
+      },
+      {
+        "uri": "file://${root_path}${path_sep}references.php",
+        "range": {
+          "start": {
+            "line": 19,
+            "character": 21
+          },
+          "end": {
+            "line": 19,
+            "character": 36
+          }
+        }
+      }
+    ]
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "result": [
+      {
+        "uri": "file://${root_path}${path_sep}references.php",
+        "range": {
+          "start": {
+            "line": 36,
             "character": 24
           },
           "end": {
-            "line": 18,
+            "line": 36,
             "character": 26
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 19,
+            "line": 37,
             "character": 2
           },
           "end": {
-            "line": 19,
+            "line": 37,
             "character": 4
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 20,
+            "line": 38,
             "character": 4
           },
           "end": {
-            "line": 20,
+            "line": 38,
             "character": 6
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 20,
+            "line": 38,
             "character": 10
           },
           "end": {
-            "line": 20,
+            "line": 38,
             "character": 12
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 20,
+            "line": 38,
             "character": 24
           },
           "end": {
-            "line": 20,
+            "line": 38,
             "character": 26
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 22,
+            "line": 40,
             "character": 20
           },
           "end": {
-            "line": 22,
+            "line": 40,
             "character": 22
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 25,
+            "line": 43,
             "character": 30
           },
           "end": {
-            "line": 25,
+            "line": 43,
             "character": 32
           }
         }
       },
       {
-        "uri": "${php_file_uri}",
+        "uri": "file://${root_path}${path_sep}references.php",
         "range": {
           "start": {
-            "line": 26,
+            "line": 44,
             "character": 11
           },
           "end": {
-            "line": 26,
+            "line": 44,
             "character": 13
+          }
+        }
+      }
+    ]
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "result": [
+      {
+        "uri": "file://${root_path}${path_sep}references.php",
+        "range": {
+          "start": {
+            "line": 30,
+            "character": 5
+          },
+          "end": {
+            "line": 30,
+            "character": 16
+          }
+        }
+      },
+      {
+        "uri": "file://${root_path}${path_sep}references.php",
+        "range": {
+          "start": {
+            "line": 45,
+            "character": 10
+          },
+          "end": {
+            "line": 45,
+            "character": 21
           }
         }
       }

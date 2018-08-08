@@ -34,10 +34,8 @@ type t = {
   option_repo_authoritative               : bool;
   option_jit_enable_rename_function       : bool;
   option_can_inline_gen_functions         : bool;
-  option_use_msrv_for_inout               : bool;
   option_php7_int_semantics               : bool;
   option_autoprime_generators             : bool;
-  option_enable_hackc_only_feature        : bool;
   option_enable_is_expr_primitive_migration : bool;
   option_enable_coroutines                : bool;
   option_hacksperimental                  : bool;
@@ -45,6 +43,7 @@ type t = {
   option_include_search_paths             : string list;
   option_include_roots                    : string SMap.t;
   option_enable_perf_logging              : bool;
+  option_disable_return_by_reference      : bool;
 }
 
 let default = {
@@ -72,10 +71,8 @@ let default = {
   option_repo_authoritative = false;
   option_jit_enable_rename_function = false;
   option_can_inline_gen_functions = true;
-  option_use_msrv_for_inout = true;
   option_php7_int_semantics = false;
   option_autoprime_generators = true;
-  option_enable_hackc_only_feature = false;
   option_enable_is_expr_primitive_migration = true;
   option_enable_coroutines = true;
   option_hacksperimental = false;
@@ -83,6 +80,8 @@ let default = {
   option_include_search_paths = [];
   option_include_roots = SMap.empty;
   option_enable_perf_logging = false;
+  option_disable_return_by_reference = false;
+
 }
 
 let enable_hiphop_syntax o = o.option_enable_hiphop_syntax
@@ -107,10 +106,8 @@ let dynamic_invoke_functions o = o.option_dynamic_invoke_functions
 let repo_authoritative o = o.option_repo_authoritative
 let jit_enable_rename_function o = o.option_jit_enable_rename_function
 let can_inline_gen_functions o = o.option_can_inline_gen_functions
-let use_msrv_for_inout o = o.option_use_msrv_for_inout
 let php7_int_semantics o = o.option_php7_int_semantics
 let autoprime_generators o = o.option_autoprime_generators
-let enable_hackc_only_feature o = o.option_enable_hackc_only_feature
 let enable_is_expr_primitive_migration o = o.option_enable_is_expr_primitive_migration
 let enable_coroutines o = o.option_enable_coroutines
 let hacksperimental o = o.option_hacksperimental
@@ -118,7 +115,7 @@ let doc_root o = o.option_doc_root
 let include_search_paths o = o.option_include_search_paths
 let include_roots o = o.option_include_roots
 let enable_perf_logging o = o.option_enable_perf_logging
-
+let disable_return_by_reference o = o.option_disable_return_by_reference
 let to_string o =
   let dynamic_invokes =
     String.concat ", " (SSet.elements (dynamic_invoke_functions o)) in
@@ -151,10 +148,8 @@ let to_string o =
     ; Printf.sprintf "jit_enable_rename_function: %B"
       @@ jit_enable_rename_function o
     ; Printf.sprintf "can_inline_gen_functions: %B" @@ can_inline_gen_functions o
-    ; Printf.sprintf "use_msrv_for_inout: %B" @@ use_msrv_for_inout o
     ; Printf.sprintf "php7_int_semantics: %B" @@ php7_int_semantics o
     ; Printf.sprintf "autoprime_generators: %B" @@ autoprime_generators o
-    ; Printf.sprintf "enable_hackc_only_feature: %B" @@ enable_hackc_only_feature o
     ; Printf.sprintf "enable_is_expr_primitive_migration: %B"
       @@ enable_is_expr_primitive_migration o
     ; Printf.sprintf "enable_coroutines: %B" @@ enable_coroutines o
@@ -163,6 +158,7 @@ let to_string o =
     ; Printf.sprintf "include_search_paths: [%s]" search_paths
     ; Printf.sprintf "include_roots: {%s}" inc_roots
     ; Printf.sprintf "enable_perf_logging: %B" @@ enable_perf_logging o
+    ; Printf.sprintf "disable_return_by_reference: %B" @@ disable_return_by_reference o
     ]
 
 (* The Hack.Lang.IntsOverflowToInts setting overrides the
@@ -219,14 +215,10 @@ let set_option options name value =
     let v = not (as_bool value) in
     { options with option_constant_folding = v;
                    option_can_inline_gen_functions = v}
-  | "hhvm.use_msrv_for_in_out" ->
-    { options with option_use_msrv_for_inout = as_bool value }
   | "hhvm.php7.int_semantics" ->
     { options with option_php7_int_semantics = as_bool value }
   | "hack.lang.autoprimegenerators" ->
     { options with option_autoprime_generators = as_bool value }
-  | "hack.lang.enablehackconlyfeature" ->
-    { options with option_enable_hackc_only_feature = as_bool value }
   | "hack.lang.enableisexprprimitivemigration" ->
     { options with option_enable_is_expr_primitive_migration = as_bool value }
   | "hack.lang.enablecoroutines" ->
@@ -235,6 +227,8 @@ let set_option options name value =
     { options with option_hacksperimental = as_bool value }
   | "eval.logexterncompilerperf" ->
     { options with option_enable_perf_logging = as_bool value }
+  | "hhvm.disable_return_by_reference" ->
+    { options with option_disable_return_by_reference = as_bool value}
   | _ -> options
 
 let get_value_from_config_ config key =
@@ -333,14 +327,10 @@ let value_setters = [
     fun opts v -> { opts with option_repo_authoritative = (v = 1) });
   (set_value "hhvm.jit_enable_rename_function" get_value_from_config_int @@
     fun opts v -> { opts with option_jit_enable_rename_function = (v = 1) });
-  (set_value "hhvm.use_msrv_for_in_out" get_value_from_config_int @@
-    fun opts v -> { opts with option_use_msrv_for_inout = (v = 1) });
   (set_value "hhvm.php7.int_semantics" get_value_from_config_int @@
     fun opts v -> { opts with option_php7_int_semantics = (v = 1) });
   (set_value "hhvm.hack.lang.autoprime_generators" get_value_from_config_int @@
     fun opts v -> { opts with option_autoprime_generators = (v = 1) });
-  (set_value "hhvm.hack.lang.enable_hackc_only_feature" get_value_from_config_int @@
-    fun opts v -> { opts with option_enable_hackc_only_feature = (v = 1) });
   (set_value "hhvm.hack.lang.enable_is_expr_primitive_migration" get_value_from_config_int @@
     fun opts v -> { opts with option_enable_is_expr_primitive_migration = (v = 1) });
   (set_value "hhvm.hack.lang.enable_coroutines" get_value_from_config_int @@
@@ -355,6 +345,8 @@ let value_setters = [
      fun opts v -> { opts with option_include_roots = v });
   (set_value "hhvm.log_extern_compiler_perf" get_value_from_config_int @@
      fun opts v -> { opts with option_enable_perf_logging = (v = 1) });
+  (set_value "hhvm.disable_return_by_reference" get_value_from_config_int @@
+     fun opts v -> { opts with option_disable_return_by_reference = (v = 1)});
 ]
 
 let extract_config_options_from_json ~init config_json =

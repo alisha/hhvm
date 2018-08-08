@@ -105,6 +105,49 @@ void raise_return_typehint_error(const std::string& msg) {
   }
 }
 
+void raise_property_typehint_error(const std::string& msg, bool isSoft) {
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+
+  if (RuntimeOption::EvalCheckPropTypeHints == 1 || isSoft) {
+    raise_warning_unsampled(msg);
+    return;
+  }
+
+  raise_recoverable_error(msg);
+  if (RuntimeOption::EvalCheckPropTypeHints >= 3) {
+    raise_error("Error handler tried to recover from a property typehint "
+                "violation");
+  }
+}
+
+void raise_property_typehint_binding_error(const Class* declCls,
+                                           const StringData* propName,
+                                           bool isStatic,
+                                           bool isSoft) {
+  raise_property_typehint_error(
+    folly::sformat(
+      "{} '{}::{}' with type annotation binding to ref",
+      isStatic ? "Static property" : "Property",
+      declCls->name(),
+      propName
+    ),
+    isSoft
+  );
+}
+
+void raise_property_typehint_unset_error(const Class* declCls,
+                                         const StringData* propName,
+                                         bool isSoft) {
+  raise_property_typehint_error(
+    folly::sformat(
+      "Unsetting property '{}::{}' with type annotation",
+      declCls->name(),
+      propName
+    ),
+    isSoft
+  );
+}
+
 void raise_disallowed_dynamic_call(const Func* f) {
   raise_hack_strict(
     RuntimeOption::DisallowDynamicVarEnvFuncs,
@@ -137,25 +180,30 @@ void raise_hack_arr_compat_serialize_notice(const ArrayData* arr) {
 
 namespace {
 
-void raise_hackarr_type_hint_impl(const Func* func,
-                                  const ArrayData* ad,
-                                  AnnotType at,
-                                  folly::Optional<int> param) {
+const char* arrayAnnotTypeToName(AnnotType at) {
+  switch (at) {
+    case AnnotType::VArray:     return "varray";
+    case AnnotType::DArray:     return "darray";
+    case AnnotType::VArrOrDArr: return "varray_or_darray";
+    case AnnotType::Array:      return "array";
+    default:                    always_assert(false);
+  }
+}
+
+const char* arrayToName(const ArrayData* ad) {
+  if (ad->isVArray()) return "varray";
+  if (ad->isDArray()) return "darray";
+  return "array";
+}
+
+void raise_hackarr_compat_type_hint_impl(const Func* func,
+                                         const ArrayData* ad,
+                                         AnnotType at,
+                                         folly::Optional<int> param) {
   if (UNLIKELY(RID().getSuppressHackArrayCompatNotices())) return;
 
-  auto const name = [&]{
-    if (at == AnnotType::VArray) return "varray";
-    if (at == AnnotType::DArray) return "darray";
-    if (at == AnnotType::VArrOrDArr) return "varray_or_darray";
-    if (at == AnnotType::Array) return "array";
-    always_assert(false);
-  }();
-
-  auto const given = [&]{
-    if (ad->isVArray()) return "varray";
-    if (ad->isDArray()) return "darray";
-    return "array";
-  }();
+  auto const name = arrayAnnotTypeToName(at);
+  auto const given = arrayToName(ad);
 
   if (param) {
     raise_notice(
@@ -171,41 +219,53 @@ void raise_hackarr_type_hint_impl(const Func* func,
   }
 }
 
+void raise_func_undefined(const char* prefix, const StringData* name,
+                          const Class* cls) {
+  if (LIKELY(!needsStripInOut(name))) {
+    if (cls) {
+      raise_error("%s undefined method %s::%s()", prefix, cls->name()->data(),
+                  name->data());
+    }
+    raise_error("%s undefined function %s()", prefix, name->data());
+  } else {
+    auto stripped = stripInOutSuffix(name);
+    if (cls) {
+      if (cls->lookupMethod(stripped)) {
+        raise_error("%s method %s::%s() with incorrectly annotated inout "
+                    "parameter", prefix, cls->name()->data(), stripped->data());
+      }
+      raise_error("%s undefined method %s::%s()", cls->name()->data(), prefix,
+                  stripped->data());
+    } else if (Unit::lookupFunc(stripped)) {
+      raise_error("%s function %s() with incorrectly annotated inout "
+                  "parameter", prefix, stripped->data());
+    }
+    raise_error("%s undefined function %s()", prefix, stripped->data());
+  }
 }
 
-void raise_hackarr_type_hint_param_notice(const Func* func,
-                                          const ArrayData* ad,
-                                          AnnotType at,
-                                          int param) {
-  raise_hackarr_type_hint_impl(func, ad, at, param);
 }
 
-void raise_hackarr_type_hint_ret_notice(const Func* func,
-                                        const ArrayData* ad,
-                                        AnnotType at) {
-  raise_hackarr_type_hint_impl(func, ad, at, folly::none);
+void raise_hackarr_compat_type_hint_param_notice(const Func* func,
+                                                 const ArrayData* ad,
+                                                 AnnotType at,
+                                                 int param) {
+  raise_hackarr_compat_type_hint_impl(func, ad, at, param);
 }
 
-void raise_hackarr_type_hint_outparam_notice(const Func* func,
-                                             const ArrayData* ad,
-                                             AnnotType at,
-                                             int param) {
+void raise_hackarr_compat_type_hint_ret_notice(const Func* func,
+                                               const ArrayData* ad,
+                                               AnnotType at) {
+  raise_hackarr_compat_type_hint_impl(func, ad, at, folly::none);
+}
+
+void raise_hackarr_compat_type_hint_outparam_notice(const Func* func,
+                                                    const ArrayData* ad,
+                                                    AnnotType at,
+                                                    int param) {
   if (UNLIKELY(RID().getSuppressHackArrayCompatNotices())) return;
-
-  auto const name = [&]{
-    if (at == AnnotType::VArray) return "varray";
-    if (at == AnnotType::DArray) return "darray";
-    if (at == AnnotType::VArrOrDArr) return "varray_or_darray";
-    if (at == AnnotType::Array) return "array";
-    always_assert(false);
-  }();
-
-  auto const given = [&]{
-    if (ad->isVArray()) return "varray";
-    if (ad->isDArray()) return "darray";
-    return "array";
-  }();
-
+  auto const name = arrayAnnotTypeToName(at);
+  auto const given = arrayToName(ad);
   raise_notice(
     "Hack Array Compat: Argument %d returned from %s() as an inout parameter "
     "must be of type %s, %s given",
@@ -213,28 +273,30 @@ void raise_hackarr_type_hint_outparam_notice(const Func* func,
   );
 }
 
+void raise_hackarr_compat_type_hint_property_notice(const Class* declCls,
+                                                    const ArrayData* ad,
+                                                    AnnotType at,
+                                                    const StringData* propName,
+                                                    bool isStatic) {
+  if (UNLIKELY(RID().getSuppressHackArrayCompatNotices())) return;
+  auto const name = arrayAnnotTypeToName(at);
+  auto const given = arrayToName(ad);
+  raise_notice(
+    "Hack Array Compat: %s '%s::%s' declared as type %s, %s assigned",
+    isStatic ? "Static property" : "Property",
+    declCls->name()->data(),
+    propName->data(),
+    name,
+    given
+  );
+}
+
+void raise_resolve_undefined(const StringData* name, const Class* cls) {
+  raise_func_undefined("Failure to resolve", name, cls);
+}
+
 void raise_call_to_undefined(const StringData* name, const Class* cls) {
-  if (LIKELY(!needsStripInOut(name))) {
-    if (cls) {
-      raise_error("Call to undefined method %s::%s()", cls->name()->data(),
-                  name->data());
-    }
-    raise_error("Call to undefined function %s()", name->data());
-  } else {
-    auto stripped = stripInOutSuffix(name);
-    if (cls) {
-      if (cls->lookupMethod(stripped)) {
-        raise_error("Call to method %s::%s() with incorrectly annotated inout "
-                    "parameter", cls->name()->data(), stripped->data());
-      }
-      raise_error("Call to undefined method %s::%s()", cls->name()->data(),
-                  stripped->data());
-    } else if (Unit::lookupFunc(stripped)) {
-      raise_error("Call to function %s() with incorrectly annotated inout "
-                  "parameter", stripped->data());
-    }
-    raise_error("Call to undefined function %s()", stripped->data());
-  }
+  raise_func_undefined("Call to", name, cls);
 }
 
 void raise_recoverable_error(const char *fmt, ...) {

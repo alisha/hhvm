@@ -48,10 +48,10 @@ enum class AnnotMetaType : uint8_t {
   VecOrDict = 11,
   ArrayLike = 12,
   Nonnull = 13,
+  NoReturn = 14
 };
 
 enum class AnnotType : uint16_t {
-  Uninit   = (uint8_t)KindOfUninit   | (uint16_t)AnnotMetaType::Precise << 8,
   Null     = (uint8_t)KindOfNull     | (uint16_t)AnnotMetaType::Precise << 8,
   Bool     = (uint8_t)KindOfBoolean  | (uint16_t)AnnotMetaType::Precise << 8,
   Int      = (uint8_t)KindOfInt64    | (uint16_t)AnnotMetaType::Precise << 8,
@@ -77,6 +77,7 @@ enum class AnnotType : uint16_t {
   VArrOrDArr = (uint16_t)AnnotMetaType::VArrOrDArr << 8 | (uint8_t)KindOfUninit,
   VecOrDict  = (uint16_t)AnnotMetaType::VecOrDict << 8  | (uint8_t)KindOfUninit,
   ArrayLike  = (uint16_t)AnnotMetaType::ArrayLike << 8  | (uint8_t)KindOfUninit,
+  NoReturn   = (uint16_t)AnnotMetaType::NoReturn << 8   | (uint8_t)KindOfUninit
 };
 
 inline AnnotMetaType getAnnotMetaType(AnnotType at) {
@@ -89,7 +90,7 @@ inline DataType getAnnotDataType(AnnotType at) {
 }
 
 inline AnnotType dataTypeToAnnotType(DataType dt) {
-  assertx(dt == KindOfUninit || dt == KindOfBoolean || dt == KindOfInt64 ||
+  assertx(dt == KindOfBoolean || dt == KindOfInt64 ||
          dt == KindOfDouble || dt == KindOfString || dt == KindOfArray ||
          dt == KindOfVec || dt == KindOfDict || dt == KindOfKeyset ||
          dt == KindOfObject || dt == KindOfResource);
@@ -122,6 +123,8 @@ bool interface_supports_array(std::string const&);
 bool interface_supports_vec(std::string const&);
 bool interface_supports_dict(std::string const&);
 bool interface_supports_keyset(std::string const&);
+
+Cell annotDefaultValue(AnnotType at);
 
 enum class AnnotAction {
   Pass,
@@ -207,10 +210,10 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
         : (RuntimeOption::EvalThisTypeHintLevel == 0)
           ? AnnotAction::Pass : AnnotAction::Fail;
     case AnnotMetaType::Callable:
-      // For "callable", if `dt' is not string/array/object we know
+      // For "callable", if `dt' is not string/array/object/func we know
       // it's not compatible, otherwise more checks are required
       return (isStringType(dt) || isArrayType(dt) || isVecType(dt) ||
-              dt == KindOfObject)
+              isFuncType(dt) || dt == KindOfObject)
         ? AnnotAction::CallableCheck : AnnotAction::Fail;
     case AnnotMetaType::VArray:
       if (!isArrayType(dt)) return AnnotAction::Fail;
@@ -236,6 +239,8 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
               isDictType(dt) || isKeysetType(dt))
         ? AnnotAction::Pass
         : AnnotAction::Fail;
+    case AnnotMetaType::NoReturn:
+      return AnnotAction::Fail;
     case AnnotMetaType::Precise:
       if (UNLIKELY(RuntimeOption::EvalHackArrCompatTypeHintNotices) &&
           at == AnnotType::Array && isArrayType(dt)) {
@@ -288,6 +293,8 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
       case KindOfBoolean:
       case KindOfResource:
         return AnnotAction::Fail;
+      case KindOfFunc:
+      case KindOfClass:
       case KindOfObject:
       case KindOfRef:
         not_reached();

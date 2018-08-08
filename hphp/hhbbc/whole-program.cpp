@@ -137,14 +137,14 @@ std::vector<Context> all_function_contexts(const php::Program& program) {
   for (auto& u : program.units) {
     for (auto& c : u->classes) {
       for (auto& m : c->methods) {
-        ret.push_back(Context { borrow(u), borrow(m), borrow(c)});
+        ret.push_back(Context { u.get(), m.get(), c.get()});
       }
     }
     for (auto& f : u->funcs) {
-      ret.push_back(Context { borrow(u), borrow(f) });
+      ret.push_back(Context { u.get(), f.get() });
     }
     if (options.AnalyzePseudomains) {
-      ret.push_back(Context { borrow(u), borrow(u->pseudomain) });
+      ret.push_back(Context { u.get(), u->pseudomain.get() });
     }
   }
   return ret;
@@ -199,21 +199,31 @@ std::vector<WorkItem> initial_work(const php::Program& program,
       if (is_used_trait(*c)) {
         for (auto& f : c->methods) {
           ret.emplace_back(WorkType::Func,
-                           Context { borrow(u), borrow(f), f->cls });
+                           Context { u.get(), f.get(), f->cls });
         }
       } else {
         ret.emplace_back(WorkType::Class,
-                         Context { borrow(u), nullptr, borrow(c) });
+                         Context { u.get(), nullptr, c.get() });
       }
     }
     for (auto& f : u->funcs) {
-      ret.emplace_back(WorkType::Func, Context { borrow(u), borrow(f) });
+      ret.emplace_back(WorkType::Func, Context { u.get(), f.get() });
     }
     if (options.AnalyzePseudomains) {
       ret.emplace_back(
         WorkType::Func,
-        Context { borrow(u), borrow(u->pseudomain) }
+        Context { u.get(), u->pseudomain.get() }
       );
+    }
+  }
+  return ret;
+}
+
+std::vector<Context> opt_prop_type_hints_contexts(const php::Program& program) {
+  std::vector<Context> ret;
+  for (auto& u : program.units) {
+    for (auto& c : u->classes) {
+      ret.emplace_back(Context { u.get(), nullptr, c.get() });
     }
   }
   return ret;
@@ -237,7 +247,10 @@ WorkItem work_item_for(DependencyContext d, AnalyzeMode mode) {
           !options.HardPrivatePropInference ||
           is_used_trait(*cls));
 
-  return WorkItem { WorkType::Func, Context { func->unit, func, cls } };
+  return WorkItem {
+    WorkType::Func,
+    Context { func->unit, const_cast<php::Func*>(func), cls }
+  };
 }
 
 /*
@@ -316,8 +329,12 @@ void analyze_iteratively(Index& index, php::Program& program,
     DependencyContextSet deps;
 
     auto update_func = [&] (const FuncAnalysisResult& fa) {
+      SCOPE_ASSERT_DETAIL("update_func") {
+        return "Updating Func: " + show(fa.ctx);
+      };
       index.refine_effect_free(fa.ctx.func, fa.effectFree);
-      index.refine_return_type(fa.ctx.func, fa.inferredReturn, deps);
+      index.refine_return_type(fa.ctx.func, fa.inferredReturn,
+                               fa.retParam, deps);
       index.refine_constants(fa, deps);
       index.refine_local_static_types(fa.ctx.func, fa.localStaticTypes);
       if (fa.resolvedConstants.size()) {
@@ -341,10 +358,18 @@ void analyze_iteratively(Index& index, php::Program& program,
     };
 
     auto update_class = [&] (const ClassAnalysis& ca) {
-      index.refine_private_props(ca.ctx.cls,
-                                 ca.privateProperties);
-      index.refine_private_statics(ca.ctx.cls,
-                                   ca.privateStatics);
+      {
+        SCOPE_ASSERT_DETAIL("update_class") {
+          return "Updating Class: " + show(ca.ctx);
+        };
+        index.refine_private_props(ca.ctx.cls,
+                                   ca.privateProperties);
+        index.refine_private_statics(ca.ctx.cls,
+                                     ca.privateStatics);
+        index.refine_bad_initial_prop_values(ca.ctx.cls,
+                                             ca.badPropInitialValues,
+                                             deps);
+      }
       for (auto& fa : ca.methods)  update_func(fa);
       for (auto& fa : ca.closures) update_func(fa);
     };
@@ -418,12 +443,29 @@ void mark_persistent_static_properties(const Index& index,
   for (auto& unit : program.units) {
     for (auto& cls : unit->classes) {
       for (auto& prop : cls->properties) {
-        if (index.lookup_public_static_immutable(borrow(cls), prop.name)) {
+        if (index.lookup_public_static_immutable(cls.get(), prop.name)) {
           prop.attrs |= AttrPersistent;
         }
       }
     }
   }
+}
+
+void prop_type_hint_pass(Index& index, php::Program& program) {
+  trace_time tracer("optimize prop type-hints");
+
+  auto const contexts = opt_prop_type_hints_contexts(program);
+  parallel::for_each(
+    contexts,
+    [&] (Context ctx) { optimize_class_prop_type_hints(index, ctx); }
+  );
+
+  parallel::for_each(
+    contexts,
+    [&] (Context ctx) {
+      index.mark_no_bad_redeclare_props(const_cast<php::Class&>(*ctx.cls));
+    }
+  );
 }
 
 /*
@@ -544,11 +586,14 @@ void whole_program(std::vector<std::unique_ptr<UnitEmitter>> ues,
   state_after("parse", *program);
 
   folly::Optional<Index> index;
-  index.emplace(borrow(program));
+  index.emplace(program.get());
   if (!options.NoOptimizations) {
     while (true) {
       try {
         assert(check(*program));
+        prop_type_hint_pass(*index, *program);
+        index->rewrite_default_initial_values(*program);
+        index->init_public_static_prop_types();
         constant_pass(*index, *program);
         index->use_class_dependencies(options.HardPrivatePropInference);
         analyze_iteratively(*index, *program, AnalyzeMode::NormalPass);
@@ -563,7 +608,7 @@ void whole_program(std::vector<std::unique_ptr<UnitEmitter>> ues,
         break;
       } catch (Index::rebuild& rebuild) {
         FTRACE(1, "whole_program: rebuilding index\n");
-        index.emplace(borrow(program), &rebuild);
+        index.emplace(program.get(), &rebuild);
         continue;
       }
     }

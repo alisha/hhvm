@@ -87,7 +87,6 @@
 
 #include "hphp/util/md5.h"
 
-#include "hphp/parser/parser.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/repo-auth-type-codec.h"
 #include "hphp/runtime/base/repo-auth-type.h"
@@ -1445,7 +1444,7 @@ std::map<std::string,ParserFunc> opcode_parsers;
 #define NUM_PUSH_TWO(a,b) 2
 #define NUM_PUSH_THREE(a,b,c) 3
 #define NUM_PUSH_INS_1(a) 1
-#define NUM_PUSH_CMANY immIVA[1] /* number of outputs */
+#define NUM_PUSH_FCALL immIVA[2] /* number of outputs */
 #define NUM_POP_NOV 0
 #define NUM_POP_ONE(a) 1
 #define NUM_POP_TWO(a,b) 2
@@ -1455,9 +1454,7 @@ std::map<std::string,ParserFunc> opcode_parsers;
 #define NUM_POP_V_MFINAL NUM_POP_C_MFINAL
 #define NUM_POP_CVMANY immIVA[0] /* number of arguments */
 #define NUM_POP_CVUMANY immIVA[0] /* number of arguments */
-#define NUM_POP_C_CVMANY immIVA[0] /* number of arguments */
-#define NUM_POP_CVMANY_UMANY (immIVA[0] + immIVA[1] - 1) /* number of arguments */
-#define NUM_POP_C_CVMANY_UMANY (immIVA[0] + immIVA[1] - 1) /* number of arguments */
+#define NUM_POP_FCALL (immIVA[0] + immIVA[1] + immIVA[2] - 1)
 #define NUM_POP_CMANY immIVA[0] /* number of arguments */
 #define NUM_POP_SMANY vecImmStackValues
 
@@ -1485,13 +1482,6 @@ std::map<std::string,ParserFunc> opcode_parsers;
       as.endFpi();                                                     \
     }                                                                  \
                                                                        \
-    /* Other FCall* functions perform their own bounds checking. */    \
-    if (Op##name == OpFCall || Op##name == OpFCallD ||                 \
-        Op##name == OpFCallAwait || Op##name == OpFCallM ||            \
-        Op##name == OpFCallDM) {                                       \
-      as.fe->containsCalls = true;                                     \
-    }                                                                  \
-                                                                       \
     as.ue->emitOp(Op##name);                                           \
                                                                        \
     UNUSED size_t immIdx = 0;                                          \
@@ -1513,6 +1503,12 @@ std::map<std::string,ParserFunc> opcode_parsers;
                                                                        \
     if (isFPush(Op##name)) {                                           \
       as.beginFpi(curOpcodeOff);                                       \
+    }                                                                  \
+                                                                       \
+    /* FCalls with unpack perform their own bounds checking. */        \
+    if ((Op##name == OpFCall && !immIVA[1]) ||                         \
+        Op##name == OpFCallAwait) {                                    \
+      as.fe->containsCalls = true;                                     \
     }                                                                  \
                                                                        \
     /* Stack depth should be 0 after RetC or RetV. */                  \
@@ -1573,7 +1569,7 @@ OPCODES
 #undef NUM_PUSH_THREE
 #undef NUM_PUSH_POS_N
 #undef NUM_PUSH_INS_1
-#undef NUM_PUSH_CMANY
+#undef NUM_PUSH_FCALL
 #undef NUM_POP_NOV
 #undef NUM_POP_ONE
 #undef NUM_POP_TWO
@@ -1584,9 +1580,7 @@ OPCODES
 #undef NUM_POP_V_MFINAL
 #undef NUM_POP_CVMANY
 #undef NUM_POP_CVUMANY
-#undef NUM_POP_C_CVMANY
-#undef NUM_POP_CVMANY_UMANY
-#undef NUM_POP_C_CVMANY_UMANY
+#undef NUM_POP_FCALL
 #undef NUM_POP_CMANY
 #undef NUM_POP_SMANY
 
@@ -1670,7 +1664,15 @@ Variant parse_php_serialized(
     true
   );
   if (overrides) vu.setDVOverrides(overrides);
-  return vu.unserialize();
+  try {
+    return vu.unserialize();
+  } catch (const FatalErrorException&) {
+    throw;
+  } catch (const std::exception& e) {
+    auto const msg =
+      folly::sformat("AssemblerUnserializationError: {}", e.what());
+    throw AssemblerUnserializationError(msg);
+  }
 }
 
 /*
@@ -1680,7 +1682,15 @@ Variant parse_php_serialized(
 Variant parse_maybe_php_serialized(AsmState& as) {
   auto s = parse_maybe_long_string(as);
   if (!s.empty()) {
-    return unserialize_from_string(s, VariableUnserializer::Type::Internal);
+    try {
+      return unserialize_from_string(s, VariableUnserializer::Type::Internal);
+    } catch (const FatalErrorException&) {
+      throw;
+    } catch (const std::exception& e) {
+      auto const msg =
+        folly::sformat("AssemblerUnserializationError: {}", e.what());
+      throw AssemblerUnserializationError(msg);
+    }
   }
   return Variant();
 }
@@ -2034,6 +2044,7 @@ void fixup_default_values(AsmState& as, FuncEmitter* fe) {
  *            |  ".try_catch" directive-catch
  *            |  ".try" directive-try-catch
  *            |  ".ismemoizewrapper"
+ *            |  ".ismemoizewrapperlsb"
  *            |  ".dynamicallycallable"
  *            |  ".srcloc" directive-srcloc
  *            |  ".doc" directive-doccomment
@@ -2065,6 +2076,12 @@ void parse_function_body(AsmState& as, int nestLevel /* = 0 */) {
     if (word[0] == '.') {
       if (word == ".ismemoizewrapper") {
         as.fe->isMemoizeWrapper = true;
+        as.in.expectWs(';');
+        continue;
+      }
+      if (word == ".ismemoizewrapperlsb") {
+        as.fe->isMemoizeWrapper = true;
+        as.fe->isMemoizeWrapperLSB = true;
         as.in.expectWs(';');
         continue;
       }
@@ -2667,7 +2684,10 @@ void parse_property(AsmState& as) {
   Attr attrs = parse_attribute_list(as, AttrContext::Prop, &userAttributes);
 
   auto const heredoc = makeStaticString(parse_maybe_long_string(as));
-  auto const userTy = parse_type_info(as, false).first;
+
+  const StringData* userTy;
+  TypeConstraint typeConstraint;
+  std::tie(userTy, typeConstraint) = parse_type_info(as, false);
   auto const userTyStr = userTy ? userTy : staticEmptyString();
 
   std::string name;
@@ -2682,6 +2702,7 @@ void parse_property(AsmState& as) {
   as.pce->addProperty(makeStaticString(name),
                       attrs,
                       userTyStr,
+                      typeConstraint,
                       heredoc,
                       &tvInit,
                       RepoAuthType{},
@@ -2978,7 +2999,7 @@ void parse_class(AsmState& as) {
   if (!as.in.readname(name)) {
     as.error(".class must have a name");
   }
-  if (ParserBase::IsAnonymousClassName(name)) {
+  if (PreClassEmitter::IsAnonymousClassName(name)) {
     // assign unique numbers to anonymous classes
     // they must not be pre-numbered in the hhas
     auto p = name.find(';');
@@ -3357,7 +3378,7 @@ std::unique_ptr<UnitEmitter> assemble_string(
   bool swallowErrors,
   AsmCallbacks* callbacks
 ) {
-  auto ue = std::make_unique<UnitEmitter>(md5);
+  auto ue = std::make_unique<UnitEmitter>(md5, Native::s_builtinNativeFuncs);
   if (!SystemLib::s_inited) {
     ue->m_mergeOnly = true;
   }
@@ -3375,12 +3396,15 @@ std::unique_ptr<UnitEmitter> assemble_string(
     if (ue->m_isHHFile) {
       ue->m_useStrictTypes = true;
     }
+  } catch (const FatalErrorException& e) {
+    if (!swallowErrors) throw;
+    ue = createFatalUnit(sd, md5, FatalOp::Runtime, makeStaticString(e.what()));
   } catch (const AssemblerError& e) {
     if (!swallowErrors) throw;
     ue = createFatalUnit(sd, md5, FatalOp::Runtime, makeStaticString(e.what()));
   } catch (const std::exception& e) {
     if (!swallowErrors) {
-      // the assembler should throw only AssemblerErrors
+      // assembler should throw only AssemblerErrors and FatalErrorExceptions
       throw AssemblerError(folly::sformat("AssemblerError: {}", e.what()));
     }
     ue = createFatalUnit(sd, md5, FatalOp::Runtime, makeStaticString(e.what()));

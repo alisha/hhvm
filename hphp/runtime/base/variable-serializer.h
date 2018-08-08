@@ -17,7 +17,8 @@
 #ifndef incl_HPHP_VARIABLE_SERIALIZER_H_
 #define incl_HPHP_VARIABLE_SERIALIZER_H_
 
-#include "hphp/runtime/base/req-containers.h"
+#include "hphp/runtime/base/req-hash-map.h"
+#include "hphp/runtime/base/req-vector.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/base/string-data.h"
@@ -162,10 +163,9 @@ private:
   struct SavedRefMap {
     ~SavedRefMap();
 
-    struct MapData : boost::noncopyable {
-      MapData() : m_count(0), m_id(-1) { }
-      int m_count;
-      int m_id;
+    struct MapData {
+      int m_count{0};
+      int m_id{-1};
     };
 
     MapData& operator[](tv_rval tv) {
@@ -191,7 +191,7 @@ private:
       }
     };
 
-    req::hash_map<TypedValue, MapData, TvHash, TvEq> m_mapping;
+    req::fast_map<TypedValue, MapData, TvHash, TvEq> m_mapping;
   };
 
   Type m_type;
@@ -267,6 +267,8 @@ private:
   void serializeResource(const ResourceData*);
   void serializeResourceImpl(const ResourceData* res);
   void serializeString(const String&);
+  void serializeFunc(const Func* func);
+  void serializeClass(const Class* cls);
 
   Array getSerializeProps(const ObjectData* obj) const;
 };

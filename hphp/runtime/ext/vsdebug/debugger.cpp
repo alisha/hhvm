@@ -19,6 +19,7 @@
 #include "hphp/runtime/base/intercept.h"
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/unit-cache.h"
+#include "hphp/runtime/ext/vsdebug/ext_vsdebug.h"
 #include "hphp/runtime/ext/vsdebug/debugger.h"
 #include "hphp/runtime/ext/vsdebug/command.h"
 #include "hphp/util/process.h"
@@ -47,9 +48,17 @@ void Debugger::runSessionCleanupThread() {
   while (true) {
     {
       std::unique_lock<std::mutex> lock(m_sessionCleanupLock);
-      m_sessionCleanupCondition.wait(lock);
 
+      // Read m_sessionCleanupTerminating while the lock is held.
       terminating = m_sessionCleanupTerminating;
+
+      if (!terminating) {
+        // Wait for signal
+        m_sessionCleanupCondition.wait(lock);
+
+        // Re-check terminating flag while the lock is still re-acquired.
+        terminating = m_sessionCleanupTerminating;
+      }
 
       // Make a local copy of the session pointers to delete and drop
       // the lock.
@@ -1723,7 +1732,6 @@ void Debugger::onBreakpointHit(
   int line
 ) {
   std::string stopReason;
-  int matchingBpId = -1;
   const std::string filePath = getFilePathForUnit(compilationUnit);
 
   if (prepareToPauseTarget(ri) != PrepareToPauseResult::ReadyToPause) {
@@ -1755,12 +1763,10 @@ void Debugger::onBreakpointHit(
     bool lineInRange = line >= bp->m_resolvedLocation.m_startLine &&
         line <= bp->m_resolvedLocation.m_endLine;
 
-    bool conditionSatisfied = bpMgr->isBreakConditionSatisified(ri, bp);
     if (lineInRange) {
-      if (conditionSatisfied) {
-        matchingBpId = bpId;
+      if (bpMgr->isBreakConditionSatisified(ri, bp)) {
         stopReason = getStopReasonForBp(
-          matchingBpId,
+          bpId,
           !bp->m_resolvedLocation.m_path.empty()
             ? bp->m_resolvedLocation.m_path
             : bp->m_path,
@@ -1770,7 +1776,16 @@ void Debugger::onBreakpointHit(
         // Breakpoint hit!
         pauseTarget(ri, stopReason.c_str());
         bpMgr->onBreakpointHit(bpId);
-        break;
+
+        processCommandQueue(
+          getCurrentThreadId(),
+          ri,
+          "breakpoint",
+          stopReason.c_str(),
+          true
+        );
+
+        return;
       } else {
         VSDebugLogger::Log(
           VSDebugLogger::LogLevelInfo,
@@ -1782,17 +1797,8 @@ void Debugger::onBreakpointHit(
     }
   }
 
-  if (matchingBpId >= 0) {
-    // If an active breakpoint was found at this location, enter the debugger.
-    processCommandQueue(
-      getCurrentThreadId(),
-      ri,
-      "breakpoint",
-      stopReason.c_str(),
-      true
-    );
-  } else if (ri->m_runToLocationInfo.path == filePath &&
-             line == ri->m_runToLocationInfo.line) {
+  if (ri->m_runToLocationInfo.path == filePath &&
+      line == ri->m_runToLocationInfo.line) {
 
     // Hit our run to location destination!
     stopReason = "Run to location";
@@ -1824,19 +1830,6 @@ void Debugger::onBreakpointHit(
       stopReason.c_str(),
       true
     );
-  } else {
-    // This breakpoint no longer exists. Remove it from the VM.
-    VSDebugLogger::Log(
-      VSDebugLogger::LogLevelInfo,
-      "Request hit bp that no longer exists, removing from VM. %s:%d",
-      filePath.c_str(),
-      line
-    );
-    removeBreakpoint(
-      func != nullptr
-        ? BreakpointType::Function
-        : BreakpointType::Source
-    );
   }
 }
 
@@ -1864,22 +1857,20 @@ void Debugger::onExceptionBreakpointHit(
   BreakpointManager* bpMgr = m_session->getBreakpointManager();
   ExceptionBreakMode breakMode = bpMgr->getExceptionBreakMode();
 
-  switch (breakMode) {
-    case BreakNone:
-      // Do not break on exceptions.
-      return;
-    case BreakUnhandled:
-    case BreakUserUnhandled:
-      // The PHP VM doesn't give us any way to distinguish between handled
-      // and unhandled exceptions. Print a message to the console but do
-      // not break.
-      sendUserMessage(userMsg.c_str(), DebugTransport::OutputLevelWarning);
-      return;
-    case BreakAll:
-      break;
-    default:
-      assertx(false);
+  if (breakMode == BreakNone) {
+    return;
   }
+
+  sendUserMessage(userMsg.c_str(), DebugTransport::OutputLevelWarning);
+
+  if (breakMode == BreakUnhandled || breakMode == BreakUserUnhandled) {
+    // The PHP VM doesn't give us any way to distinguish between handled
+    // and unhandled exceptions. A message was already printed indicating
+    // the exception, but we won't actually break in.
+    return;
+  }
+
+  assertx(breakMode == BreakAll);
 
   if (prepareToPauseTarget(ri) != PrepareToPauseResult::ReadyToPause) {
     return;

@@ -91,10 +91,14 @@ bool purge_all(std::string* errStr) {
   return true;
 }
 
+__thread int32_t s_numaNode;
+
 __thread uintptr_t s_stackLimit;
 __thread size_t s_stackSize;
 const size_t s_pageSize =  sysconf(_SC_PAGESIZE);
-unsigned s_hugeStackSizeKb;
+
+__thread MemBlock s_tlSpace;
+__thread MemBlock s_hugeRange;
 
 static NEVER_INLINE uintptr_t get_stack_top() {
   using ActRec = char;
@@ -162,26 +166,16 @@ void init_stack_limits(pthread_attr_t* attr) {
 }
 
 void flush_thread_stack() {
-  uintptr_t top = get_stack_top() & ~(s_pageSize - 1);
-  if (s_firstSlab.ptr) {
-    uintptr_t boundary =               // between hugetlb pages and normal pages
-       reinterpret_cast<uintptr_t>(s_firstSlab.ptr) - s_hugeStackSizeKb * 1024;
-    assert(boundary % size2m == 0);
-    if (boundary < top) top = boundary;
-  }
-  // s_stackLimit is already aligned
-  assert(top >= s_stackLimit);
+  uintptr_t top = get_stack_top() & (s_pageSize - 1);
+  auto const hugeBase = reinterpret_cast<uintptr_t>(s_hugeRange.ptr);
+  if (top > hugeBase) top = hugeBase;
+  if (top <= s_stackLimit) return;
   size_t len = top - s_stackLimit;
-  assert((len & (s_pageSize - 1)) == 0);
   if (madvise((void*)s_stackLimit, len, MADV_DONTNEED) != 0 &&
       errno != EAGAIN) {
     fprintf(stderr, "%s failed to madvise with error %d\n", __func__, errno);
-    abort();
   }
 }
-
-__thread int32_t s_numaNode;
-__thread MemBlock s_firstSlab;
 
 #if !defined USE_JEMALLOC || !defined HAVE_NUMA
 void enable_numa(bool local) {}
@@ -298,7 +292,7 @@ void enable_numa(bool local) {
 }
 
 void set_numa_binding(int node) {
-  if (!use_numa) return;
+  if (node < 0 || !use_numa) return;
 
   s_numaNode = node;
   numa_sched_setaffinity(0, node_to_cpu_mask[node]);
@@ -384,8 +378,13 @@ static BumpMapper* getHugeMapperWithFallback(unsigned n1GPages,
 void setup_low_arena(unsigned n1GPages) {
   assert(reinterpret_cast<uintptr_t>(sbrk(0)) <= kLowArenaMinAddr);
   auto mapper = getHugeMapperWithFallback(n1GPages, true, 0);
-  auto ma = LowArena::CreateAt(&g_lowArena, kLowArenaMinAddr,
-                               kLowArenaMaxCap, false, mapper);
+  if (n1GPages == 0) {
+    // If we are using 2M pages, save this so we can change how many 2M huge
+    // pages to use.
+    low_2m_mapper = dynamic_cast<Bump2MMapper*>(mapper);
+  }
+  auto ma = LowArena::CreateAt(&g_lowArena, kLowArenaMinAddr, kLowArenaMaxCap,
+                               LockPolicy::Blocking, mapper);
   set_arena_retain_grow_limit(ma->id());
   low_arena = ma->id();
   low_arena_flags = MALLOCX_ARENA(low_arena) | MALLOCX_TCACHE_NONE;
@@ -398,7 +397,7 @@ void setup_high_arena(unsigned n1GPages) {
                                           num_numa_nodes() / 2 + 1);
   auto ma = HighArena::CreateAt(&g_highArena,
                                 kLowArenaMaxAddr, kHighArenaMaxCap,
-                                false, mapper);
+                                LockPolicy::Blocking, mapper);
   set_arena_retain_grow_limit(ma->id());
   high_arena = ma->id();
   high_arena_tcache_create();           // set up high_arena_flags

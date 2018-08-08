@@ -33,7 +33,7 @@
 
 #include "hphp/util/compact-vector.h"
 #include "hphp/util/default-ptr.h"
-#include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/hash-map.h"
 
 #include <folly/Hash.h>
 #include <folly/Range.h>
@@ -43,7 +43,6 @@
 #include <list>
 #include <memory>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -153,7 +152,9 @@ struct Class : AtomicCountable {
     LowPtr<Class> cls;
 
     Attr attrs;
-    LowStringPtr typeConstraint;
+    LowStringPtr userType;
+    TypeConstraint typeConstraint;
+
     /*
      * When built in RepoAuthoritative mode, this is a control-flow insensitive,
      * always-true type assertion for this property.  (It may be Gen if there
@@ -170,8 +171,9 @@ struct Class : AtomicCountable {
   struct SProp {
     LowStringPtr name;
     Attr attrs;
-    LowStringPtr typeConstraint;
+    LowStringPtr userType;
     LowStringPtr docComment;
+    TypeConstraint typeConstraint;
 
     /* Most derived class that declared this property. */
     LowPtr<Class> cls;
@@ -546,6 +548,7 @@ public:
   const Func* getToString() const;
   const Func* get86pinit() const;
   const Func* get86sinit() const;
+  const Func* get86linit() const;
 
   /*
    * Look up a class' cached __invoke function.  We only cache __invoke methods
@@ -673,6 +676,9 @@ public:
   RepoAuthType declPropRepoAuthType(Slot index) const;
   RepoAuthType staticPropRepoAuthType(Slot index) const;
 
+  const TypeConstraint& declPropTypeConstraint(Slot index) const;
+  const TypeConstraint& staticPropTypeConstraint(Slot index) const;
+
   /*
    * Whether this class has any properties that require deep initialization.
    *
@@ -709,9 +715,24 @@ public:
 
   /*
    * Whether this Class requires initialization, either because of nonscalar
-   * instance property initializers, or simply due to having static properties.
+   * instance property initializers, simply due to having static properties, or
+   * possible property type invariance violations.
    */
   bool needInitialization() const;
+
+  /*
+   * Whether this Class potentially has properties which redefine properties in
+   * a parent class, and the properties might have inequivalent type-hints. If
+   * so, a runtime check is needed during class initialization to possibly raise
+   * an error.
+   */
+  bool maybeRedefinesPropTypes() const;
+
+  /*
+   * Whether this Class has properties that require a runtime initial value
+   * check.
+   */
+  bool needsPropInitialValueCheck() const;
 
   /*
    * Perform request-local initialization.
@@ -728,6 +749,12 @@ public:
   void initialize() const;
   void initProps() const;
   void initSProps() const;
+
+  /*
+   * Perform a property type-hint redefinition check for the property at a
+   * particular slot.
+   */
+  void checkPropTypeRedefinition(Slot) const;
 
   /*
    * Check if class has been initialized.
@@ -749,6 +776,17 @@ public:
    */
   const FixedVector<const Func*>& pinitVec() const;
 
+  /*
+   * RDS handle which marks whether a property type-hint redefinition check has
+   * been performed for this class in this request yet.
+   */
+  rds::Handle checkedPropTypeRedefinesHandle() const;
+
+  /*
+   * RDS handle which marks whether the initial value check has been performed
+   * for this class in this request yet.
+   */
+  rds::Handle checkedPropInitialValuesHandle() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Property storage.                                                  [const]
@@ -791,9 +829,14 @@ public:
   /////////////////////////////////////////////////////////////////////////////
   // Property lookup and accessibility.                                 [const]
 
-  template <class T>
-  struct PropLookup {
-    T prop;
+  struct PropValLookup {
+    TypedValue* val;
+    Slot slot;
+    bool accessible;
+  };
+
+  struct PropSlotLookup {
+    Slot slot;
     bool accessible;
   };
 
@@ -808,12 +851,12 @@ public:
    * this class or any ancestor.  Note that if the return is marked as
    * accessible, then the property must exist.
    */
-  PropLookup<Slot> getDeclPropIndex(const Class*, const StringData*) const;
+  PropSlotLookup getDeclPropIndex(const Class*, const StringData*) const;
 
   /*
    * The equivalent of getDeclPropIndex(), but for static properties.
    */
-  PropLookup<Slot> findSProp(const Class*, const StringData*) const;
+  PropSlotLookup findSProp(const Class*, const StringData*) const;
 
   /*
    * Get the request-local value of the static property `sPropName', as well as
@@ -824,7 +867,7 @@ public:
    *
    * May perform initialization.
    */
-  PropLookup<TypedValue*> getSProp(const Class*, const StringData*) const;
+  PropValLookup getSProp(const Class*, const StringData*) const;
 
   /*
    * Return whether or not a declared instance property is accessible from the
@@ -1046,6 +1089,36 @@ public:
   std::pair<Slot, bool> memoSlotForFunc(FuncId func) const;
 
   /////////////////////////////////////////////////////////////////////////////
+  // LSB Memoize methods
+  //
+  /*
+   * Retrieve the slot corresponding to the value/cache for a function
+   * when bound to this class or a subclass.
+   * These are for use by the JIT.
+   */
+  Slot lsbMemoSlot(const Func* func, bool forValue) const;
+
+  /*
+   * Get the offset into the Class of the extra structure
+   * Used by the JIT to load m_extra
+   */
+  static constexpr size_t extraOffset() {
+    static_assert(
+      sizeof(m_extra) == sizeof(ExtraData*),
+      "The JIT loads m_extra as a bare pointer");
+    return offsetof(Class, m_extra);
+  }
+
+  /*
+   * Get the offset into the extra structure of m_handles.
+   * Used by the JIT.
+   */
+  static constexpr size_t lsbMemoExtraHandlesOffset() {
+    return offsetof(ExtraData, m_lsbMemoExtra) +
+           offsetof(LSBMemoExtra, m_handles);
+  }
+
+  /////////////////////////////////////////////////////////////////////////////
   // Other methods.
   //
   // Avoiding adding methods to this section.
@@ -1082,7 +1155,7 @@ public:
                                       const TypedValue& tv2);
 
   // For assertions:
-  void validate() const;
+  bool validate() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Offset accessors.                                                 [static]
@@ -1119,6 +1192,30 @@ public:
   // ExtraData.
 
 private:
+  struct LSBMemoExtra {
+    /*
+     * Mapping of methods (declared by this class only) to their assigned slots
+     * for LSB memoization. This is populated in the Class ctor when LSB
+     * memoized methods are present.
+     *
+     */
+    boost::container::flat_map<FuncId, Slot> m_slots;
+
+    /*
+     * The total number of memo slots, and also the next LSB memo slot to
+     * assign. This must be larger than our parent's m_numSlots, since slots
+     * are inherited.
+     */
+    Slot m_numSlots{0};
+
+    /*
+     * Cached handles to LSB memoization for this class.
+     * This array is initialized in the Class ctor, when LSB memoized
+     * methods are present.
+     */
+    rds::Handle* m_handles{nullptr};
+  };
+
   struct ExtraData {
     ~ExtraData();
 
@@ -1190,13 +1287,29 @@ private:
      * The next memo slot to assign. This is inherited from the parent.
      */
     Slot m_nextMemoSlot{0};
+
+    /*
+     * MemoizeLSB extra data
+     */
+    mutable LSBMemoExtra m_lsbMemoExtra;
+
+    /*
+     * If initialized, then this class has already performed a property
+     * type-hint redefinition check.
+     */
+    mutable rds::Link<bool, rds::Mode::Normal> m_checkedPropTypeRedefs;
+
+    /*
+     * If initialized, then this class has already performed an initial value
+     * check.
+     */
+    mutable rds::Link<bool, rds::Mode::Normal> m_checkedPropInitialValues;
   };
 
   /*
    * Allocate the ExtraData; done only when necessary.
    */
   void allocExtraData();
-
 
   /////////////////////////////////////////////////////////////////////////////
   // Internal types.
@@ -1326,7 +1439,7 @@ private:
                              const int idxOffset,
                              PropMap::Builder& curPropMap,
                              SPropMap::Builder& curSPropMap);
-  void addTraitPropInitializers(std::vector<const Func*>&, bool staticProps);
+  void addTraitPropInitializers(std::vector<const Func*>&, Attr which);
 
   void checkInterfaceMethods();
   void checkInterfaceConstraints();
@@ -1348,11 +1461,15 @@ private:
   void checkRequirementConstraints() const;
   void raiseUnsatisfiedRequirement(const PreClass::ClassRequirement*) const;
   void setNativeDataInfo();
-  void setMemoCacheInfo();
+  void setInstanceMemoCacheInfo();
+  void setLSBMemoCacheInfo();
 
   template<bool setParents> void setInstanceBitsImpl();
   void addInterfacesFromUsedTraits(InterfaceMap::Builder& builder) const;
 
+  void initLSBMemoHandles();
+  void checkPropTypeRedefinitions() const;
+  void checkPropInitialValues() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Static data members.
@@ -1371,7 +1488,7 @@ public:
 private:
   static constexpr uint32_t kMagic = 0xce7adb33;
 
-#ifdef DEBUG
+#ifndef NDEBUG
   // For asserts only.
   uint32_t m_magic;
 #endif
@@ -1404,7 +1521,17 @@ private:
    * to the closure's context class.
    */
   std::atomic<bool> m_scoped{false};
-  // NB: 24 bits available here (in USE_LOWPTR builds).
+
+  /* This class, or one of its transitive parents, has a property which maybe
+   * redefines an existing property in an incompatible way. */
+  bool m_maybeRedefsPropTy       : 1;
+  /* This class (and not any of its transitive parents) has a property which
+   * maybe redefines an existing property in an incompatible way. */
+  bool m_selfMaybeRedefsPropTy   : 1;
+  /* This class has a property with an initial value which might not satisfy its
+   * type-hint (and therefore requires a check when initialized). */
+  bool m_needsPropInitialCheck   : 1;
+  // NB: 21 bits available here (in USE_LOWPTR builds).
 
   /*
    * Vector of 86pinit() methods that need to be called to complete instance
@@ -1416,6 +1543,7 @@ private:
    *    - A static property of this class is accessed.
    */
   FixedVector<const Func*> m_sinitVec;
+  FixedVector<const Func*> m_linitVec;
   LowPtr<Func> m_ctor;
   LowPtr<Func> m_dtor;
   PropInitVec m_declPropInit;
@@ -1484,7 +1612,8 @@ private:
 
   /*
    * Whether the Class requires initialization, because it has either
-   * {p,s}init() methods or static members.
+   * {p,s}init() methods or static members, or possibly has prop type invariance
+   * violations.
    */
   bool m_needInitialization : 1;
 
@@ -1557,6 +1686,12 @@ bool classMayHaveMagicPropMethods(const Class* cls);
  * @requires: RuntimeOption::EvalPerfDataMap
  */
 const Class* getOwningClassForFunc(const Func* f);
+
+/*
+ * Convert a class pointer where a string is needed in some context. A warning
+ * will be raised when compiler option Eval.RaiseClassConversionWarning is true.
+ */
+const StringData* classToStringHelper(const Class* cls);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

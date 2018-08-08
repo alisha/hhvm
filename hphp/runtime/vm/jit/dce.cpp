@@ -83,6 +83,7 @@ bool canDCE(IRInstruction* inst) {
   case ConvIntToStr:
   case ConvClsToCctx:
   case DblAsBits:
+  case ConvPtrToLval:
   case NewColFromArray:
   case GtInt:
   case GteInt:
@@ -233,6 +234,7 @@ bool canDCE(IRInstruction* inst) {
   case LdWHResult:
   case LdWHNotDone:
   case LdAFWHActRec:
+  case LdMIPropStateAddr:
   case LdMIStateAddr:
   case StringIsset:
   case ColIsEmpty:
@@ -271,6 +273,7 @@ bool canDCE(IRInstruction* inst) {
   case IsFuncDynCallable:
   case StrictlyIntegerConv:
   case GetMemoKeyScalar:
+  case LookupSPropSlot:
     assertx(!inst->isControlFlow());
     return true;
 
@@ -431,11 +434,11 @@ bool canDCE(IRInstruction* inst) {
   case LdFunc:
   case LdFuncCached:
   case LdFuncCachedU:
+  case LookupFuncCached:
   case AllocObj:
   case RegisterLiveObj:
-  case CheckInitProps:
   case InitProps:
-  case CheckInitSProps:
+  case PropTypeRedefineCheck:
   case InitSProps:
   case InitObjProps:
   case DebugBacktrace:
@@ -489,7 +492,12 @@ bool canDCE(IRInstruction* inst) {
   case VerifyRetCls:
   case VerifyRetFail:
   case VerifyRetFailHard:
+  case VerifyProp:
+  case VerifyPropCls:
+  case VerifyPropFail:
+  case VerifyPropFailHard:
   case RaiseHackArrParamNotice:
+  case RaiseHackArrPropNotice:
   case RaiseUninitLoc:
   case RaiseUndefProp:
   case RaiseMissingArg:
@@ -685,6 +693,7 @@ bool canDCE(IRInstruction* inst) {
   case ThrowArithmeticError:
   case ThrowDivisionByZeroError:
   case StMBase:
+  case StMIPropState:
   case FinishMemberOp:
   case InlineReturnNoFrame:
   case BeginInlining:
@@ -697,10 +706,14 @@ bool canDCE(IRInstruction* inst) {
   case ProfileInstanceCheck:
   case MemoGetStaticValue:
   case MemoGetStaticCache:
+  case MemoGetLSBValue:
+  case MemoGetLSBCache:
   case MemoGetInstanceValue:
   case MemoGetInstanceCache:
   case MemoSetStaticValue:
   case MemoSetStaticCache:
+  case MemoSetLSBValue:
+  case MemoSetLSBCache:
   case MemoSetInstanceValue:
   case MemoSetInstanceCache:
   case KillClsRef:
@@ -708,6 +721,8 @@ bool canDCE(IRInstruction* inst) {
   case BoxPtr:
   case AsTypeStruct:
   case ResolveTypeStruct:
+  case CheckRDSInitialized:
+  case MarkRDSInitialized:
     return false;
 
   case AKExistsArr:
@@ -1140,6 +1155,7 @@ void performActRecFixups(const BlockList& blocks,
        */
       case DecRef:
       case MemoSetStaticValue:
+      case MemoSetLSBValue:
       case MemoSetInstanceValue:
         if (inst.marker().func() != outerFunc) {
           ITRACE(3, "pushing stack depth of {} to {}\n", safeDepth, inst);

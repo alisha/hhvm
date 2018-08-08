@@ -171,7 +171,7 @@ void init_use_vars(IRGS& env, const Func* func, SSATmp* closure) {
       env,
       LdPropAddr,
       ByteOffsetData { use_var_off },
-      ty.ptr(Ptr::Prop),
+      ty.lval(Ptr::Prop),
       closure
     );
     auto const prop = gen(env, LdMem, ty, addr);
@@ -534,7 +534,7 @@ const StaticString
 void emitCallMCheck(IRGS& env) {
   auto const func = curFunc(env);
 
-  if (!RuntimeOption::EvalUseMSRVForInOut || !func->takesInOutParams()) {
+  if (!func->takesInOutParams()) {
     return;
   }
 

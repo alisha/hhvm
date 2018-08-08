@@ -33,6 +33,7 @@
 #include <folly/String.h>
 #include <folly/portability/Unistd.h>
 
+#include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/hhvm/process-init.h"
 #include "hphp/runtime/vm/repo.h"
@@ -78,7 +79,7 @@ MethodMap make_method_map(SinglePassReadableRange& range) {
 template<class SinglePassReadableRange>
 OpcodeSet make_bytecode_map(SinglePassReadableRange& bcs) {
   if (bcs.empty()) return {};
-  std::map<std::string,Op> bcmap;
+  hphp_fast_map<std::string,Op> bcmap;
   for (auto i = 0; i < Op_count; i++) {
     auto const op = static_cast<Op>(i);
     bcmap[opcodeToName(op)] = op;
@@ -215,8 +216,8 @@ void parse_options(int argc, char** argv) {
     setrlimit(RLIMIT_CORE, &rl);
   }
 
-  options.TraceFunctions         = make_method_map(trace_fns);
-  options.TraceBytecodes         = make_bytecode_map(trace_bcs);
+  options.TraceFunctions = make_method_map(trace_fns);
+  options.TraceBytecodes = make_bytecode_map(trace_bcs);
 
   logging = !no_logging;
 }
@@ -285,9 +286,9 @@ std::pair<std::vector<std::unique_ptr<UnitEmitter>>,
     gd.HackArrCompatDVCmpNotices;
   RuntimeOption::EvalHackArrCompatSerializeNotices =
     gd.HackArrCompatSerializeNotices;
-  RuntimeOption::EvalUseMSRVForInOut = gd.UseMSRVForInOut;
   RuntimeOption::EvalHackArrDVArrs = gd.HackArrDVArrs;
-
+  RuntimeOption::EvalDisableReturnByReference = gd.DisableReturnByReference;
+  RuntimeOption::EvalAbortBuildOnVerifyError = gd.AbortBuildOnVerifyError;
   return {
     parallel::map(Repo::get().enumerateUnits(RepoIdCentral, false, true),
                   [&] (const std::pair<std::string,MD5>& kv) {
@@ -316,6 +317,21 @@ void write_units(UnitEmitterQueue& ueq) {
     }
   }
 
+
+  if (RuntimeOption::EvalAbortBuildOnVerifyError) {
+    parallel::for_each(
+      ues,
+      [&] (const std::unique_ptr<UnitEmitter>& ue) {
+        always_assert_flog(
+          ue->check(false),
+          "The optimized unit for {} did not pass verification, "
+          "bailing because Eval.AbortBuildOnVerifyError is set",
+          ue->m_filepath
+        );
+      }
+    );
+  }
+
   batchCommit(ues);
   ues.clear();
 }
@@ -337,6 +353,7 @@ void write_global_data(
   gd.HardTypeHints               = RuntimeOption::EvalHardTypeHints;
   gd.ThisTypeHintLevel           = RuntimeOption::EvalThisTypeHintLevel;
   gd.HardReturnTypeHints         = RuntimeOption::EvalCheckReturnTypeHints >= 3;
+  gd.CheckPropTypeHints          = RuntimeOption::EvalCheckPropTypeHints;
   gd.HardPrivatePropInference    = options.HardPrivatePropInference;
   gd.DisallowDynamicVarEnvFuncs  = RuntimeOption::DisallowDynamicVarEnvFuncs;
   gd.ElideAutoloadInvokes        = options.ElideAutoloadInvokes;
@@ -354,6 +371,7 @@ void write_global_data(
   gd.ReffinessInvariance         = RuntimeOption::EvalReffinessInvariance;
   gd.AllowObjectDestructors      = RuntimeOption::EvalAllowObjectDestructors;
   gd.ForbidDynamicCalls          = RuntimeOption::EvalForbidDynamicCalls;
+  gd.AbortBuildOnVerifyError     = RuntimeOption::EvalAbortBuildOnVerifyError;
   gd.NoticeOnBuiltinDynamicCalls =
     RuntimeOption::EvalNoticeOnBuiltinDynamicCalls;
   gd.HackArrCompatIsArrayNotices =
@@ -371,10 +389,11 @@ void write_global_data(
     RuntimeOption::EvalInitialNamedEntityTableSize;
   gd.InitialStaticStringTableSize =
     RuntimeOption::EvalInitialStaticStringTableSize;
+  gd.DisableReturnByReference =
+    RuntimeOption::EvalDisableReturnByReference;
   for (auto const& elm : RuntimeOption::ConstantFunctions) {
     gd.ConstantFunctions.push_back(elm);
   }
-  gd.UseMSRVForInOut = RuntimeOption::EvalUseMSRVForInOut;
 
   globalArrayTypeTable().repopulate(*arrTable);
   // NOTE: There's no way to tell if saveGlobalData() fails for some reason.

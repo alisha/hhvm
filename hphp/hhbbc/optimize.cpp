@@ -59,6 +59,7 @@ namespace {
 
 const StaticString s_86pinit("86pinit");
 const StaticString s_86sinit("86sinit");
+const StaticString s_86linit("86linit");
 
 //////////////////////////////////////////////////////////////////////
 
@@ -130,7 +131,7 @@ void insert_assertions_step(ArrayTypeTable::Builder& arrTable,
     auto const realT = state.stack[state.stack.size() - idx - 1].type;
     auto const flav  = stack_flav(realT);
 
-    assert(!realT.subtypeOf(TCls));
+    assert(!realT.subtypeOf(BCls));
     if (options.FilterAssertions && !realT.strictSubtypeOf(flav)) {
       return;
     }
@@ -192,7 +193,7 @@ bool hasObviousStackOutput(const Bytecode& op, const Interp& interp) {
   // Generally consider CGetL obvious because if we knew the type of the local,
   // we'll assert that right before the CGetL.
   auto cgetlObvious = [&] (LocalId l, int idx) {
-    return !interp.state.locals[l].couldBe(TRef) ||
+    return !interp.state.locals[l].couldBe(BRef) ||
       !interp.state.stack[interp.state.stack.size() - idx - 1].
          type.strictSubtypeOf(TInitCell);
   };
@@ -312,7 +313,7 @@ bool hasObviousStackOutput(const Bytecode& op, const Interp& interp) {
 void insert_assertions(const Index& index,
                        const FuncAnalysis& ainfo,
                        CollectedInfo& collect,
-                       borrowed_ptr<php::Block> const blk,
+                       php::Block* const blk,
                        State state) {
   std::vector<Bytecode> newBCs;
   newBCs.reserve(blk->hhbcs.size());
@@ -374,7 +375,7 @@ void insert_assertions(const Index& index,
   blk->hhbcs = std::move(newBCs);
 }
 
-bool persistence_check(borrowed_ptr<php::Block> const blk) {
+bool persistence_check(php::Block* const blk) {
   for (auto& op : blk->hhbcs) {
     switch (op.op) {
       case Op::Nop:
@@ -487,8 +488,8 @@ bool propagate_constants(const Bytecode& bc, const State& state,
 /*
  * Create a block similar to another block (but with no bytecode in it yet).
  */
-borrowed_ptr<php::Block> make_block(FuncAnalysis& ainfo,
-                                    borrowed_ptr<const php::Block> srcBlk,
+php::Block* make_block(FuncAnalysis& ainfo,
+                                    const php::Block* srcBlk,
                                     const State& state) {
   FTRACE(1, " ++ new block {}\n", ainfo.ctx.func->blocks.size());
   assert(ainfo.bdata.size() == ainfo.ctx.func->blocks.size());
@@ -499,7 +500,7 @@ borrowed_ptr<php::Block> make_block(FuncAnalysis& ainfo,
   newBlk->exnNode       = srcBlk->exnNode;
   newBlk->throwExits    = srcBlk->throwExits;
   newBlk->unwindExits   = srcBlk->unwindExits;
-  auto const blk        = borrow(newBlk);
+  auto const blk        = newBlk.get();
   ainfo.ctx.func->blocks.push_back(std::move(newBlk));
 
   ainfo.rpoBlocks.push_back(blk);
@@ -511,8 +512,8 @@ borrowed_ptr<php::Block> make_block(FuncAnalysis& ainfo,
   return blk;
 }
 
-borrowed_ptr<php::Block> make_fatal_block(FuncAnalysis& ainfo,
-                                          borrowed_ptr<const php::Block> srcBlk,
+php::Block* make_fatal_block(FuncAnalysis& ainfo,
+                                          const php::Block* srcBlk,
                                           const State& state) {
   auto blk = make_block(ainfo, srcBlk, state);
   auto const srcLoc = srcBlk->hhbcs.back().srcLoc;
@@ -530,7 +531,7 @@ borrowed_ptr<php::Block> make_fatal_block(FuncAnalysis& ainfo,
 void first_pass(const Index& index,
                 FuncAnalysis& ainfo,
                 CollectedInfo& collect,
-                borrowed_ptr<php::Block> const blk,
+                php::Block* const blk,
                 State state) {
   auto const ctx = ainfo.ctx;
 
@@ -565,7 +566,7 @@ void first_pass(const Index& index,
     SCOPE_EXIT {
       if (op.op == Op::CGetL2) {
         srcStack.emplace(srcStack.end() - 1,
-                         op.op, (state.stack.end() - 2)->type.subtypeOf(TStr));
+                         op.op, (state.stack.end() - 2)->type.subtypeOf(BStr));
       } else {
         FTRACE(2, "   srcStack: pop {} push {}\n", op.numPop(), op.numPush());
         for (int i = 0; i < op.numPop(); i++) {
@@ -573,7 +574,7 @@ void first_pass(const Index& index,
         }
         for (int i = 0; i < op.numPush(); i++) {
           srcStack.emplace_back(
-            op.op, state.stack[srcStack.size()].type.subtypeOf(TStr));
+            op.op, state.stack[srcStack.size()].type.subtypeOf(BStr));
         }
       }
     };
@@ -743,8 +744,19 @@ void visit_blocks_impl(const char* what,
                        CollectedInfo& collect,
                        const BlockContainer& rpoBlocks,
                        Fun&& fun) {
+
+  BlockId curBlk = NoBlockId;
+  SCOPE_ASSERT_DETAIL(what) {
+    if (curBlk == NoBlockId) return std::string{"\nNo block processed\n"};
+    return folly::sformat(
+        "block #{}\nin-{}", curBlk,
+        state_string(*ainfo.ctx.func, ainfo.bdata[curBlk].stateIn, collect)
+    );
+  };
+
   FTRACE(1, "|---- {}\n", what);
   for (auto& blk : rpoBlocks) {
+    curBlk = blk->id;
     FTRACE(2, "block #{}\n", blk->id);
     auto const& state = ainfo.bdata[blk->id].stateIn;
     if (!state.initialized) {
@@ -810,7 +822,7 @@ struct OptimizeIterState {
   void operator()(const Index& index,
                   const FuncAnalysis& ainfo,
                   CollectedInfo& collect,
-                  borrowed_ptr<php::Block> const blk,
+                  php::Block* const blk,
                   State state) {
     auto const ctx = ainfo.ctx;
     auto interp = Interp { index, ctx, collect, blk, state };
@@ -1068,6 +1080,51 @@ void optimize_iterators(const Index& index,
 
 //////////////////////////////////////////////////////////////////////
 
+/*
+ * Use the information in the index to resolve a type-constraint to its
+ * underlying type, if possible.
+ */
+void fixTypeConstraint(Context ctx,
+                       const Index& index,
+                       TypeConstraint& tc,
+                       const Type& candidate) {
+  auto t = index.lookup_constraint(ctx, tc, candidate);
+
+  if (is_specialized_obj(t) &&
+      !dobj_of(t).cls.couldHaveMockedDerivedClass()) {
+    tc.setNoMockObjects();
+  }
+
+  if (!tc.isCheckable() || tc.isSoft() || !tc.isObject()) return;
+
+  auto const nullable = is_opt(t);
+  if (nullable) t = unopt(std::move(t));
+
+  auto retype = [&] (AnnotType t) {
+    tc.resolveType(t, nullable);
+    FTRACE(1, "Retype tc {} -> {}\n", tc.typeName(), tc.displayName());
+  };
+
+  assertx(!RuntimeOption::EvalHackArrDVArrs ||
+          (!t.subtypeOf(BVArr) && !t.subtypeOf(BDArr)));
+
+  if (t.subtypeOf(BInitNull)) return retype(AnnotType::Null);
+  if (t.subtypeOf(BBool))     return retype(AnnotType::Bool);
+  if (t.subtypeOf(BInt))      return retype(AnnotType::Int);
+  if (t.subtypeOf(BDbl))      return retype(AnnotType::Float);
+  if (t.subtypeOf(BStr))      return retype(AnnotType::String);
+  if (t.subtypeOf(BPArr))     return retype(AnnotType::Array);
+  if (t.subtypeOf(BVArr))     return retype(AnnotType::VArray);
+  if (t.subtypeOf(BDArr))     return retype(AnnotType::DArray);
+  // if (t.subtypeOf(BObj))   return retype(AnnotType::Object);
+  if (t.subtypeOf(BRes))      return retype(AnnotType::Resource);
+  if (t.subtypeOf(BDict))     return retype(AnnotType::Dict);
+  if (t.subtypeOf(BVec))      return retype(AnnotType::Vec);
+  if (t.subtypeOf(BKeyset))   return retype(AnnotType::Keyset);
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void do_optimize(const Index& index, FuncAnalysis&& ainfo, bool isFinal) {
   FTRACE(2, "{:-^70} {}\n", "Optimize Func", ainfo.ctx.func->name);
 
@@ -1121,7 +1178,9 @@ void do_optimize(const Index& index, FuncAnalysis&& ainfo, bool isFinal) {
   if (!isFinal) return;
 
   auto const func = ainfo.ctx.func;
-  if (func->name == s_86pinit.get() || func->name == s_86sinit.get()) {
+  if (func->name == s_86pinit.get() ||
+      func->name == s_86sinit.get() ||
+      func->name == s_86linit.get()) {
     auto const& blk = *func->blocks[func->mainEntry];
     if (blk.hhbcs.size() == 2 &&
         blk.hhbcs[0].op == Op::Null &&
@@ -1149,7 +1208,7 @@ void do_optimize(const Index& index, FuncAnalysis&& ainfo, bool isFinal) {
                  [&] (const Index&,
                       const FuncAnalysis&,
                       CollectedInfo&,
-                      borrowed_ptr<php::Block> blk,
+                      php::Block* blk,
                       const State&) {
                    if (persistent && !persistence_check(blk)) {
                      persistent = false;
@@ -1165,53 +1224,9 @@ void do_optimize(const Index& index, FuncAnalysis&& ainfo, bool isFinal) {
                  insert_assertions);
   }
 
-  auto fixTypeConstraint = [&] (TypeConstraint& tc, const Type& candidate) {
-    auto t = index.lookup_constraint(ainfo.ctx, tc, candidate);
-
-    if (is_specialized_obj(t) &&
-        !dobj_of(t).cls.couldHaveMockedDerivedClass()) {
-      tc.setNoMockObjects();
-    }
-
-    if (!tc.hasConstraint() ||
-        tc.isSoft() ||
-        tc.isTypeVar() ||
-        tc.isTypeConstant() ||
-        (tc.isThis() && RuntimeOption::EvalThisTypeHintLevel != 3) ||
-        tc.type() != AnnotType::Object) {
-      return;
-    }
-
-    auto const nullable = is_opt(t);
-    if (nullable) t = unopt(std::move(t));
-
-    auto retype = [&] (AnnotType t) {
-      tc.resolveType(t, nullable);
-      FTRACE(1, "Retype tc {} -> {}\n",
-             tc.typeName(), tc.displayName());
-    };
-
-    assertx(!RuntimeOption::EvalHackArrDVArrs ||
-            (!t.subtypeOf(TVArr) && !t.subtypeOf(TDArr)));
-
-    if (t.subtypeOf(TInitNull)) return retype(AnnotType::Null);
-    if (t.subtypeOf(TBool))     return retype(AnnotType::Bool);
-    if (t.subtypeOf(TInt))      return retype(AnnotType::Int);
-    if (t.subtypeOf(TDbl))      return retype(AnnotType::Float);
-    if (t.subtypeOf(TStr))      return retype(AnnotType::String);
-    if (t.subtypeOf(TPArr))     return retype(AnnotType::Array);
-    if (t.subtypeOf(TVArr))     return retype(AnnotType::VArray);
-    if (t.subtypeOf(TDArr))     return retype(AnnotType::DArray);
-    // if (t.subtypeOf(TObj))   return retype(AnnotType::Object);
-    if (t.subtypeOf(TRes))      return retype(AnnotType::Resource);
-    if (t.subtypeOf(TDict))     return retype(AnnotType::Dict);
-    if (t.subtypeOf(TVec))      return retype(AnnotType::Vec);
-    if (t.subtypeOf(TKeyset))   return retype(AnnotType::Keyset);
-  };
-
   if (RuntimeOption::EvalHardTypeHints) {
     for (auto& p : func->params) {
-      fixTypeConstraint(p.typeConstraint, TTop);
+      fixTypeConstraint(ainfo.ctx, index, p.typeConstraint, TTop);
     }
   }
 
@@ -1221,7 +1236,7 @@ void do_optimize(const Index& index, FuncAnalysis&& ainfo, bool isFinal) {
       if (!is_specialized_wait_handle(ainfo.inferredReturn)) return TGen;
       return wait_handle_inner(ainfo.inferredReturn);
     }();
-    fixTypeConstraint(func->retTypeConstraint, rtype);
+    fixTypeConstraint(ainfo.ctx, index, func->retTypeConstraint, rtype);
   }
 }
 
@@ -1275,6 +1290,8 @@ Bytecode gen_constant(const Cell& cell) {
     case KindOfRef:
     case KindOfResource:
     case KindOfObject:
+    case KindOfFunc:
+    case KindOfClass:
       always_assert(0 && "invalid constant in propagate_constants");
   }
   not_reached();
@@ -1283,10 +1300,30 @@ Bytecode gen_constant(const Cell& cell) {
 void optimize_func(const Index& index, FuncAnalysis&& ainfo, bool isFinal) {
   auto const bump = trace_bump_for(ainfo.ctx.cls, ainfo.ctx.func);
 
+  SCOPE_ASSERT_DETAIL("optimize_func") {
+    return "Optimizing:" + show(ainfo.ctx);
+  };
+
   Trace::Bump bumper1{Trace::hhbbc, bump};
   Trace::Bump bumper2{Trace::hhbbc_cfg, bump};
   Trace::Bump bumper3{Trace::hhbbc_dce, bump};
   do_optimize(index, std::move(ainfo), isFinal);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void optimize_class_prop_type_hints(const Index& index, Context ctx) {
+  assertx(!ctx.func);
+  auto const bump = trace_bump_for(ctx.cls, nullptr);
+  Trace::Bump bumper{Trace::hhbbc, bump};
+  for (auto& prop : ctx.cls->properties) {
+    fixTypeConstraint(
+      ctx,
+      index,
+      const_cast<TypeConstraint&>(prop.typeConstraint),
+      TTop
+    );
+  }
 }
 
 //////////////////////////////////////////////////////////////////////

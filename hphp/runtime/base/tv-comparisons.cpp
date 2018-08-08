@@ -64,6 +64,14 @@ typename Op::RetType cellRelOp(Op op, Cell cell, bool val) {
   }
 }
 
+template<class Op, typename Num>
+auto strRelOp(Op op, Cell cell, Num val, const StringData* str) {
+  auto const num = stringToNumeric(str);
+  return num.m_type == KindOfInt64 ? op(num.m_data.num, val) :
+         num.m_type == KindOfDouble ? op(num.m_data.dbl, val) :
+         op(0, val);
+}
+
 template<class Op>
 typename Op::RetType cellRelOp(Op op, Cell cell, int64_t val) {
   assertx(cellIsPlausible(cell));
@@ -83,12 +91,8 @@ typename Op::RetType cellRelOp(Op op, Cell cell, int64_t val) {
       return op(cell.m_data.dbl, val);
 
     case KindOfPersistentString:
-    case KindOfString: {
-      auto const num = stringToNumeric(cell.m_data.pstr);
-      return num.m_type == KindOfInt64  ? op(num.m_data.num, val) :
-             num.m_type == KindOfDouble ? op(num.m_data.dbl, val) :
-             op(0, val);
-    }
+    case KindOfString:
+      return strRelOp(op, cell, val, cell.m_data.pstr);
 
     case KindOfPersistentVec:
     case KindOfVec:
@@ -117,6 +121,12 @@ typename Op::RetType cellRelOp(Op op, Cell cell, int64_t val) {
     case KindOfResource:
       return op(cell.m_data.pres->data()->o_toInt64(), val);
 
+    case KindOfFunc:
+      return strRelOp(op, cell, val, funcToStringHelper(cell.m_data.pfunc));
+
+    case KindOfClass:
+      return strRelOp(op, cell, val, classToStringHelper(cell.m_data.pclass));
+
     case KindOfRef:
       break;
   }
@@ -142,12 +152,8 @@ typename Op::RetType cellRelOp(Op op, Cell cell, double val) {
       return op(cell.m_data.dbl, val);
 
     case KindOfPersistentString:
-    case KindOfString: {
-      auto const num = stringToNumeric(cell.m_data.pstr);
-      return num.m_type == KindOfInt64  ? op(num.m_data.num, val) :
-             num.m_type == KindOfDouble ? op(num.m_data.dbl, val) :
-             op(0, val);
-    }
+    case KindOfString:
+      return strRelOp(op, cell, val, cell.m_data.pstr);
 
     case KindOfPersistentVec:
     case KindOfVec:
@@ -175,6 +181,12 @@ typename Op::RetType cellRelOp(Op op, Cell cell, double val) {
 
     case KindOfResource:
       return op(cell.m_data.pres->data()->o_toDouble(), val);
+
+    case KindOfFunc:
+      return strRelOp(op, cell, val, funcToStringHelper(cell.m_data.pfunc));
+
+    case KindOfClass:
+      return strRelOp(op, cell, val, classToStringHelper(cell.m_data.pclass));
 
     case KindOfRef:
       break;
@@ -245,6 +257,12 @@ typename Op::RetType cellRelOp(Op op, Cell cell, const StringData* val) {
       auto const rd = cell.m_data.pres;
       return op(rd->data()->o_toDouble(), val->toDouble());
     }
+
+    case KindOfFunc:
+      return op(funcToStringHelper(cell.m_data.pfunc), val);
+
+    case KindOfClass:
+      return op(classToStringHelper(cell.m_data.pclass), val);
 
     case KindOfRef:
       break;
@@ -320,6 +338,8 @@ typename Op::RetType cellRelOp(Op op, Cell cell, const ArrayData* ad) {
     }
 
     case KindOfResource:
+    case KindOfFunc:
+    case KindOfClass:
       nonArr();
       return op(false, true);
 
@@ -332,6 +352,16 @@ typename Op::RetType cellRelOp(Op op, Cell cell, const ArrayData* ad) {
 template<class Op>
 typename Op::RetType cellRelOp(Op op, Cell cell, const ObjectData* od) {
   assertx(cellIsPlausible(cell));
+
+  auto strRelOp = [&] (const StringData* sd) {
+    auto obj = const_cast<ObjectData*>(od);
+    if (obj->isCollection()) return op.collectionVsNonObj();
+    if (obj->hasToString()) {
+      String str(obj->invokeToString());
+      return op(sd, str.get());
+    }
+    return op(false, true);
+  };
 
   switch (cell.m_type) {
     case KindOfUninit:
@@ -350,15 +380,8 @@ typename Op::RetType cellRelOp(Op op, Cell cell, const ObjectData* od) {
                                 : op(cell.m_data.dbl, od->toDouble());
 
     case KindOfPersistentString:
-    case KindOfString: {
-      auto obj = const_cast<ObjectData*>(od);
-      if (obj->isCollection()) return op.collectionVsNonObj();
-      if (obj->hasToString()) {
-        String str(obj->invokeToString());
-        return op(cell.m_data.pstr, str.get());
-      }
-      return op(false, true);
-    }
+    case KindOfString:
+      return strRelOp(cell.m_data.pstr);
 
     case KindOfPersistentVec:
     case KindOfVec:
@@ -384,6 +407,12 @@ typename Op::RetType cellRelOp(Op op, Cell cell, const ObjectData* od) {
 
     case KindOfResource:
       return op(false, true);
+
+    case KindOfFunc:
+      return strRelOp(funcToStringHelper(cell.m_data.pfunc));
+
+    case KindOfClass:
+      return strRelOp(classToStringHelper(cell.m_data.pclass));
 
     case KindOfRef:
       break;
@@ -439,6 +468,16 @@ typename Op::RetType cellRelOp(Op op, Cell cell, const ResourceData* rd) {
 
     case KindOfResource:
       return op(cell.m_data.pres->data(), rd);
+
+    case KindOfFunc: {
+      auto const str = funcToStringHelper(cell.m_data.pfunc);
+      return op(str->toDouble(), rd->o_toDouble());
+    }
+
+    case KindOfClass: {
+      auto const str = classToStringHelper(cell.m_data.pclass);
+      return op(str->toDouble(), rd->o_toDouble());
+    }
 
     case KindOfRef:
       break;
@@ -527,7 +566,10 @@ typename Op::RetType cellRelOp(Op op, Cell c1, Cell c2) {
   case KindOfArray:        return cellRelOp(op, c1, c2.m_data.parr);
   case KindOfObject:       return cellRelOp(op, c1, c2.m_data.pobj);
   case KindOfResource:     return cellRelOp(op, c1, c2.m_data.pres);
-
+  case KindOfFunc:
+    return cellRelOp(op, c1, funcToStringHelper(c2.m_data.pfunc));
+  case KindOfClass:
+    return cellRelOp(op, c1, classToStringHelper(c2.m_data.pclass));
   case KindOfRef:
     break;
   }
@@ -902,6 +944,14 @@ bool cellSame(Cell c1, Cell c2) {
     case KindOfResource:
       return c2.m_type == KindOfResource &&
         c1.m_data.pres == c2.m_data.pres;
+
+    case KindOfFunc:
+      if (c2.m_type != KindOfFunc) return false;
+      return c1.m_data.pfunc == c2.m_data.pfunc;
+
+    case KindOfClass:
+      if (c2.m_type != KindOfClass) return false;
+      return c1.m_data.pclass == c2.m_data.pclass;
 
     case KindOfUninit:
     case KindOfNull:

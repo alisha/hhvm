@@ -22,12 +22,12 @@
 
 #include "hphp/runtime/base/array-common.h"
 #include "hphp/runtime/base/array-data.h"
+#include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/header-kind.h"
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/sort-flags.h"
 #include "hphp/runtime/base/typed-value.h"
 
-#include "hphp/util/hash-map-typedefs.h"
 #include "hphp/util/type-scan.h"
 
 namespace HPHP {
@@ -48,13 +48,17 @@ struct APCHandle;
 /*
  * Packed arrays are a specialized array layout for vector-like data.  That is,
  * php arrays with zero-based contiguous integer keys, and values of mixed
- * types.  The TypedValue's are placed right after the array header.
+ * types.  The TypedValues are placed right after the array header.
  */
 struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
   static constexpr uint32_t SmallSize = 3;
   // the smallest and largest MM size classes we use for allocating PackedArrays
   static constexpr size_t SmallSizeIndex = 3;
   static constexpr size_t MaxSizeIndex = 121;
+
+  // Used in static_asserts near code that will have to change if/when we
+  // disaggregate the TypedValues in PackedArray.
+  static constexpr bool stores_typed_values = true;
 
   static_assert(MaxSizeIndex <= std::numeric_limits<uint8_t>::max(),
                 "Size index must fit into 8-bits");
@@ -245,7 +249,7 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
 
   static uint32_t capacity(const ArrayData*);
   static size_t heapSize(const ArrayData*);
-  static uint16_t packSizeIndexAndDV(uint8_t, ArrayData::DVArray);
+  static uint16_t packSizeIndexAndAuxBits(uint8_t, uint8_t);
 
   static void scan(const ArrayData*, type_scan::Scanner&);
 
@@ -273,15 +277,16 @@ struct PackedArray final : type_scan::MarkCollectable<PackedArray> {
   static ArrayData* MakeUninitializedVArray(uint32_t size);
   static ArrayData* MakeUninitializedVec(uint32_t size);
 
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  bool withApcTypedValue = false,
-                                  PointerMap* seen = nullptr);
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  int,
-                                  PointerMap* seen = nullptr) = delete;
-  static ArrayData* MakeUncounted(ArrayData* array,
-                                  size_t extra,
-                                  PointerMap* seen = nullptr) = delete;
+  static ArrayData* MakeUncounted(
+      ArrayData* array, bool withApcTypedValue = false,
+      DataWalker::PointerMap* seen = nullptr
+  );
+  static ArrayData* MakeUncounted(
+      ArrayData* array, int, DataWalker::PointerMap* seen = nullptr
+  ) = delete;
+  static ArrayData* MakeUncounted(
+      ArrayData* array, size_t extra, DataWalker::PointerMap* seen = nullptr
+  ) = delete;
   static ArrayData* MakeUncountedHelper(ArrayData* array, size_t extra);
 
   static ArrayData* MakeVecFromAPC(const APCArray* apc);

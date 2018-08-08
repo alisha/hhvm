@@ -29,11 +29,12 @@ inline bool Class::isZombie() const {
 }
 
 
-inline void Class::validate() const {
-#ifdef DEBUG
+inline bool Class::validate() const {
+#ifndef NDEBUG
   assertx(m_magic == kMagic);
 #endif
   assertx(name()->checkSane());
+  return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -198,6 +199,10 @@ inline const Func* Class::get86sinit() const {
   return m_sinitVec.back();
 }
 
+inline const Func* Class::get86linit() const {
+  return m_linitVec.back();
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Builtin classes.
 
@@ -275,6 +280,14 @@ inline RepoAuthType Class::staticPropRepoAuthType(Slot index) const {
   return m_staticProperties[index].repoAuthType;
 }
 
+inline const TypeConstraint& Class::declPropTypeConstraint(Slot index) const {
+  return m_declProperties[index].typeConstraint;
+}
+
+inline const TypeConstraint& Class::staticPropTypeConstraint(Slot index) const {
+  return m_staticProperties[index].typeConstraint;
+}
+
 inline bool Class::hasDeepInitProps() const {
   return m_hasDeepInitProps;
 }
@@ -304,12 +317,32 @@ inline bool Class::needInitialization() const {
   return m_needInitialization;
 }
 
+inline bool Class::maybeRedefinesPropTypes() const {
+  return m_maybeRedefsPropTy;
+}
+
+inline bool Class::needsPropInitialValueCheck() const {
+  return m_needsPropInitialCheck;
+}
+
 inline const Class::PropInitVec& Class::declPropInit() const {
   return m_declPropInit;
 }
 
 inline const FixedVector<const Func*>& Class::pinitVec() const {
   return m_pinitVec;
+}
+
+inline rds::Handle Class::checkedPropTypeRedefinesHandle() const {
+  assertx(m_maybeRedefsPropTy);
+  m_extra->m_checkedPropTypeRedefs.bind(rds::Mode::Normal);
+  return m_extra->m_checkedPropTypeRedefs.handle();
+}
+
+inline rds::Handle Class::checkedPropInitialValuesHandle() const {
+  assertx(m_needsPropInitialCheck);
+  m_extra->m_checkedPropInitialValues.bind(rds::Mode::Normal);
+  return m_extra->m_checkedPropInitialValues.handle();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -647,5 +680,11 @@ inline bool classMayHaveMagicPropMethods(const Class* cls) {
   return (cls->attrs() & no_overrides) != no_overrides;
 }
 
+inline const StringData* classToStringHelper(const Class* cls) {
+ if (RuntimeOption::EvalRaiseClassConversionWarning) {
+   raise_warning("Class to string convesion");
+ }
+ return cls->name();
+}
 ///////////////////////////////////////////////////////////////////////////////
 }

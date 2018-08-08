@@ -15,23 +15,18 @@
 */
 #include "hphp/runtime/base/intercept.h"
 
-#include <vector>
-#include <utility>
-
-#include "hphp/runtime/base/request-local.h"
-#include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/request-event-handler.h"
+#include "hphp/runtime/base/request-local.h"
+#include "hphp/runtime/base/req-optional.h"
+#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/vm/debugger-hook.h"
 #include "hphp/runtime/vm/jit/target-cache.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/event-hook.h"
-
-#include "hphp/parser/parser.h"
 #include "hphp/util/lock.h"
-
-#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/util/trace.h"
 
 using namespace HPHP::Trace;
@@ -68,6 +63,8 @@ struct InterceptRequestData final : RequestEventHandler {
 
 private:
   Variant m_global_handler;
+  // get_intercept_handler() returns Variant* pointing into this map,
+  // so we need reference stability.
   req::Optional<req::StringIMap<Variant>> m_intercept_handlers;
 };
 IMPLEMENT_STATIC_REQUEST_LOCAL(InterceptRequestData, s_intercept_data);
@@ -80,9 +77,10 @@ static Mutex s_mutex;
  * The vector contains a list of maybeIntercepted flags for functions
  * with this name.
  */
-typedef StringIMap<std::pair<bool,std::vector<int8_t*>>> RegisteredFlagsMap;
-
-static RegisteredFlagsMap s_registered_flags;
+static hphp_hash_map<
+  String, std::pair<bool,std::vector<int8_t*>>,
+  hphp_string_hash, hphp_string_isame
+> s_registered_flags;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -110,6 +108,7 @@ bool register_intercept(const String& name, const Variant& callback,
         auto& handlers = s_intercept_data->intercept_handlers();
         auto it = handlers.find(name);
         if (it != handlers.end()) {
+          // erase the map entry before destroying the value
           auto tmp = it->second;
           handlers.erase(it);
         }
@@ -137,10 +136,7 @@ bool register_intercept(const String& name, const Variant& callback,
       flag_maybe_intercepted(entry.second.second);
     }
   } else {
-    StringData* sd = name.get();
-    if (!sd->isStatic()) {
-      sd = makeStaticString(sd);
-    }
+    auto sd = makeStaticString(name.get());
     auto &entry = s_registered_flags[StrNR(sd)];
     entry.first = true;
     flag_maybe_intercepted(entry.second);
@@ -170,10 +166,7 @@ Variant *get_intercept_handler(const String& name, int8_t* flag) {
   if (*flag == -1) {
     Lock lock(s_mutex);
     if (*flag == -1) {
-      StringData *sd = name.get();
-      if (!sd->isStatic()) {
-        sd = makeStaticString(sd);
-      }
+      auto sd = makeStaticString(name.get());
       auto &entry = s_registered_flags[StrNR(sd)];
       entry.second.push_back(flag);
       *flag = entry.first;
@@ -191,8 +184,7 @@ Variant *get_intercept_handler(const String& name, int8_t* flag) {
 
 void unregister_intercept_flag(const String& name, int8_t *flag) {
   Lock lock(s_mutex);
-  RegisteredFlagsMap::iterator iter =
-    s_registered_flags.find(name);
+  auto iter = s_registered_flags.find(name);
   if (iter != s_registered_flags.end()) {
     std::vector<int8_t*> &flags = iter->second.second;
     for (int i = flags.size(); i--; ) {

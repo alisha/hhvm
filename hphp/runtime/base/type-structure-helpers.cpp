@@ -46,6 +46,8 @@ bool cellInstanceOf(const Cell* tv, const NamedEntity* ne) {
     case KindOfNull:
     case KindOfBoolean:
     case KindOfResource:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
 
     case KindOfInt64:
@@ -154,6 +156,19 @@ bool checkTypeStructureMatchesCellImpl(
       result = isDoubleType(type);
       break;
     case TypeStructure::Kind::T_string:
+      if (isFuncType(type)) {
+        if (RuntimeOption::EvalRaiseFuncConversionWarning) {
+          raise_warning("Func to string conversion");
+        }
+        result = true;
+        break;
+      } else if (isClassType(type)) {
+        if (RuntimeOption::EvalRaiseClassConversionWarning) {
+          raise_warning("Class to string conversion");
+        }
+        result = true;
+        break;
+      }
       result = isStringType(type);
       break;
     case TypeStructure::Kind::T_resource:
@@ -168,7 +183,7 @@ bool checkTypeStructureMatchesCellImpl(
       result = isIntType(type) || isStringType(type);
       break;
     case TypeStructure::Kind::T_dict:
-      if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
+      if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsVecDictNotices)) {
         if (isArrayType(type) && data.parr->isDArray()) {
           raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_DARR_IS_DICT);
         }
@@ -176,7 +191,7 @@ bool checkTypeStructureMatchesCellImpl(
       result = isDictType(type);
       break;
     case TypeStructure::Kind::T_vec:
-      if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
+      if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsVecDictNotices)) {
         if (isArrayType(type) && data.parr->isVArray()) {
           raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_VARR_IS_VEC);
         }
@@ -200,7 +215,8 @@ bool checkTypeStructureMatchesCellImpl(
       break;
     }
     case TypeStructure::Kind::T_class:
-    case TypeStructure::Kind::T_interface: {
+    case TypeStructure::Kind::T_interface:
+    case TypeStructure::Kind::T_xhp: {
       assertx(ts.exists(s_classname));
       auto const ne = NamedEntity::get(ts[s_classname].asStrRef().get());
       result = cellInstanceOf(&c1, ne);
@@ -357,7 +373,6 @@ bool checkTypeStructureMatchesCellImpl(
     case TypeStructure::Kind::T_varray_or_darray:
     case TypeStructure::Kind::T_unresolved:
     case TypeStructure::Kind::T_typeaccess:
-    case TypeStructure::Kind::T_xhp:
       result = false;
       break;
     case TypeStructure::Kind::T_fun:

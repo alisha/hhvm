@@ -113,6 +113,7 @@ type env = {
   in_try  : bool       ;
   in_case : bool       ;
   inside_constructor: bool;
+  inside_ppl_class: bool;
   (* A set of constraints that are global to a given method *)
   global_tpenv : tpenv ;
 }
@@ -146,10 +147,12 @@ and genv = {
  * - the arity of the function
  * - the expected return type of the body (optional)
  *)
+and anon_log = locl_ty list * locl ty list
+
 and anon =
   reactivity *
   Nast.is_coroutine *
-  int ref *
+  anon_log ref *
   Pos.t *
   (?el:Nast.expr list ->
   ?ret_ty: locl_ty ->

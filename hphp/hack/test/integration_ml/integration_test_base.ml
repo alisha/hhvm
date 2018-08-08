@@ -38,6 +38,7 @@ let global_opts = GlobalOptions.make
   ~tco_disallow_array_cell_pass_by_ref:false
   ~tco_language_feature_logging:false
   ~tco_unsafe_rx:false
+  ~tco_disallow_implicit_returns_in_non_void_functions:true
   ~ignored_fixme_codes: ISet.empty
   ~forward_compatibility_level: ForwardCompatibilityLevel.default
 
@@ -266,9 +267,10 @@ let autocomplete env contents =
 
 let ide_autocomplete env (path, line, column) =
   let delimit_on_namespaces = false in
+  let is_manually_invoked = false in
   run_loop_once env { default_loop_input with
     persistent_client_request = Some (Request (IDE_AUTOCOMPLETE
-      (root ^ path, Ide_api_types.{line; column}, delimit_on_namespaces)
+      (root ^ path, Ide_api_types.{line; column}, delimit_on_namespaces, is_manually_invoked)
     ))
   }
 

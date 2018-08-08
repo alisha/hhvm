@@ -84,6 +84,8 @@ let string_of_param_id x =
 
 let string_of_param_num i = string_of_int i
 
+let string_of_has_unpack has_unpack = if has_unpack then "1" else "0"
+
 let string_of_local_id x =
   match x with
   | Local.Unnamed i -> "_" ^ (string_of_int i)
@@ -190,6 +192,9 @@ let string_of_operator instruction =
     | Print -> "Print"
     | Clone -> "Clone"
     | H.Exit -> "Exit"
+    | ResolveFunc id -> sep ["ResolveFunc"; string_of_function_id id]
+    | ResolveObjMethod -> sep ["ResolveObjMethod"]
+    | ResolveClsMethod -> sep ["ResolveClsMethod"]
     | Fatal op -> sep ["Fatal"; FatalOp.to_string op]
 
 let string_of_get x =
@@ -393,16 +398,18 @@ let string_of_base x =
     sep ["BaseGC"; string_of_stack_index si; MemberOpMode.to_string m]
   | BaseGL (id, m) ->
     sep ["BaseGL"; string_of_local_id id; MemberOpMode.to_string m]
-  | BaseSC (si, id) ->
-    sep ["BaseSC"; string_of_stack_index si; string_of_classref id]
-  | BaseSL (lid, si) ->
-    sep ["BaseSL"; string_of_local_id lid; string_of_stack_index si]
+  | BaseSC (si, id, m) ->
+    sep ["BaseSC";
+         string_of_stack_index si; string_of_classref id; MemberOpMode.to_string m]
+  | BaseSL (lid, si, m) ->
+    sep ["BaseSL";
+         string_of_local_id lid; string_of_stack_index si; MemberOpMode.to_string m]
   | BaseL (lid, m) ->
     sep ["BaseL"; string_of_local_id lid; MemberOpMode.to_string m]
-  | BaseC si ->
-    sep ["BaseC"; string_of_stack_index si]
-  | BaseR si ->
-    sep ["BaseR"; string_of_stack_index si]
+  | BaseC (si, m) ->
+    sep ["BaseC"; string_of_stack_index si; MemberOpMode.to_string m]
+  | BaseR (si, m) ->
+    sep ["BaseR"; string_of_stack_index si; MemberOpMode.to_string m]
   | BaseH ->
     "BaseH"
   | Dim (m, mk) ->
@@ -499,26 +506,15 @@ let string_of_call instruction =
   | FHandleRefMismatch (i, h, f) ->
     sep ["FHandleRefMismatch"; string_of_param_num i; string_of_fpasshint h;
          "\"" ^ f ^ "\""]
-  | FCall n ->
-    sep ["FCall"; string_of_int n]
-  | FCallD (n, c, f) ->
-    sep ["FCallD";
-      string_of_int n; string_of_class_id c; string_of_function_id f]
+  | FCall (n1, u, n2, c, f) ->
+    sep ["FCall";
+      string_of_int n1; string_of_has_unpack u; string_of_int n2;
+      string_of_class_id c; string_of_function_id f]
   | FCallAwait (n, c, f) ->
     sep ["FCallAwait";
       string_of_int n; string_of_class_id c; string_of_function_id f]
-  | FCallUnpack n ->
-    sep ["FCallUnpack"; string_of_int n]
   | FCallBuiltin (n1, n2, id) ->
     sep ["FCallBuiltin"; string_of_int n1; string_of_int n2; SU.quote_string id]
-  | FCallM (n1, n2) ->
-    sep ["FCallM"; string_of_int n1; string_of_int n2]
-  | FCallUnpackM (n1, n2) ->
-    sep ["FCallUnpackM"; string_of_int n1; string_of_int n2]
-  | FCallDM (n1, n2, c, f) ->
-    sep ["FCallDM";
-      string_of_int n1; string_of_int n2; string_of_class_id c;
-      string_of_function_id f]
 
 let string_of_barethis_op i =
   match i with
@@ -864,7 +860,8 @@ and string_of_afield_list ~env afl =
   else String.concat ", " @@ List.map (string_of_afield ~env) afl
 
 and shape_field_name_to_expr = function
-  | A.SFlit (pos, s)
+  | A.SFlit_int (pos, s) -> (pos, A.Int s)
+  | A.SFlit_str (pos, s)
   | A.SFclass_const (_, (pos, s)) -> (pos, A.String s)
 
 and string_of_bop = function
@@ -1144,7 +1141,6 @@ and string_of_param_default_value ~env expr =
       | _ -> id
     in
     Php_escaping.escape id
-  | A.Id_type_arguments ((_, litstr), _)
   | A.Lvar (_, litstr) -> Php_escaping.escape litstr
   | A.Float litstr -> SU.Float.with_scientific_notation litstr
   | A.Int litstr -> SU.Integer.to_decimal litstr
@@ -1186,11 +1182,11 @@ and string_of_param_default_value ~env expr =
     let e1 = string_of_param_default_value ~env e1 in
     let e2 = string_of_param_default_value ~env e2 in
     e1 ^ " " ^ bop ^ " " ^ e2
-  | A.New (e, es, ues)
+  | A.New (e, _, es, ues)
   | A.Call (e, _, es, ues) ->
     let e = String_utils.lstrip (string_of_param_default_value ~env e) "\\\\" in
     let es = List.map (string_of_param_default_value ~env) (es @ ues) in
-    let prefix = match snd expr with A.New (_, _, _) -> "new " | _ -> "" in
+    let prefix = match snd expr with A.New (_, _, _, _) -> "new " | _ -> "" in
     prefix
     ^ e
     ^ "("
@@ -1253,6 +1249,8 @@ and string_of_param_default_value ~env expr =
     e ^ "[" ^ eo ^ "]"
   | A.String2 es ->
     String.concat " . " @@ List.map (string_of_param_default_value ~env) es
+  | A.PrefixedString (name, e) ->
+    String.concat " . " @@ [name; string_of_param_default_value ~env e]
   | A.Execution_operator es ->
     let s =
       String.concat " . " @@ List.map (string_of_param_default_value ~env) es in
@@ -1403,6 +1401,8 @@ let add_body buf indent body =
   add_doc buf indent (Hhas_body.doc_comment body);
   if Hhas_body.is_memoize_wrapper body
   then add_indented_line buf indent ".ismemoizewrapper;";
+  if Hhas_body.is_memoize_wrapper_lsb body
+  then add_indented_line buf indent ".ismemoizewrapperlsb;";
   add_num_iters buf indent (Hhas_body.num_iters body);
   add_num_cls_ref_slots buf indent (Hhas_body.num_cls_ref_slots body);
   add_decl_vars buf indent (Hhas_body.decl_vars body);
@@ -1596,9 +1596,14 @@ let property_attributes p =
   let module P = Hhas_property in
   let user_attrs = P.attributes p in
   let attrs = Emit_adata.attributes_to_strings user_attrs in
+  let attrs = if P.is_no_bad_redeclare p then "no_bad_redeclare" :: attrs else attrs in
+  let attrs = if P.initial_satisfies_tc p then "initial_satisfies_tc" :: attrs else attrs in
+  let attrs = if P.no_implicit_null p then "no_implicit_null" :: attrs else attrs in
+  let attrs = if P.has_system_initial p then "sys_initial_val" :: attrs else attrs in
   let attrs = if P.is_immutable p then "is_immutable" :: attrs else attrs in
   let attrs = if P.no_serialize p then "no_serialize" :: attrs else attrs in
   let attrs = if P.is_deep_init p then "deep_init" :: attrs else attrs in
+  let attrs = if P.is_lsb p then "lsb" :: attrs else attrs in
   let attrs = if P.is_static p then "static" :: attrs else attrs in
   let attrs = if P.is_public p then "public" :: attrs else attrs in
   let attrs = if P.is_protected p then "protected" :: attrs else attrs in

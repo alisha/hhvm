@@ -66,7 +66,8 @@ let rec fmt_hint ~tparams ~namespace ?(strip_tparams=false) (_, h) =
 
   | A.Hshape { A.si_shape_field_list; _ } ->
     let fmt_field = function
-      | A.SFlit (_, s) -> "'" ^ s ^ "'"
+      | A.SFlit_int (_, s_i) -> s_i
+      | A.SFlit_str (_, s) -> "'" ^ s ^ "'"
       | A.SFclass_const (cid, (_, s2)) ->
         fmt_name_or_prim ~tparams ~namespace cid ^ "::" ^ s2
     in
@@ -266,14 +267,11 @@ let hint_to_type_info ~kind ~skipawaitable ~nullable ~tparams ~namespace h =
   | Param ->
     param_hint_to_type_info ~kind ~skipawaitable ~nullable ~tparams ~namespace h
   | _ ->
-    let tc =
-      if kind = Property then TC.make None []
-      else hint_to_type_constraint ~kind ~tparams ~skipawaitable ~namespace h
-    in
+    let tc = hint_to_type_constraint ~kind ~tparams ~skipawaitable ~namespace h in
     let tc_name = TC.name tc in
     let tc_flags = TC.flags tc in
     let tc_flags =
-      if kind = Return && tc_name <> None
+      if (kind = Return || kind = Property) && tc_name <> None
       then List.dedup (TC.ExtendedHint :: tc_flags)
       else tc_flags in
     let tc_flags =

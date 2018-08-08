@@ -346,6 +346,9 @@ struct PropertiesInfo {
   const PropState& privateStatics() const;
 
   bool isNonSerialized(SString name) const;
+
+  void setBadPropInitialValues();
+
 private:
   ClassAnalysis* const m_cls;
   PropState m_privateProperties;
@@ -359,8 +362,8 @@ private:
  * Map from closure classes to types for each of their used vars.
  * Shows up in a few different interpreter structures.
  */
-using ClosureUseVarMap = std::map<
-  borrowed_ptr<php::Class>,
+using ClosureUseVarMap = hphp_hash_map<
+  php::Class*,
   std::vector<Type>
 >;
 
@@ -369,7 +372,7 @@ using ClosureUseVarMap = std::map<
  * `clo' into the destination map.
  */
 void merge_closure_use_vars_into(ClosureUseVarMap& dst,
-                                 borrowed_ptr<php::Class> clo,
+                                 php::Class* clo,
                                  std::vector<Type>);
 
 //////////////////////////////////////////////////////////////////////
@@ -409,7 +412,7 @@ struct CollectedInfo {
   PropertiesInfo props;
   PublicSPropIndexer* const publicStatics;
   ConstantMap cnsMap;
-  hphp_fast_set<std::pair<borrowed_ptr<const php::Func>, BlockId>>
+  hphp_fast_set<std::pair<const php::Func*, BlockId>>
     unfoldableFuncs;
   bool mayUseVV{false};
   bool effectFree{true};

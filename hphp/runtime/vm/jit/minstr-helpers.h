@@ -70,12 +70,10 @@ BASE_G_HELPER_TABLE(X)
 
 //////////////////////////////////////////////////////////////////////
 
-#define PROP_HELPER_TABLE(m)                                \
+#define PROP_HELPER_TABLE(m)                        \
   /* name      mode                  keyType     */ \
   m(propC,     MOpMode::None,       KeyType::Any)   \
   m(propCS,    MOpMode::None,       KeyType::Str)   \
-  m(propCD,    MOpMode::Define,     KeyType::Any)   \
-  m(propCDS,   MOpMode::Define,     KeyType::Str)   \
   m(propCU,    MOpMode::Unset,      KeyType::Any)   \
   m(propCUS,   MOpMode::Unset,      KeyType::Str)   \
   m(propCW,    MOpMode::Warn,       KeyType::Any)   \
@@ -84,15 +82,26 @@ BASE_G_HELPER_TABLE(X)
 #define X(nm, mode, kt)                                               \
 inline tv_lval nm(Class* ctx, tv_lval base, key_type<kt> key,         \
                   TypedValue& tvRef) {                                \
-  return Prop<mode,kt>(tvRef, ctx, base, key);                        \
+  return Prop<mode,kt>(tvRef, ctx, base, key, nullptr);               \
 }
 PROP_HELPER_TABLE(X)
 #undef X
 
+#define PROPD_HELPER_TABLE(m)                       \
+  /* name      keyType     */                       \
+  m(propCD,    KeyType::Any)                        \
+  m(propCDS,   KeyType::Str)
+
+#define X(nm, kt)                                                     \
+inline tv_lval nm(Class* ctx, tv_lval base, key_type<kt> key,         \
+                  TypedValue& tvRef, MInstrPropState* pState) {       \
+  return Prop<MOpMode::Define,kt>(tvRef, ctx, base, key, pState);     \
+}
+PROPD_HELPER_TABLE(X)
+#undef X
+
 #define PROP_OBJ_HELPER_TABLE(m)                      \
   /* name      mode                  keyType     */   \
-  m(propCDO,   MOpMode::Define,     KeyType::Any)    \
-  m(propCDOS,  MOpMode::Define,     KeyType::Str)    \
   m(propCO,    MOpMode::None,       KeyType::Any)    \
   m(propCOS,   MOpMode::None,       KeyType::Str)    \
   m(propCUO,   MOpMode::Unset,      KeyType::Any)    \
@@ -103,9 +112,22 @@ PROP_HELPER_TABLE(X)
 #define X(nm, mode, kt)                                               \
 inline tv_lval nm(Class* ctx, ObjectData* base, key_type<kt> key,     \
                   TypedValue& tvRef) {                                \
-  return PropObj<mode,kt>(tvRef, ctx, base, key);                     \
+  return PropObj<mode,kt>(tvRef, ctx, base, key, nullptr);            \
 }
 PROP_OBJ_HELPER_TABLE(X)
+#undef X
+
+#define PROPD_OBJ_HELPER_TABLE(m)                    \
+  /* name      keyType     */                        \
+  m(propCDO,   KeyType::Any)                         \
+  m(propCDOS,  KeyType::Str)                         \
+
+#define X(nm, kt)                                                     \
+inline tv_lval nm(Class* ctx, ObjectData* base, key_type<kt> key,     \
+                  TypedValue& tvRef, MInstrPropState* pState) {       \
+  return PropObj<MOpMode::Define,kt>(tvRef, ctx, base, key, pState);  \
+}
+PROPD_OBJ_HELPER_TABLE(X)
 #undef X
 
 // NullSafe prop.
@@ -152,7 +174,7 @@ inline TypedValue cGetRefShuffle(const TypedValue& localTvRef,
 #define X(nm, kt, mode)                                                \
 inline TypedValue nm(Class* ctx, tv_lval base, key_type<kt> key) {     \
   TypedValue localTvRef;                                               \
-  auto result = Prop<mode,kt>(localTvRef, ctx, base, key);             \
+  auto result = Prop<mode,kt>(localTvRef, ctx, base, key, nullptr);    \
   return cGetRefShuffle(localTvRef, result);                           \
 }
 CGET_PROP_HELPER_TABLE(X)
@@ -168,7 +190,7 @@ CGET_PROP_HELPER_TABLE(X)
 #define X(nm, kt, mode)                                                \
 inline TypedValue nm(Class* ctx, ObjectData* base, key_type<kt> key) { \
   TypedValue localTvRef;                                               \
-  auto result = PropObj<mode,kt>(localTvRef, ctx, base, key);          \
+  auto result = PropObj<mode,kt>(localTvRef, ctx, base, key, nullptr); \
   return cGetRefShuffle(localTvRef, result);                           \
 }
 CGET_OBJ_PROP_HELPER_TABLE(X)
@@ -215,11 +237,13 @@ inline RefData* vGetRefShuffle(const TypedValue& localTvRef,
   m(vGetPropC,   KeyType::Any)    \
   m(vGetPropS,   KeyType::Str)
 
-#define X(nm, kt)                                                          \
-inline RefData* nm(Class* ctx, tv_lval base, key_type<kt> key) {           \
-  TypedValue localTvRef;                                                   \
-  auto result = Prop<MOpMode::Define,kt,true>(localTvRef, ctx, base, key); \
-  return vGetRefShuffle(localTvRef, result);                               \
+#define X(nm, kt)                                                       \
+inline RefData* nm(Class* ctx, tv_lval base,                            \
+                   key_type<kt> key, MInstrPropState* pState) {         \
+  TypedValue localTvRef;                                                \
+  auto result =                                                         \
+    Prop<MOpMode::Define,kt,true>(localTvRef, ctx, base, key, pState);  \
+  return vGetRefShuffle(localTvRef, result);                            \
 }
 VGET_PROP_HELPER_TABLE(X)
 #undef X
@@ -229,11 +253,13 @@ VGET_PROP_HELPER_TABLE(X)
   m(vGetPropCO,  KeyType::Any)        \
   m(vGetPropSO,  KeyType::Str)
 
-#define X(nm, kt)                                                             \
-inline RefData* nm(Class* ctx, ObjectData* base, key_type<kt> key) {          \
-  TypedValue localTvRef;                                                      \
-  auto result = PropObj<MOpMode::Define,kt,true>(localTvRef, ctx, base, key); \
-  return vGetRefShuffle(localTvRef, result);                                  \
+#define X(nm, kt)                                                       \
+inline RefData* nm(Class* ctx, ObjectData* base,                        \
+                   key_type<kt> key, MInstrPropState* pState) {         \
+  TypedValue localTvRef;                                                \
+  auto result =                                                         \
+    PropObj<MOpMode::Define,kt,true>(localTvRef, ctx, base, key, pState); \
+  return vGetRefShuffle(localTvRef, result);                            \
 }
 VGET_OBJ_PROP_HELPER_TABLE(X)
 #undef X
@@ -254,16 +280,20 @@ void bindPropImpl(RefData* val, PropImpl prop_impl) {
 }
 
 inline void bindPropC(Class* ctx, tv_lval base, TypedValue key,
-                      RefData* val) {
+                      RefData* val, MInstrPropState* pState) {
   bindPropImpl(val, [&](TypedValue& tvref) {
-    return Prop<MOpMode::Define,KeyType::Any,true>(tvref, ctx, base, key);
+    return Prop<MOpMode::Define,KeyType::Any,true>(
+      tvref, ctx, base, key, pState
+    );
   });
 }
 
 inline void bindPropCO(Class* ctx, ObjectData* base, TypedValue key,
-                      RefData* val) {
+                       RefData* val, MInstrPropState* pState) {
   bindPropImpl(val, [&](TypedValue& tvref) {
-    return PropObj<MOpMode::Define,KeyType::Any,true>(tvref, ctx, base, key);
+    return PropObj<MOpMode::Define,KeyType::Any,true>(
+      tvref, ctx, base, key, pState
+    );
   });
 }
 
@@ -274,9 +304,10 @@ inline void bindPropCO(Class* ctx, ObjectData* base, TypedValue key,
   m(setPropC,    KeyType::Any)           \
   m(setPropCS,   KeyType::Str)           \
 
-#define X(nm, kt)                                                          \
-inline void nm(Class* ctx, tv_lval base, key_type<kt> key, Cell val) { \
-  HPHP::SetProp<false, kt>(ctx, base, key, &val);                          \
+#define X(nm, kt)                                                       \
+inline void nm(Class* ctx, tv_lval base, key_type<kt> key,              \
+               Cell val, const MInstrPropState* pState) {               \
+  HPHP::SetProp<false, kt>(ctx, base, key, &val, pState);               \
 }
 SETPROP_HELPER_TABLE(X)
 #undef X
@@ -306,14 +337,15 @@ inline void unsetPropCO(Class* ctx, ObjectData* base, TypedValue key) {
 //////////////////////////////////////////////////////////////////////
 
 inline TypedValue setOpPropC(Class* ctx, tv_lval base, TypedValue key,
-                      Cell val, SetOpOp op) {
+                             Cell val, SetOpOp op,
+                             const MInstrPropState* pState) {
   TypedValue localTvRef;
-  auto result = HPHP::SetOpProp(localTvRef, ctx, op, base, key, &val);
+  auto result = HPHP::SetOpProp(localTvRef, ctx, op, base, key, &val, pState);
   return cGetRefShuffle(localTvRef, result);
 }
 
 inline TypedValue setOpPropCO(Class* ctx, ObjectData* base, TypedValue key,
-                       Cell val, SetOpOp op) {
+                              Cell val, SetOpOp op) {
   TypedValue localTvRef;
   auto result = SetOpPropObj(localTvRef, ctx, op, base, key, &val);
   return cGetRefShuffle(localTvRef, result);
@@ -322,8 +354,8 @@ inline TypedValue setOpPropCO(Class* ctx, ObjectData* base, TypedValue key,
 //////////////////////////////////////////////////////////////////////
 
 inline TypedValue incDecPropC(Class* ctx, tv_lval base, TypedValue key,
-                              IncDecOp op) {
-  auto const result = HPHP::IncDecProp(ctx, op, base, key);
+                              IncDecOp op, const MInstrPropState* pState) {
+  auto const result = HPHP::IncDecProp(ctx, op, base, key, pState);
   assertx(!isRefType(result.m_type));
   return result;
 }
@@ -446,11 +478,9 @@ PROFILE_KEYSET_OFFSET_HELPER_TABLE(X)
 
 template <KeyType keyType, MOpMode mode, bool intishWarn>
 tv_lval elemImpl(tv_lval base, key_type<keyType> key, TypedValue& tvRef) {
+  static_assert(mode != MOpMode::Define, "");
   if (mode == MOpMode::Unset) {
     return ElemU<intishWarn, keyType>(tvRef, base, key);
-  }
-  if (mode == MOpMode::Define) {
-    return ElemD<mode, false, intishWarn, keyType>(tvRef, base, key);
   }
   // We won't really modify the TypedValue in the non-D case, so
   // this lval cast is safe.
@@ -460,32 +490,26 @@ tv_lval elemImpl(tv_lval base, key_type<keyType> key, TypedValue& tvRef) {
 #define ELEM_HELPER_TABLE(m)                                   \
   /* name      keyType         mode             intishWarn */  \
   m(elemC,     KeyType::Any,   MOpMode::None,   false)         \
-  m(elemCD,    KeyType::Any,   MOpMode::Define, false)         \
   m(elemCU,    KeyType::Any,   MOpMode::Unset,  false)         \
   m(elemCW,    KeyType::Any,   MOpMode::Warn,   false)         \
   m(elemCIO,   KeyType::Any,   MOpMode::InOut,  false)         \
   m(elemI,     KeyType::Int,   MOpMode::None,   false)         \
-  m(elemID,    KeyType::Int,   MOpMode::Define, false)         \
   m(elemIU,    KeyType::Int,   MOpMode::Unset,  false)         \
   m(elemIW,    KeyType::Int,   MOpMode::Warn,   false)         \
   m(elemIIO,   KeyType::Int,   MOpMode::InOut,  false)         \
   m(elemS,     KeyType::Str,   MOpMode::None,   false)         \
-  m(elemSD,    KeyType::Str,   MOpMode::Define, false)         \
   m(elemSU,    KeyType::Str,   MOpMode::Unset,  false)         \
   m(elemSW,    KeyType::Str,   MOpMode::Warn,   false)         \
   m(elemSIO,   KeyType::Str,   MOpMode::InOut,  false)         \
   m(elemC_W,   KeyType::Any,   MOpMode::None,   true)          \
-  m(elemCD_W,  KeyType::Any,   MOpMode::Define, true)          \
   m(elemCU_W,  KeyType::Any,   MOpMode::Unset,  true)          \
   m(elemCW_W,  KeyType::Any,   MOpMode::Warn,   true)          \
   m(elemCIO_W, KeyType::Any,   MOpMode::InOut,  true)          \
   m(elemI_W,   KeyType::Int,   MOpMode::None,   true)          \
-  m(elemID_W,  KeyType::Int,   MOpMode::Define, true)          \
   m(elemIU_W,  KeyType::Int,   MOpMode::Unset,  true)          \
   m(elemIW_W,  KeyType::Int,   MOpMode::Warn,   true)          \
   m(elemIIO_W, KeyType::Int,   MOpMode::InOut,  true)          \
   m(elemS_W,   KeyType::Str,   MOpMode::None,   true)          \
-  m(elemSD_W,  KeyType::Str,   MOpMode::Define, true)          \
   m(elemSU_W,  KeyType::Str,   MOpMode::Unset,  true)          \
   m(elemSW_W,  KeyType::Str,   MOpMode::Warn,   true)          \
   m(elemSIO_W, KeyType::Str,   MOpMode::InOut,  true)          \
@@ -497,6 +521,29 @@ inline tv_lval nm(tv_lval base,                               \
   return elemImpl<keyType,mode,intishWarn>(base, key, tvRef); \
 }
 ELEM_HELPER_TABLE(X)
+#undef X
+
+//////////////////////////////////////////////////////////////////////
+
+#define ELEMD_HELPER_TABLE(m)                 \
+  /* name      keyType         intishWarn */  \
+  m(elemCD,    KeyType::Any,   false)         \
+  m(elemID,    KeyType::Int,   false)         \
+  m(elemSD,    KeyType::Str,   false)         \
+  m(elemCD_W,  KeyType::Any,   true)          \
+  m(elemID_W,  KeyType::Int,   true)          \
+  m(elemSD_W,  KeyType::Str,   true)          \
+
+#define X(nm, keyType, intishWarn)                            \
+inline tv_lval nm(tv_lval base,                               \
+                  key_type<keyType> key,                      \
+                  TypedValue& tvRef,                          \
+                  const MInstrPropState* pState) {            \
+  return ElemD<MOpMode::Define, false, intishWarn, keyType>(  \
+    tvRef, base, key, pState                                  \
+  );                                                          \
+}
+ELEMD_HELPER_TABLE(X)
 #undef X
 
 //////////////////////////////////////////////////////////////////////
@@ -813,10 +860,12 @@ CGETELEM_HELPER_TABLE(X)
 //////////////////////////////////////////////////////////////////////
 
 template <KeyType keyType, bool intishWarn>
-RefData* vGetElemImpl(tv_lval base, key_type<keyType> key) {
+RefData* vGetElemImpl(tv_lval base, key_type<keyType> key,
+                      const MInstrPropState* pState) {
   TypedValue localTvRef;
-  auto result =
-    ElemD<MOpMode::Define, true, intishWarn, keyType>(localTvRef, base, key);
+  auto result = ElemD<MOpMode::Define, true, intishWarn, keyType>(
+    localTvRef, base, key, pState
+  );
   return vGetRefShuffle(localTvRef, result);
 }
 
@@ -829,9 +878,10 @@ RefData* vGetElemImpl(tv_lval base, key_type<keyType> key) {
   m(vGetElemIW,   KeyType::Int,  true)          \
   m(vGetElemSW,   KeyType::Str,  true)
 
-#define X(nm, kt, intishWarn)                                         \
-inline RefData* nm(tv_lval base, key_type<kt> key) {              \
-  return vGetElemImpl<kt, intishWarn>(base, key);                     \
+#define X(nm, kt, intishWarn)                                           \
+inline RefData* nm(tv_lval base, key_type<kt> key,                      \
+                   const MInstrPropState* pState) {                     \
+  return vGetElemImpl<kt, intishWarn>(base, key, pState);               \
 }
 VGETELEM_HELPER_TABLE(X)
 #undef X
@@ -861,8 +911,8 @@ inline ArrayData* checkedSet(ArrayData*, int64_t, Cell, bool) {
 //////////////////////////////////////////////////////////////////////
 
 template<KeyType keyType, bool checkForInt, bool setRef, bool intishWarn>
-typename ShuffleReturn<setRef>::return_type
-arraySetImpl(ArrayData* a, key_type<keyType> key, Cell value, RefData* ref) {
+auto
+arraySetImpl(ArrayData* a, key_type<keyType> key, Cell value, TypedValue* ref) {
   static_assert(keyType != KeyType::Any,
                 "KeyType::Any is not supported in arraySetMImpl");
   assertx(cellIsPlausible(value));
@@ -870,60 +920,65 @@ arraySetImpl(ArrayData* a, key_type<keyType> key, Cell value, RefData* ref) {
   const bool copy = a->cowCheck();
   ArrayData* ret = checkForInt ? checkedSet<intishWarn>(a, key, value, copy)
                                : a->set(key, value, copy);
-  return arrayRefShuffle<setRef, KindOfArray>(a, ret,
-                                              setRef ? ref->tv() : nullptr);
+  return arrayRefShuffle<setRef, KindOfArray>(a, ret, ref);
 }
 
-#define ARRAYSET_HELPER_TABLE(m)                                    \
-  /* name         keyType        checkForInt  setRef  intishWarn */ \
-  m(arraySetS,    KeyType::Str,   false,      false,  false)        \
-  m(arraySetSi,   KeyType::Str,    true,      false,  false)        \
-  m(arraySetI,    KeyType::Int,   false,      false,  false)        \
-  m(arraySetSR,   KeyType::Str,   false,      true,   false)        \
-  m(arraySetSiR,  KeyType::Str,    true,      true,   false)        \
-  m(arraySetIR,   KeyType::Int,   false,      true,   false)        \
-  m(arraySetSW,   KeyType::Str,   false,      false,  true)         \
-  m(arraySetSiW,  KeyType::Str,    true,      false,  true)         \
-  m(arraySetIW,   KeyType::Int,   false,      false,  true)         \
-  m(arraySetSRW,  KeyType::Str,   false,      true,   true)         \
-  m(arraySetSiRW, KeyType::Str,    true,      true,   true)         \
-  m(arraySetIRW,  KeyType::Int,   false,      true,   true)         \
+#define ARRAYSET_HELPER_TABLE(m)                        \
+  /* name         keyType     checkForInt intishWarn */ \
+  m(arraySetS,    KeyType::Str,   false,  false)        \
+  m(arraySetSi,   KeyType::Str,    true,  false)        \
+  m(arraySetI,    KeyType::Int,   false,  false)        \
+  m(arraySetSW,   KeyType::Str,   false,  true)         \
+  m(arraySetSiW,  KeyType::Str,    true,  true)         \
+  m(arraySetIW,   KeyType::Int,   false,  true)
 
-#define X(nm, keyType, checkForInt, setRef, intishWarn)                    \
-ShuffleReturn<setRef>::return_type                                         \
-inline nm(ArrayData* a, key_type<keyType> key, Cell value, RefData* ref) { \
-  return arraySetImpl<keyType, checkForInt, setRef, intishWarn>(           \
-    a, key, value, ref                                                     \
-  );                                                                       \
+#define X(nm, keyType, checkForInt, intishWarn)                         \
+inline ArrayData* nm(ArrayData* a, key_type<keyType> key, Cell value) { \
+  return arraySetImpl<keyType, checkForInt, false, intishWarn>(         \
+    a, key, value, nullptr                                              \
+  );                                                                    \
 }
 ARRAYSET_HELPER_TABLE(X)
+#undef X
+
+#define ARRAYSET_REF_HELPER_TABLE(m)                     \
+  /* name         keyType     checkForInt intishWarn */  \
+  m(arraySetSR,   KeyType::Str,   false,   false)        \
+  m(arraySetSiR,  KeyType::Str,    true,   false)        \
+  m(arraySetIR,   KeyType::Int,   false,   false)        \
+  m(arraySetSRW,  KeyType::Str,   false,   true)         \
+  m(arraySetSiRW, KeyType::Str,    true,   true)         \
+  m(arraySetIRW,  KeyType::Int,   false,   true)
+
+#define X(nm, keyType, checkForInt, intishWarn)                          \
+inline                                                                   \
+void nm(ArrayData* a, key_type<keyType> key, Cell value, RefData* ref) { \
+  arraySetImpl<keyType, checkForInt, true, intishWarn>(                  \
+    a, key, value, ref->tv()                                             \
+  );                                                                     \
+}
+ARRAYSET_REF_HELPER_TABLE(X)
 #undef X
 
 //////////////////////////////////////////////////////////////////////
 
 template<bool setRef>
-typename ShuffleReturn<setRef>::return_type
-vecSetImpl(ArrayData* a, int64_t key, Cell value, RefData* ref) {
+auto vecSetImpl(ArrayData* a, int64_t key, Cell value, TypedValue* ref) {
   assertx(cellIsPlausible(value));
   assertx(a->isVecArray());
   const bool copy = a->cowCheck();
   ArrayData* ret = PackedArray::SetIntVec(a, key, value, copy);
-  return arrayRefShuffle<setRef, KindOfVec>(a, ret,
-                                            setRef ? ref->tv() : nullptr);
+  return arrayRefShuffle<setRef, KindOfVec>(a, ret, ref);
 }
 
-#define VECSET_HELPER_TABLE(m) \
-  /* name      setRef */       \
-  m(vecSetI,   false)          \
-  m(vecSetIR,  true)           \
-
-#define X(nm, setRef)                                                   \
-ShuffleReturn<setRef>::return_type                                      \
-inline nm(ArrayData* a, int64_t key, Cell value, RefData* ref) {        \
-  return vecSetImpl<setRef>(a, key, value, ref);                        \
+inline ArrayData* vecSetI(ArrayData* a, int64_t key, Cell value) {
+  return vecSetImpl<false>(a, key, value, nullptr);
 }
-VECSET_HELPER_TABLE(X)
-#undef X
+
+inline void vecSetIR(ArrayData* a, int64_t key, Cell value,
+                     RefData* ref) {
+  vecSetImpl<true>(a, key, value, ref->tv());
+}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -935,28 +990,37 @@ inline ArrayData* dictSetImplPre(ArrayData* a, StringData* s, Cell val) {
 }
 
 template<KeyType keyType, bool setRef>
-typename ShuffleReturn<setRef>::return_type
-dictSetImpl(ArrayData* a, key_type<keyType> key, Cell value, RefData* ref) {
+auto
+dictSetImpl(ArrayData* a, key_type<keyType> key, Cell value, TypedValue* ref) {
   assertx(cellIsPlausible(value));
   assertx(a->isDict());
   auto ret = dictSetImplPre(a, key, value);
-  return arrayRefShuffle<setRef, KindOfDict>(a, ret,
-                                             setRef ? ref->tv() : nullptr);
+  return arrayRefShuffle<setRef, KindOfDict>(a, ret, ref);
 }
 
-#define DICTSET_HELPER_TABLE(m) \
-  /* name       keyType        setRef */         \
-  m(dictSetI,   KeyType::Int,  false)            \
-  m(dictSetIR,  KeyType::Int,  true)             \
-  m(dictSetS,   KeyType::Str,  false)            \
-  m(dictSetSR,  KeyType::Str,  true)             \
+#define DICTSET_HELPER_TABLE(m)    \
+  /* name       keyType     */     \
+  m(dictSetI,   KeyType::Int)      \
+  m(dictSetS,   KeyType::Str)
 
-#define X(nm, keyType, setRef)                                           \
-ShuffleReturn<setRef>::return_type                                       \
-inline nm(ArrayData* a, key_type<keyType> key, Cell val, RefData* ref) { \
-  return dictSetImpl<keyType, setRef>(a, key, val, ref);                 \
+#define X(nm, keyType)                                                   \
+inline ArrayData* nm(ArrayData* a, key_type<keyType> key, Cell val) {    \
+  return dictSetImpl<keyType, false>(a, key, val, nullptr);              \
 }
 DICTSET_HELPER_TABLE(X)
+#undef X
+
+#define DICTSET_REF_HELPER_TABLE(m) \
+  /* name       keyType    */       \
+  m(dictSetIR,  KeyType::Int)       \
+  m(dictSetSR,  KeyType::Str)
+
+#define X(nm, keyType)                                                  \
+inline                                                                  \
+void nm(ArrayData* a, key_type<keyType> key, Cell val, RefData* ref) {  \
+  dictSetImpl<keyType, true>(a, key, val, ref->tv());                   \
+}
+DICTSET_REF_HELPER_TABLE(X)
 #undef X
 
 //////////////////////////////////////////////////////////////////////
@@ -998,8 +1062,9 @@ KEYSET_SETNEWELEM_HELPER_TABLE(X)
 
 //////////////////////////////////////////////////////////////////////
 template <KeyType keyType, bool intishWarn>
-StringData* setElemImpl(tv_lval base, key_type<keyType> key, Cell val) {
-  return HPHP::SetElem<false, intishWarn, keyType>(base, key, &val);
+StringData* setElemImpl(tv_lval base, key_type<keyType> key,
+                        Cell val, const MInstrPropState* pState) {
+  return HPHP::SetElem<false, intishWarn, keyType>(base, key, &val, pState);
 }
 
 #define SETELEM_HELPER_TABLE(m)                 \
@@ -1011,9 +1076,10 @@ StringData* setElemImpl(tv_lval base, key_type<keyType> key, Cell val) {
   m(setElemIW,  KeyType::Int, true)             \
   m(setElemSW,  KeyType::Str, true)             \
 
-#define X(nm, kt, intishWarn)                                         \
-inline StringData* nm(tv_lval base, key_type<kt> key, Cell val) { \
-  return setElemImpl<kt, intishWarn>(base, key, val);                 \
+#define X(nm, kt, intishWarn)                                           \
+inline StringData* nm(tv_lval base, key_type<kt> key,                   \
+                      Cell val, const MInstrPropState* pState) {        \
+  return setElemImpl<kt, intishWarn>(base, key, val, pState);           \
 }
 SETELEM_HELPER_TABLE(X)
 #undef X

@@ -77,7 +77,7 @@ void TypeConstraint::init() {
         this, m_namedEntity.get());
 }
 
-std::string TypeConstraint::displayName(const Func* func /*= nullptr*/,
+std::string TypeConstraint::displayName(const Class* context /*= nullptr*/,
                                         bool extra /* = false */) const {
   const StringData* tn = typeName();
   std::string name;
@@ -87,11 +87,15 @@ std::string TypeConstraint::displayName(const Func* func /*= nullptr*/,
   if (isNullable() && isExtended()) {
     name += '?';
   }
-  if (func && isSelf()) {
-    selfToTypeName(func, &tn);
+  if (isSelf()) {
+    if (context) tn = context->name();
     name += tn->data();
-  } else if (func && isParent()) {
-    parentToTypeName(func, &tn);
+  } else if (isParent()) {
+    if (context) {
+      if (auto const parent = context->parent()) {
+        tn = parent->name();
+      }
+    }
     name += tn->data();
   } else {
     const char* str = tn->data();
@@ -129,7 +133,7 @@ std::string TypeConstraint::displayName(const Func* func /*= nullptr*/,
   if (extra && m_flags & Flags::Resolved && m_type != AnnotType::Object) {
     const char* str = nullptr;
     switch (m_type) {
-      case AnnotType::Uninit:   str = "uninit"; break;
+      case AnnotType::NoReturn: str = "noreturn"; break;
       case AnnotType::Null:     str = "null"; break;
       case AnnotType::Bool:     str = "bool"; break;
       case AnnotType::Int:      str = "int";  break;
@@ -194,13 +198,27 @@ bool TypeConstraint::compat(const TypeConstraint& other) const {
     const Class* cls = Unit::lookupClass(m_typeName);
     const Class* otherCls = Unit::lookupClass(other.m_typeName);
 
-    return cls && otherCls && cls == otherCls;
+    return cls && otherCls && (isHHType() ? otherCls->classof(cls)
+                                          : cls == otherCls);
   }
 
   return false;
 }
 
 namespace {
+
+const Class* getThis() {
+  auto const ar = vmfp();
+  if (ar->func()->cls()) {
+    if (ar->hasThis()) {
+      return ar->getThis()->getVMClass();
+    } else {
+      assertx(ar->hasClass());
+      return ar->getClass();
+    }
+  }
+  return nullptr;
+}
 
 /*
  * Look up a TypeAliasReq for the supplied NamedEntity (which must be the
@@ -234,10 +252,8 @@ const TypeAliasReq* getTypeAliasWithAutoload(const NamedEntity* ne,
  * type alias or an enum class; enum classes are strange in that it
  * *is* possible to have an instance of them even if they are not defined.
  */
-static
-std::pair<const TypeAliasReq*, Class*> getTypeAliasOrClassWithAutoload(
-    const NamedEntity* ne,
-    const StringData* name) {
+std::pair<const TypeAliasReq*, Class*>
+getTypeAliasOrClassWithAutoload(const NamedEntity* ne, const StringData* name) {
 
   auto def = ne->getCachedTypeAlias();
   Class *klass = nullptr;
@@ -310,37 +326,182 @@ MaybeDataType TypeConstraint::underlyingDataTypeResolved() const {
   return t;
 }
 
+bool
+TypeConstraint::maybeInequivalentForProp(const TypeConstraint& other) const {
+  assertx(validForProp());
+  assertx(other.validForProp());
+
+  if (isSoft() != other.isSoft()) return true;
+
+  if (!isCheckable()) return other.isCheckable();
+  if (!other.isCheckable()) return true;
+
+  if (isNullable() != other.isNullable()) return true;
+
+  if (isObject()) {
+    // Type-hints with the same name should always be the same thing
+    return !other.isObject() || !m_typeName->isame(other.m_typeName);
+  }
+  if (other.isObject()) return true;
+
+  if (type() == other.type()) return false;
+  if (!RuntimeOption::EvalHackArrCompatTypeHintNotices) {
+    return !isArray() || !other.isArray();
+  }
+  return true;
+}
+
+TypeConstraint::EquivalentResult
+TypeConstraint::equivalentForProp(const TypeConstraint& other) const {
+  assertx(validForProp());
+  assertx(other.validForProp());
+
+  if (isSoft() != other.isSoft()) return EquivalentResult::Fail;
+
+  if (isObject() && other.isObject() &&
+      isNullable() == other.isNullable() &&
+      m_typeName->isame(other.m_typeName)) {
+    // We can avoid having to resolve the type-hint if they have the same name.
+    return EquivalentResult::Pass;
+  }
+
+  auto const resolve = [&] (const TypeConstraint& tc)
+    -> std::tuple<AnnotType, Class*, bool> {
+    if (!tc.isCheckable()) {
+      return std::make_tuple(AnnotType::Mixed, nullptr, false);
+    }
+
+    switch (tc.metaType()) {
+      case MetaType::This:
+      case MetaType::Number:
+      case MetaType::ArrayKey:
+      case MetaType::Nonnull:
+      case MetaType::VecOrDict:
+      case MetaType::VArray:
+      case MetaType::DArray:
+      case MetaType::VArrOrDArr:
+      case MetaType::ArrayLike:
+      case MetaType::Precise:
+        if (!tc.isObject()) {
+          return std::make_tuple(tc.type(), nullptr, tc.isNullable());
+        }
+        break;
+      case MetaType::NoReturn:
+      case MetaType::Self:
+      case MetaType::Parent:
+      case MetaType::Callable:
+      case MetaType::Mixed:
+        always_assert(false);
+    }
+
+    assertx(tc.isObject());
+
+    const TypeAliasReq* tyAlias;
+    Class* klass;
+    std::tie(tyAlias, klass) =
+      getTypeAliasOrClassWithAutoload(tc.m_namedEntity, tc.m_typeName);
+
+    auto nullable = tc.isNullable();
+    auto at = AnnotType::Object;
+    if (tyAlias) {
+      nullable |= tyAlias->nullable;
+      at = tyAlias->type;
+      klass = (at == Type::Object) ? tyAlias->klass : nullptr;
+    }
+
+    if (klass && isEnum(klass)) {
+      auto const maybeDt = klass->enumBaseTy();
+      at = maybeDt ? dataTypeToAnnotType(*maybeDt) : AnnotType::ArrayKey;
+      klass = nullptr;
+    }
+
+    if (at == AnnotType::Mixed) nullable = false;
+    return std::make_tuple(at, klass, nullable);
+  };
+
+  auto const resolved1 = resolve(*this);
+  auto const resolved2 = resolve(other);
+  if (resolved1 != resolved2) {
+    // The resolutions aren't the same. This still might be okay once you take
+    // into account d/varrays.
+    auto const resType1 = std::get<0>(resolved1);
+    auto const resType2 = std::get<0>(resolved2);
+    auto const isArray1 =
+      resType1 == AnnotType::Array ||
+      resType1 == AnnotType::VArray ||
+      resType1 == AnnotType::DArray ||
+      resType1 == AnnotType::VArrOrDArr;
+    auto const isArray2 =
+      resType2 == AnnotType::Array ||
+      resType2 == AnnotType::VArray ||
+      resType2 == AnnotType::DArray ||
+      resType2 == AnnotType::VArrOrDArr;
+    if (!isArray1 || !isArray2 ||
+        std::get<2>(resolved1) != std::get<2>(resolved2)) {
+      return EquivalentResult::Fail;
+    }
+    return RuntimeOption::EvalHackArrCompatTypeHintNotices
+      ? EquivalentResult::DVArray
+      : EquivalentResult::Pass;
+  }
+
+  // The resolutions are the same. However, both could have failed to resolve to
+  // anything. In that case, rely on their name.
+  auto const resType = std::get<0>(resolved1);
+  if (resType == AnnotType::Object && !std::get<1>(resolved1)) {
+    return m_typeName->isame(other.m_typeName)
+      ? EquivalentResult::Pass
+      : EquivalentResult::Fail;
+  }
+  return EquivalentResult::Pass;
+}
+
+template <bool Assert, bool ForProp>
 bool TypeConstraint::checkTypeAliasNonObj(const TypedValue* tv) const {
   assertx(tv->m_type != KindOfObject);
   assertx(isObject());
 
-  auto p = getTypeAliasOrClassWithAutoload(m_namedEntity, m_typeName);
+  auto const p = [&]() -> std::pair<const TypeAliasReq*, Class*> {
+    if (!Assert) {
+      return getTypeAliasOrClassWithAutoload(m_namedEntity, m_typeName);
+    }
+    if (auto const def = m_namedEntity->getCachedTypeAlias()) {
+      return std::make_pair(def, nullptr);
+    }
+    if (auto const klass = Unit::lookupClass(m_namedEntity)) {
+      return std::make_pair(nullptr, klass);
+    }
+    return std::make_pair(nullptr, nullptr);
+  }();
   auto td = p.first;
   auto c = p.second;
 
+  if (Assert && !td && !c) return true;
+
   // Common case is that we actually find the alias:
   if (td) {
+    assertx(td->type != AnnotType::Self && td->type != AnnotType::Parent);
     if (td->nullable && tv->m_type == KindOfNull) return true;
     auto result = annotCompat(tv->m_type, td->type,
-      td->klass ? td->klass->name() : nullptr);
+                              td->klass ? td->klass->name() : nullptr);
     switch (result) {
       case AnnotAction::Pass: return true;
       case AnnotAction::Fail: return false;
       case AnnotAction::CallableCheck:
-        return is_callable(tvAsCVarRef(tv));
+        return !ForProp && (Assert || is_callable(tvAsCVarRef(tv)));
       case AnnotAction::ObjectCheck: break;
       case AnnotAction::VArrayCheck:
         assertx(tvIsArray(tv));
-        return tv->m_data.parr->isVArray();
+        return Assert || tv->m_data.parr->isVArray();
       case AnnotAction::DArrayCheck:
         assertx(tvIsArray(tv));
-        return tv->m_data.parr->isDArray();
+        return Assert || tv->m_data.parr->isDArray();
       case AnnotAction::VArrayOrDArrayCheck:
         assertx(tvIsArray(tv));
-        return !tv->m_data.parr->isNotDVArray();
+        return Assert || !tv->m_data.parr->isNotDVArray();
       case AnnotAction::NonVArrayOrDArrayCheck:
         assertx(tvIsArray(tv));
-        return tv->m_data.parr->isNotDVArray();
+        return Assert || tv->m_data.parr->isNotDVArray();
     }
     assertx(result == AnnotAction::ObjectCheck);
     assertx(td->type == AnnotType::Object);
@@ -366,27 +527,32 @@ bool TypeConstraint::checkTypeAliasNonObj(const TypedValue* tv) const {
   return false;
 }
 
-bool TypeConstraint::checkTypeAliasObj(const Class* cls) const {
+template <bool Assert>
+bool TypeConstraint::checkTypeAliasObjImpl(const Class* cls) const {
   assertx(isObject() && m_namedEntity && m_typeName);
+
   // Look up the type alias (autoloading if necessary)
   // and fail if we can't find it
-  auto const td = getTypeAliasWithAutoload(m_namedEntity, m_typeName);
-  if (!td) {
-    return false;
-  }
+  auto const td = [&]{
+    if (!Assert) {
+      return getTypeAliasWithAutoload(m_namedEntity, m_typeName);
+    }
+    return m_namedEntity->getCachedTypeAlias();
+  }();
+  if (!td) return Assert;
+
   // We found the type alias, check if an object of type cls
   // is compatible
   switch (getAnnotMetaType(td->type)) {
     case AnnotMetaType::Precise:
       return td->type == AnnotType::Object && td->klass &&
-             cls->classof(td->klass);
+        cls->classof(td->klass);
     case AnnotMetaType::Mixed:
     case AnnotMetaType::Nonnull:
       return true;
     case AnnotMetaType::Callable:
       return cls->lookupMethod(s___invoke.get()) != nullptr;
-    case AnnotMetaType::Self:
-    case AnnotMetaType::Parent:
+    case AnnotMetaType::NoReturn:
     case AnnotMetaType::Number:
     case AnnotMetaType::ArrayKey:
     case AnnotMetaType::This:
@@ -395,41 +561,36 @@ bool TypeConstraint::checkTypeAliasObj(const Class* cls) const {
     case AnnotMetaType::VArrOrDArr:
     case AnnotMetaType::VecOrDict:
     case AnnotMetaType::ArrayLike:
-      // Self and Parent should never happen, because type
-      // aliases are not allowed to use those MetaTypes
       return false;
+    case AnnotMetaType::Self:
+    case AnnotMetaType::Parent:
+      // These should never happen, because type aliases are not allowed to use
+      // those MetaTypes
+      always_assert(false);
   }
   not_reached();
 }
 
+template bool TypeConstraint::checkTypeAliasObjImpl<false>(const Class*) const;
+template bool TypeConstraint::checkTypeAliasObjImpl<true>(const Class*) const;
 
-void TypeConstraint::verifyReturnNonNull(TypedValue* tv, const Func* func) const {
-  const auto DEBUG_ONLY tc = func->returnTypeConstraint();
-  assertx(!tc.isNullable());
-  if (UNLIKELY(cellIsNull(tv))) {
-    verifyReturnFail(func, tv);
-  } else if (debug) {
-    auto vm = &*g_context;
-    always_assert_flog(
-      check(tv, func),
-      "HHBBC incorrectly converted VerifyRetTypeC to VerifyRetNonNull in {}:{}",
-      vm->getContainingFileName()->data(),
-      vm->getLine()
-    );
-  }
-}
+template <TypeConstraint::CheckMode Mode>
+bool TypeConstraint::checkImpl(const TypedValue* tv,
+                               const Class* context) const {
+  assertx(isCheckable());
+  assertx(tvIsPlausible(*tv));
 
-bool TypeConstraint::check(TypedValue* tv, const Func* func) const {
-  assertx(hasConstraint() && !isTypeVar() && !isMixed() && !isTypeConstant());
+  auto const isAssert = Mode == CheckMode::Assert;
+  auto const isPasses = Mode == CheckMode::AlwaysPasses;
+  auto const isProp   = Mode == CheckMode::ExactProp;
 
-  // This is part of the interpreter runtime; perf matters.
-  if (isRefType(tv->m_type)) {
-    tv = tv->m_data.pref->tv();
-  }
+  // We shouldn't provide a context for the conservative checks.
+  assertx(!isAssert || !context);
+  assertx(!isPasses || !context);
+  assertx(!isProp   || validForProp());
 
-  if (isNullable() && tv->m_type == KindOfNull) {
-    return true;
-  }
+  tv = tvToCell(tv);
+  if (isNullable() && tv->m_type == KindOfNull) return true;
 
   if (tv->m_type == KindOfObject) {
     // Perfect match seems common enough to be worth skipping the hash
@@ -439,39 +600,52 @@ bool TypeConstraint::check(TypedValue* tv, const Func* func) const {
       if (m_typeName->isame(tv->m_data.pobj->getVMClass()->name())) {
         return true;
       }
-      // We can't save the Class* since it moves around from request
-      // to request.
-      assertx(m_namedEntity);
-      c = Unit::lookupClass(m_namedEntity);
+      if (!isPasses) {
+        // We can't save the Class* since it moves around from request to
+        // request.
+        assertx(m_namedEntity);
+        c = Unit::lookupClass(m_namedEntity);
+      }
     } else {
       switch (metaType()) {
         case MetaType::Self:
-          selfToClass(func, &c);
+          assertx(!isProp);
+          if (isAssert) return true;
+          if (isPasses) return false;
+          c = context;
           break;
         case MetaType::This:
+          if (isAssert) return true;
+          if (isPasses) return false;
+          if (isProp) return tv->m_data.pobj->getVMClass() == context;
           switch (RuntimeOption::EvalThisTypeHintLevel) {
             case 0:   // Like Mixed.
               return true;
               break;
             case 1:   // Like Self.
-              selfToClass(func, &c);
+              c = context;
               break;
             case 2:   // Soft this in irgen verifyTypeImpl and verifyFail.
             case 3:   // Hard this.
-              thisToClass(&c);
-              if (c) {
-                return tv->m_data.pobj->getVMClass() == c;
+              if (auto const cls = getThis()) {
+                return tv->m_data.pobj->getVMClass() == cls;
               }
               return false;
-              break;
           }
           break;
         case MetaType::Parent:
-          parentToClass(func, &c);
+          assertx(!isProp);
+          if (isAssert) return true;
+          if (isPasses) return false;
+          if (context) c = context->parent();
           break;
         case MetaType::Callable:
+          assertx(!isProp);
+          if (isAssert) return true;
+          if (isPasses) return false;
           return is_callable(tvAsCVarRef(tv));
         case MetaType::Precise:
+        case MetaType::NoReturn:
         case MetaType::Number:
         case MetaType::ArrayKey:
         case MetaType::VArray:
@@ -481,7 +655,7 @@ bool TypeConstraint::check(TypedValue* tv, const Func* func) const {
         case MetaType::ArrayLike:
           return false;
         case MetaType::Nonnull:
-          return tv->m_type != KindOfNull;
+          return true;
         case MetaType::Mixed:
           // We assert'd at the top of this function that the
           // metatype cannot be Mixed
@@ -491,7 +665,8 @@ bool TypeConstraint::check(TypedValue* tv, const Func* func) const {
     if (c && tv->m_data.pobj->instanceof(c)) {
       return true;
     }
-    return isObject() && checkTypeAliasObj(tv->m_data.pobj->getVMClass());
+    return isObject() && !isPasses &&
+      checkTypeAliasObjImpl<isAssert>(tv->m_data.pobj->getVMClass());
   }
 
   auto const result = annotCompat(tv->m_type, m_type, m_typeName);
@@ -499,24 +674,107 @@ bool TypeConstraint::check(TypedValue* tv, const Func* func) const {
     case AnnotAction::Pass: return true;
     case AnnotAction::Fail: return false;
     case AnnotAction::CallableCheck:
+      assertx(!isProp);
+      if (isAssert) return true;
+      if (isPasses) return false;
       return is_callable(tvAsCVarRef(tv));
     case AnnotAction::ObjectCheck:
       assertx(isObject());
-      return checkTypeAliasNonObj(tv);
+      return !isPasses && checkTypeAliasNonObj<isAssert, isProp>(tv);
     case AnnotAction::VArrayCheck:
+      // Since d/varray type-hints are always soft, we can never assert on their
+      // correctness.
       assertx(tvIsArray(tv));
-      return tv->m_data.parr->isVArray();
+      return isAssert || tv->m_data.parr->isVArray();
     case AnnotAction::DArrayCheck:
       assertx(tvIsArray(tv));
-      return tv->m_data.parr->isDArray();
+      return isAssert || tv->m_data.parr->isDArray();
     case AnnotAction::VArrayOrDArrayCheck:
       assertx(tvIsArray(tv));
-      return !tv->m_data.parr->isNotDVArray();
+      return isAssert || !tv->m_data.parr->isNotDVArray();
     case AnnotAction::NonVArrayOrDArrayCheck:
       assertx(tvIsArray(tv));
-      return tv->m_data.parr->isNotDVArray();
+      return isAssert || tv->m_data.parr->isNotDVArray();
   }
   not_reached();
+}
+
+template bool TypeConstraint::checkImpl<TypeConstraint::CheckMode::Exact>(
+  const TypedValue*,
+  const Class*
+) const;
+template bool TypeConstraint::checkImpl<TypeConstraint::CheckMode::ExactProp>(
+  const TypedValue*,
+  const Class*
+) const;
+template bool TypeConstraint::checkImpl<TypeConstraint::CheckMode::AlwaysPasses>(
+  const TypedValue*,
+  const Class*
+) const;
+template bool TypeConstraint::checkImpl<TypeConstraint::CheckMode::Assert>(
+  const TypedValue*,
+  const Class*
+) const;
+
+void TypeConstraint::verifyParam(TypedValue* tv,
+                                 const Func* func,
+                                 int paramNum) const {
+  if (UNLIKELY(!check(tv, func->cls()))) {
+    verifyParamFail(func, tv, paramNum);
+  }
+}
+
+void TypeConstraint::verifyReturn(TypedValue* tv, const Func* func) const {
+  if (UNLIKELY(!check(tv, func->cls()))) {
+    verifyReturnFail(func, tv);
+  }
+}
+
+void TypeConstraint::verifyOutParam(const TypedValue* tv,
+                                    const Func* func,
+                                    int paramNum) const {
+  if (UNLIKELY(!check(tv, func->cls()))) {
+    verifyOutParamFail(func, tv, paramNum);
+  }
+}
+
+void TypeConstraint::verifyProperty(const TypedValue* tv,
+                                    const Class* thisCls,
+                                    const Class* declCls,
+                                    const StringData* propName) const {
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+  assertx(validForProp());
+  if (UNLIKELY(!checkImpl<CheckMode::ExactProp>(tv, thisCls))) {
+    verifyPropFail(thisCls, declCls, tv, propName, false);
+  }
+}
+
+void TypeConstraint::verifyStaticProperty(const TypedValue* tv,
+                                          const Class* thisCls,
+                                          const Class* declCls,
+                                          const StringData* propName) const {
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+  assertx(validForProp());
+  if (UNLIKELY(!checkImpl<CheckMode::ExactProp>(tv, thisCls))) {
+    verifyPropFail(thisCls, declCls, tv, propName, true);
+  }
+}
+
+void TypeConstraint::verifyReturnNonNull(TypedValue* tv,
+                                         const Func* func) const {
+  const auto DEBUG_ONLY tc = func->returnTypeConstraint();
+  assertx(!tc.isNullable());
+  if (UNLIKELY(cellIsNull(tv))) {
+    verifyReturnFail(func, tv);
+  } else if (debug) {
+    auto vm = &*g_context;
+    always_assert_flog(
+      check(tv, func->cls()),
+      "HHBBC incorrectly converted VerifyRetTypeC to VerifyRetNonNull in {}:{}",
+      vm->getContainingFileName()->data(),
+      vm->getLine()
+    );
+  }
 }
 
 const char* describe_actual_type(const TypedValue* tv, bool isHHType) {
@@ -540,7 +798,8 @@ const char* describe_actual_type(const TypedValue* tv, bool isHHType) {
     case KindOfObject:        return tv->m_data.pobj->getClassName().c_str();
     case KindOfResource:
       return tv->m_data.pres->data()->o_getClassName().c_str();
-
+    case KindOfFunc:          return "func";
+    case KindOfClass:         return "class";
     case KindOfRef:
       break;
   }
@@ -581,55 +840,61 @@ bool call_uses_strict_types(const Func* callee) {
   return caller->unit()->useStrictTypes();
 }
 
+ALWAYS_INLINE
+folly::Optional<AnnotType> TypeConstraint::checkDVArray(const Cell* c) const {
+  auto const check = [&](AnnotType at) -> folly::Optional<AnnotType> {
+    switch (at) {
+      case AnnotType::Array:
+        assertx(!c->m_data.parr->isNotDVArray());
+        break;
+      case AnnotType::VArray:
+        assertx(!c->m_data.parr->isVArray());
+        break;
+      case AnnotType::DArray:
+        assertx(!c->m_data.parr->isDArray());
+        break;
+      case AnnotType::VArrOrDArr:
+        assertx(c->m_data.parr->isNotDVArray());
+        break;
+      default:
+        return folly::none;
+    }
+    return at;
+  };
+  if (LIKELY(!RuntimeOption::EvalHackArrCompatTypeHintNotices)) {
+    return folly::none;
+  }
+  if (!isArrayType(c->m_type)) return folly::none;
+  if (isArray()) return check(m_type);
+  if (!isObject()) return folly::none;
+  if (auto alias = getTypeAliasWithAutoload(m_namedEntity, m_typeName)) {
+    return check(alias->type);
+  }
+  return folly::none;
+}
+
 void TypeConstraint::verifyParamFail(const Func* func, TypedValue* tv,
                                      int paramNums) const {
   verifyFail(func, tv, paramNums);
   assertx(
-    isSoft() || !RuntimeOption::EvalHardTypeHints || (isThis() && couldSeeMockObject()) ||
+    isSoft() || !RuntimeOption::EvalHardTypeHints ||
+    (isThis() && couldSeeMockObject()) ||
     (RuntimeOption::EvalHackArrCompatTypeHintNotices &&
      isArrayType(tv->m_type)) ||
-    check(tv, func)
+    check(tv, func->cls())
   );
 }
 
 void TypeConstraint::verifyOutParamFail(const Func* func,
-                                        TypedValue* tv,
+                                        const TypedValue* tv,
                                         int paramNum) const {
   auto const c = tvToCell(tv);
-
-  auto const done = [&] {
-    auto const check = [&](AnnotType at) {
-      switch (at) {
-      case AnnotType::Array:
-        if (c->m_data.parr->isNotDVArray()) return true;
-        break;
-      case AnnotType::VArray:
-        if (c->m_data.parr->isVArray()) return true;
-        break;
-      case AnnotType::DArray:
-        if (c->m_data.parr->isDArray()) return true;
-        break;
-      case AnnotType::VArrOrDArr:
-        if (!c->m_data.parr->isNotDVArray()) return true;
-        break;
-      default:
-        return false;
-      }
-      raise_hackarr_type_hint_outparam_notice(
-        func, c->m_data.parr, at, paramNum
-      );
-      return true;
-    };
-    if (LIKELY(!RuntimeOption::EvalHackArrCompatTypeHintNotices)) return false;
-    if (!isArrayType(c->m_type)) return false;
-    if (isArray()) return check(m_type);
-    if (!isObject()) return false;
-    if (auto alias = getTypeAliasWithAutoload(m_namedEntity, m_typeName)) {
-      return check(alias->type);
-    }
-    return false;
-  }();
-  if (done) return;
+  if (auto const at = checkDVArray(c)) {
+    raise_hackarr_compat_type_hint_outparam_notice(
+      func, c->m_data.parr, *at, paramNum
+    );
+    return;
+  }
 
   raise_return_typehint_error(
     folly::sformat(
@@ -637,75 +902,78 @@ void TypeConstraint::verifyOutParamFail(const Func* func,
       "{}, {} given",
       paramNum + 1,
       func->fullDisplayName(),
-      displayName(func),
+      displayName(func->cls()),
       describe_actual_type(tv, isHHType())
     )
+  );
+}
+
+void TypeConstraint::verifyPropFail(const Class* thisCls,
+                                    const Class* declCls,
+                                    const TypedValue* tv,
+                                    const StringData* propName,
+                                    bool isStatic) const {
+  assertx(RuntimeOption::EvalCheckPropTypeHints > 0);
+  assertx(validForProp());
+
+  auto const c = tvToCell(tv);
+  if (auto const at = checkDVArray(c)) {
+    raise_hackarr_compat_type_hint_property_notice(
+      declCls, c->m_data.parr, *at, propName, isStatic
+    );
+    return;
+  }
+
+  if (UNLIKELY(isThis() && c->m_type == KindOfObject)) {
+    auto const valCls = c->m_data.pobj->getVMClass();
+    if (valCls->preClass()->userAttributes().count(s___MockClass.get()) &&
+        valCls->parent() == thisCls) {
+      return;
+    }
+  }
+
+  raise_property_typehint_error(
+    folly::sformat(
+      "{} '{}::{}' declared as type {}, {} assigned",
+      isStatic ? "Static property" : "Property",
+      declCls->name(),
+      propName,
+      displayName(nullptr),
+      describe_actual_type(c, isHHType())
+    ),
+    isSoft()
   );
 }
 
 void TypeConstraint::verifyFail(const Func* func, TypedValue* tv,
                                 int id) const {
   VMRegAnchor _;
-  std::string name = displayName(func);
+  std::string name = displayName(func->cls());
   auto const givenType = describe_actual_type(tv, isHHType());
 
   auto const c = tvToCell(tv);
 
-  auto const done = [&] {
-    auto const check = [&](AnnotType at) {
-      switch (at) {
-      case AnnotType::Array:
-        if (c->m_data.parr->isNotDVArray()) return true;
-        break;
-      case AnnotType::VArray:
-        if (c->m_data.parr->isVArray()) return true;
-        break;
-      case AnnotType::DArray:
-        if (c->m_data.parr->isDArray()) return true;
-        break;
-      case AnnotType::VArrOrDArr:
-        if (!c->m_data.parr->isNotDVArray()) return true;
-        break;
-      default:
-        return false;
-      }
-      if (id == ReturnId) {
-        raise_hackarr_type_hint_ret_notice(
-          func,
-          c->m_data.parr,
-          at
-        );
-      } else {
-        raise_hackarr_type_hint_param_notice(
-          func,
-          c->m_data.parr,
-          at,
-          id
-        );
-      }
-      return true;
-    };
-    if (LIKELY(!RuntimeOption::EvalHackArrCompatTypeHintNotices)) return false;
-    if (!isArrayType(c->m_type)) return false;
-    if (isArray()) return check(m_type);
-    if (!isObject()) return false;
-    if (auto alias = getTypeAliasWithAutoload(m_namedEntity, m_typeName)) {
-      return check(alias->type);
+  if (auto const at = checkDVArray(c)) {
+    if (id == ReturnId) {
+      raise_hackarr_compat_type_hint_ret_notice(
+        func,
+        c->m_data.parr,
+        *at
+      );
+    } else {
+      raise_hackarr_compat_type_hint_param_notice(
+        func,
+        c->m_data.parr,
+        *at,
+        id
+      );
     }
-    return false;
-  }();
-  if (done) return;
-
-  if (m_type == AnnotType::ArrayLike &&
-      (isArrayType(c->m_type) || isVecType(c->m_type) ||
-       isDictType(c->m_type) || isKeysetType(c->m_type))) {
     return;
   }
 
   if (UNLIKELY(isThis() && c->m_type == KindOfObject)) {
     Class* cls = c->m_data.pobj->getVMClass();
-    const Class* thisClass = nullptr;
-    thisToClass(&thisClass);
+    auto const thisClass = getThis();
     if (cls->preClass()->userAttributes().count(s___MockClass.get()) &&
         cls->parent() == thisClass) {
       return;
@@ -842,50 +1110,6 @@ void TypeConstraint::verifyFail(const Func* func, TypedValue* tv,
   }
 }
 
-void TypeConstraint::thisToClass(const Class **cls) const {
-  const ActRec* ar = vmfp();
-  if (ar->func()->cls()) {
-    if (ar->hasThis()) {
-      *cls = ar->getThis()->getVMClass();
-    } else {
-      assertx(ar->hasClass());
-      *cls = ar->getClass();
-    }
-  }
-}
-
-void TypeConstraint::selfToClass(const Func* func, const Class **cls) const {
-  const Class* c = func->cls();
-  if (c) {
-    *cls = c;
-  }
-}
-
-void TypeConstraint::selfToTypeName(const Func* func,
-                                    const StringData **typeName) const {
-  const Class* c = func->cls();
-  if (c) {
-    *typeName = c->name();
-  }
-}
-
-void TypeConstraint::parentToClass(const Func* func, const Class **cls) const {
-  Class* c1 = func->cls();
-  const Class* c2 = c1 ? c1->parent() : nullptr;
-  if (c2) {
-    *cls = c2;
-  }
-}
-
-void TypeConstraint::parentToTypeName(const Func* func,
-                                      const StringData **typeName) const {
-  const Class* c = nullptr;
-  parentToClass(func, &c);
-  if (c) {
-    *typeName = c->name();
-  }
-}
-
 //////////////////////////////////////////////////////////////////////
 
 MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
@@ -927,6 +1151,8 @@ MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
         case KindOfNull:         return MK::None;
         case KindOfUninit:
         case KindOfRef:
+        case KindOfFunc:
+        case KindOfClass:
           always_assert_flog(false, "Unexpected DataType");
       }
       not_reached();
@@ -934,6 +1160,7 @@ MemoKeyConstraint memoKeyConstraintFromTC(const TypeConstraint& tc) {
     case AnnotMetaType::ArrayKey:
       return tc.isNullable() ? MK::None : MK::IntOrStr;
     case AnnotMetaType::Mixed:
+    case AnnotMetaType::NoReturn:
     case AnnotMetaType::Nonnull:
     case AnnotMetaType::Self:
     case AnnotMetaType::This:

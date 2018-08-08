@@ -80,6 +80,8 @@ public:
   bool isHackArray() const { return isHackArrayType(getType()); }
   bool isObject()    const { return isObjectType(getType()); }
   bool isResource()  const { return isResourceType(getType()); }
+  bool isFunc()      const { return isFuncType(getType()); }
+  bool isClass()     const { return isClassType(getType()); }
 
   auto toBoolean() const { return tvCastToBoolean(*m_val); }
   auto toInt64()   const { return tvCastToInt64(*m_val); }
@@ -99,6 +101,18 @@ public:
     assertx(isArray());
     return isRefType(type(m_val)) ? val(m_val).pref->tv()->m_data.parr
                                   : val(m_val).parr;
+  }
+
+  auto toFuncVal() const {
+    assertx(isFunc());
+    return isRefType(type(m_val)) ? val(m_val).pref->tv()->m_data.pfunc
+      : val(m_val).pfunc;
+  }
+
+  auto toClassVal() const {
+    assertx(isClass());
+    return isRefType(type(m_val)) ? val(m_val).pref->tv()->m_data.pclass
+      : val(m_val).pclass;
   }
 
 protected:
@@ -244,6 +258,10 @@ struct Variant : private TypedValue {
   /* implicit */ Variant(const Resource& v) noexcept
   : Variant(v.hdr()) {}
 
+  /* implicit */ Variant(Class* v) {
+    m_type = KindOfClass;
+    m_data.pclass = v;
+  }
   /*
    * Explicit conversion constructors. These all manipulate ref-counts of bare
    * pointers as a side-effect, so we want to be explicit when its happening.
@@ -279,6 +297,12 @@ struct Variant : private TypedValue {
     } else {
       m_type = KindOfNull;
     }
+  }
+
+  explicit Variant(const Func* f) noexcept {
+    assertx(f);
+    m_type = KindOfFunc;
+    m_data.pfunc = f;
   }
 
   template <typename T>
@@ -749,6 +773,12 @@ struct Variant : private TypedValue {
   bool isResource() const {
     return getType() == KindOfResource;
   }
+  bool isFunc() const {
+    return isFuncType(getType());
+  }
+  bool isClass() const {
+    return isClassType(getType());
+  }
 
   bool isNumeric(bool checkString = false) const noexcept;
   DataType toNumeric(int64_t &ival, double &dval, bool checkString = false)
@@ -774,6 +804,8 @@ struct Variant : private TypedValue {
       case KindOfKeyset:
       case KindOfPersistentArray:
       case KindOfArray:
+      case KindOfFunc:
+      case KindOfClass:
         return false;
       case KindOfRef:
         return m_data.pref->var()->isIntVal();
@@ -1063,6 +1095,12 @@ struct Variant : private TypedValue {
     return ObjNR(getObjectData());
   }
 
+  auto toFuncVal() const {
+    return const_variant_ref{*this}.toFuncVal();
+  }
+  auto toClassVal() const {
+    return const_variant_ref{*this}.toClassVal();
+  }
   /*
    * Low level access that should be restricted to internal use.
    */
@@ -1652,13 +1690,6 @@ inline Array& forceToArray(tv_lval lval) {
   return asArrRef(inner);
 }
 
-inline Array& forceToDArray(Variant& var) {
-  if (!(var.isPHPArray() && var.toCArrRef().isDArray())) {
-    var = Variant(Array::CreateDArray());
-  }
-  return var.toArrRef();
-}
-
 inline Array& forceToDict(Variant& var) {
   if (!var.isDict()) var = Variant(Array::CreateDict());
   return var.toArrRef();
@@ -1668,6 +1699,23 @@ inline Array& forceToDict(tv_lval lval) {
   auto const inner = lval.unboxed();
   if (!isDictType(inner.type())) {
     tvSet(make_tv<KindOfDict>(ArrayData::CreateDict()), inner);
+  }
+  return asArrRef(inner);
+}
+
+inline Array& forceToDArray(Variant& var) {
+  if (RuntimeOption::EvalHackArrDVArrs) return forceToDict(var);
+  if (!(var.isPHPArray() && var.toCArrRef().isDArray())) {
+    var = Variant(Array::CreateDArray());
+  }
+  return var.toArrRef();
+}
+
+inline Array& forceToDArray(tv_lval lval) {
+  if (RuntimeOption::EvalHackArrDVArrs) return forceToDict(lval);
+  auto const inner = lval.unboxed();
+  if (!(isArrayType(inner.type()) && inner.val().parr->isDArray())) {
+    tvMove(make_array_like_tv(ArrayData::CreateDArray()), inner);
   }
   return asArrRef(inner);
 }

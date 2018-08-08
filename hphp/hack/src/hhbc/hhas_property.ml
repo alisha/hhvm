@@ -16,15 +16,17 @@ type t = {
   property_is_deep_init : bool;
   property_no_serialize : bool;
   property_is_immutable : bool;
+  property_is_lsb       : bool;
+  property_is_no_bad_redeclare : bool;
+  property_has_system_initial : bool;
+  property_no_implicit_null : bool;
+  property_initial_satisfies_tc : bool;
   property_name         : Hhbc_id.Prop.t;
   property_initial_value  : Typed_value.t option;
   property_initializer_instrs : Instruction_sequence.t option;
   property_type_info : Hhas_type_info.t;
   property_doc_comment : string option;
 }
-
-(* Interestingly, HHAS does not represent the declared types of properties,
-unlike formal parameters and return types. We might consider fixing this. *)
 
 let make
   property_attributes
@@ -35,6 +37,11 @@ let make
   property_is_deep_init
   property_no_serialize
   property_is_immutable
+  property_is_lsb
+  property_is_no_bad_redeclare
+  property_has_system_initial
+  property_no_implicit_null
+  property_initial_satisfies_tc
   property_name
   property_initial_value
   property_initializer_instrs
@@ -48,6 +55,11 @@ let make
     property_is_deep_init;
     property_no_serialize;
     property_is_immutable;
+    property_is_lsb;
+    property_is_no_bad_redeclare;
+    property_has_system_initial;
+    property_no_implicit_null;
+    property_initial_satisfies_tc;
     property_name;
     property_initial_value;
     property_initializer_instrs;
@@ -66,5 +78,10 @@ let initial_value hhas_property = hhas_property.property_initial_value
 let initializer_instrs hhas_property = hhas_property.property_initializer_instrs
 let no_serialize hhas_property = hhas_property.property_no_serialize
 let is_immutable hhas_property = hhas_property.property_is_immutable
+let is_lsb hhas_property = hhas_property.property_is_lsb
+let is_no_bad_redeclare hhas_property = hhas_property.property_is_no_bad_redeclare
+let has_system_initial hhas_property = hhas_property.property_has_system_initial
+let no_implicit_null hhas_property = hhas_property.property_no_implicit_null
+let initial_satisfies_tc hhas_property = hhas_property.property_initial_satisfies_tc
 let type_info hhas_property = hhas_property.property_type_info
 let doc_comment hhas_property = hhas_property.property_doc_comment

@@ -9,9 +9,9 @@
 
 open Instruction_sequence
 open Hh_core
-open Hhbc_ast
 
 module H = Hhbc_ast
+module SU = Hhbc_string_utils
 
 let is_last_param_variadic param_count params =
   let last_p = List.nth_exn params (param_count - 1) in
@@ -32,29 +32,21 @@ let emit_body_instrs_inout params call_instrs =
   let inout_params = List.filter_map params ~f:(fun p ->
       if not @@ Hhas_param.is_inout p then None else
         Some (instr_setl @@ Local.Named (Hhas_param.name p))) in
-  let msrv = Hhbc_options.use_msrv_for_inout !Hhbc_options.compiler_options in
   let local = Local.get_unnamed_local () in
   let has_variadic = is_last_param_variadic param_count params in
+  let param_count = if has_variadic then param_count - 1 else param_count in
   let num_inout = List.length inout_params in
-  let num_uninit = if msrv then num_inout else 0 in
   gather [
-    gather @@ List.init num_uninit ~f:(fun _ -> instr_nulluninit);
+    gather @@ List.init num_inout ~f:(fun _ -> instr_nulluninit);
     call_instrs;
     param_instrs;
-    begin match (msrv, has_variadic) with
-    | (false, false) -> instr (ICall (FCall param_count))
-    | (false, true) -> instr (ICall (FCallUnpack param_count))
-    | (true, false) -> instr (ICall (FCallM (param_count, num_inout + 1)))
-    | (true, true) -> instr (ICall (FCallUnpackM (param_count, num_inout + 1)))
-    end;
-    begin if msrv then empty else instr_unboxr_nop end;
+    instr_fcall param_count has_variadic (num_inout + 1);
     Emit_inout_helpers.emit_list_set_for_inout_call local inout_params;
     instr_retc
   ]
 
 let emit_body_instrs_ref params call_instrs =
   let param_count = List.length params in
-  let msrv = Hhbc_options.use_msrv_for_inout !Hhbc_options.compiler_options in
   let param_instrs = gather @@
     List.map params ~f:(fun p ->
       let local = Local.Named (Hhas_param.name p) in
@@ -67,24 +59,15 @@ let emit_body_instrs_ref params call_instrs =
     List.filter_map params ~f:(fun p ->
         if Hhas_param.is_reference p
         then Some (instr_cgetl (Local.Named (Hhas_param.name p))) else None) in
-  let fcall_instr =
-    if is_last_param_variadic param_count params
-    then instr_fcallunpack param_count
-    else instr_fcall param_count
-  in
+  let has_variadic = is_last_param_variadic param_count params in
+  let param_count = if has_variadic then param_count - 1 else param_count in
   gather [
     call_instrs;
     param_instrs;
-    fcall_instr;
+    instr_fcall param_count has_variadic 1;
     instr_unboxr_nop;
     gather param_get_instrs;
-    if msrv then
-      instr_retm (List.length param_get_instrs + 1)
-    else
-      gather [
-        instr_new_vec_array (List.length param_get_instrs + 1);
-        instr_retc;
-      ]
+    instr_retm (List.length param_get_instrs + 1)
   ]
 
 let emit_body_instrs ~wrapper_type env pos params call_instrs =
@@ -114,6 +97,7 @@ let make_wrapper_body env doc decl_vars return_type params instrs =
     instrs
     decl_vars
     false (* is_memoize_wrapper *)
+    false (* is_memoize_wrapper_lsb *)
     params
     (Some return_type)
     [] (* static_inits: this is intentionally empty *)
@@ -130,7 +114,7 @@ let emit_wrapper_function
     empty |> with_namespace namespace |> with_scope scope
     ) in
   let tparams =
-    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _) -> s) in
+    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _, _) -> s) in
   let params = Emit_param.from_asts ~namespace ~tparams ~generate_defaults:true
     ~scope ast_fun.Ast.f_params in
   let function_attributes =
@@ -192,7 +176,7 @@ let emit_wrapper_method
     empty |> with_namespace namespace |> with_scope scope
     ) in
   let tparams =
-    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _) -> s) in
+    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _, _) -> s) in
   let params = Emit_param.from_asts ~namespace ~tparams ~generate_defaults:true
     ~scope ast_method.Ast.m_params in
   let has_ref_params = List.exists params ~f:Hhas_param.is_reference in
@@ -217,7 +201,8 @@ let emit_wrapper_method
       ~scope ~skipawaitable:false ~namespace ast_method.Ast.m_ret in
   let method_is_return_by_ref = ast_method.Ast.m_ret_by_ref in
   let param_count = List.length params in
-  let class_name = Hhbc_id.Class.from_ast_name @@ snd ast_class.A.c_name in
+  let class_name =
+    Hhbc_id.Class.from_ast_name @@ SU.Xhp.mangle @@ snd ast_class.A.c_name in
   let wrapper_type, original_id, renamed_id, params =
     if is_closure || has_ref_params then
       Emit_inout_helpers.RefWrapper, renamed_id, original_id,

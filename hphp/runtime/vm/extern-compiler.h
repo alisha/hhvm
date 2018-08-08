@@ -25,14 +25,6 @@ namespace HPHP {
 
 struct MD5;
 
-enum class HackcMode {
-  kNever,
-  kFallback,
-  kFatal
-};
-
-HackcMode hackc_mode();
-
 struct BadCompilerException : Exception {
   explicit BadCompilerException(const std::string& what) : Exception(what) {}
   template<class... A>
@@ -49,12 +41,6 @@ void compilers_detach_after_fork();
 // On success return a verified unit, and on failure return a string stating the
 // type of error encountered
 using CompilerResult = boost::variant<std::unique_ptr<UnitEmitter>,std::string>;
-
-CompilerResult hackc_compile(const char* code,
-                             int len,
-                             const char* filename,
-                             const MD5& md5,
-                             AsmCallbacks* callbacks = nullptr);
 
 struct FactsParser {
   virtual ~FactsParser() {
@@ -82,11 +68,13 @@ struct UnitCompiler {
   UnitCompiler(const char* code,
                int codeLen,
                const char* filename,
-               const MD5& md5)
+               const MD5& md5,
+               bool forDebuggerEval)
       : m_code(code),
         m_codeLen(codeLen),
         m_filename(filename),
-        m_md5(md5)
+        m_md5(md5),
+        m_forDebuggerEval(forDebuggerEval)
     {}
   virtual ~UnitCompiler() {}
 
@@ -94,7 +82,8 @@ struct UnitCompiler {
     const char* code,
     int codeLen,
     const char* filename,
-    const MD5& md5);
+    const MD5& md5,
+    bool forDebuggerEval);
   virtual std::unique_ptr<UnitEmitter> compile(
     AsmCallbacks* callbacks = nullptr) const = 0;
   virtual const char* getName() const = 0;
@@ -104,24 +93,15 @@ struct UnitCompiler {
   int m_codeLen;
   const char* m_filename;
   const MD5& m_md5;
+  bool m_forDebuggerEval;
 };
 
 struct HackcUnitCompiler : public UnitCompiler {
-  HackcUnitCompiler(const char* code,
-                    int codeLen,
-                    const char* filename,
-                    const MD5& md5,
-                    HackcMode hackcMode)
-      : UnitCompiler(code, codeLen, filename, md5),
-        m_hackcMode(hackcMode)
-    {}
+  using UnitCompiler::UnitCompiler;
 
   virtual std::unique_ptr<UnitEmitter> compile(
     AsmCallbacks* callbacks = nullptr) const override;
   virtual const char* getName() const override { return "HackC"; }
-
- private:
-  const HackcMode m_hackcMode;
 };
 
 }

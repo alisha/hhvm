@@ -27,7 +27,6 @@
 #include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/tv-val.h"
 #include "hphp/runtime/base/set-array.h"
-#include "hphp/runtime/base/req-containers.h"
 #include "hphp/runtime/base/req-ptr.h"
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/util/tls-pod-bag.h"
@@ -670,6 +669,11 @@ bool IterateV(const ArrayData* adata, ArrFn arrFn) {
   return true;
 }
 
+template <typename ArrFn>
+ALWAYS_INLINE bool IterateVNoInc(const ArrayData* adata, ArrFn arrFn) {
+  return IterateV<ArrFn, false>(adata, std::move(arrFn));
+}
+
 template <typename PreArrFn, typename ArrFn, typename PreCollFn, typename ObjFn>
 bool IterateV(const TypedValue& it,
               PreArrFn preArrFn,
@@ -756,6 +760,11 @@ bool IterateKV(const ArrayData* adata, ArrFn arrFn) {
     }
   }
   return true;
+}
+
+template <typename ArrFn>
+ALWAYS_INLINE bool IterateKVNoInc(const ArrayData* adata, ArrFn arrFn) {
+  return IterateKV<ArrFn, false>(adata, std::move(arrFn));
 }
 
 template <typename PreArrFn, typename ArrFn, typename PreCollFn, typename ObjFn>

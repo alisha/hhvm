@@ -134,60 +134,67 @@ Vreg zeroExtendIfBool(Vout& v, Type ty, Vreg reg) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void storeTV(Vout& v, Vptr dst, Vloc srcLoc, const SSATmp* src) {
-  auto const type = src->type();
+  storeTV(v, src->type(), srcLoc, dst + TVOFF(m_type), dst + TVOFF(m_data));
+}
 
+void storeTV(Vout& v, Type type, Vloc srcLoc, Vptr typePtr, Vptr valPtr) {
   if (srcLoc.isFullSIMD()) {
     // The whole TV is stored in a single SIMD reg.
     assertx(RuntimeOption::EvalHHIRAllocSIMDRegs);
-    v << storeups{srcLoc.reg(), dst};
+    always_assert(typePtr == valPtr + (TVOFF(m_type) - TVOFF(m_data)));
+    v << storeups{srcLoc.reg(), valPtr};
     return;
   }
 
   if (type.needsReg()) {
     assertx(srcLoc.hasReg(1));
-    v << storeb{srcLoc.reg(1), dst + TVOFF(m_type)};
+    v << storeb{srcLoc.reg(1), typePtr};
   } else {
-    v << storeb{v.cns(type.toDataType()), dst + TVOFF(m_type)};
+    v << storeb{v.cns(type.toDataType()), typePtr};
   }
 
   // We ignore the values of statically nullish types.
-  if (src->isA(TNull) || src->isA(TNullptr)) return;
+  if (type <= TNull || type <= TNullptr) return;
 
   // Store the value.
-  if (src->hasConstVal()) {
+  if (type.hasConstVal()) {
     // Skip potential zero-extend if we know the value.
-    v << store{v.cns(src->rawVal()), dst + TVOFF(m_data)};
+    v << store{v.cns(type.rawVal()), valPtr};
   } else {
     assertx(srcLoc.hasReg(0));
-    auto const extended = zeroExtendIfBool(v, src->type(), srcLoc.reg(0));
-    v << store{extended, dst + TVOFF(m_data)};
+    auto const extended = zeroExtendIfBool(v, type, srcLoc.reg(0));
+    v << store{extended, valPtr};
   }
 }
 
 void loadTV(Vout& v, const SSATmp* dst, Vloc dstLoc, Vptr src,
             bool aux /* = false */) {
-  auto const type = dst->type();
+  loadTV(v, dst->type(), dstLoc, src + TVOFF(m_type), src + TVOFF(m_data), aux);
+}
 
+void loadTV(Vout& v, Type type, Vloc dstLoc, Vptr typePtr, Vptr valPtr,
+            bool aux) {
   if (dstLoc.isFullSIMD()) {
     // The whole TV is loaded into a single SIMD reg.
     assertx(RuntimeOption::EvalHHIRAllocSIMDRegs);
-    v << loadups{src, dstLoc.reg()};
+    always_assert(typePtr == valPtr + (TVOFF(m_type) - TVOFF(m_data)));
+    v << loadups{valPtr, dstLoc.reg()};
     return;
   }
 
   if (type.needsReg()) {
     assertx(dstLoc.hasReg(1));
     if (aux) {
-      v << load{src + TVOFF(m_type), dstLoc.reg(1)};
+      v << load{typePtr, dstLoc.reg(1)};
     } else {
-      v << loadb{src + TVOFF(m_type), dstLoc.reg(1)};
+      v << loadb{typePtr, dstLoc.reg(1)};
     }
   }
 
   if (type <= TBool) {
-    v << loadtqb{src + TVOFF(m_data), dstLoc.reg(0)};
+    v << loadtqb{valPtr, dstLoc.reg(0)};
   } else {
-    v << load{src + TVOFF(m_data), dstLoc.reg(0)};
+    v << load{valPtr, dstLoc.reg(0)};
   }
 }
 
@@ -474,10 +481,16 @@ Vreg emitIsCollection(Vout& v, Vreg obj) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+static std::atomic<int32_t> s_nextFakeAddress{-1};
+
 void emitEagerSyncPoint(Vout& v, PC pc, Vreg rds, Vreg vmfp, Vreg vmsp) {
   v << store{vmfp, rds[rds::kVmfpOff]};
   v << store{vmsp, rds[rds::kVmspOff]};
   emitImmStoreq(v, intptr_t(pc), rds[rds::kVmpcOff]);
+
+  auto const addr = s_nextFakeAddress.fetch_sub(1, std::memory_order_relaxed);
+  v << storeqi{addr, rds[rds::kVmJitReturnAddrOff]};
+  v << recordstack{(TCA)static_cast<int64_t>(addr)};
 }
 
 void emitRB(Vout& v, Trace::RingBufferType t, const char* msg) {
@@ -495,20 +508,45 @@ void emitIncStat(Vout& v, Stats::StatCounter stat) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-Vreg checkRDSHandleInitialized(Vout& v, rds::Handle ch) {
-  assertx(rds::isNormalHandle(ch));
+static Vptr getRDSHandleGenNumberAddr(rds::Handle handle) {
+  return rvmtl()[rds::genNumberHandleFrom(handle)];
+}
+
+static Vptr getRDSHandleGenNumberAddr(Vreg handle) {
+  return handle[DispReg(rvmtl(), -sizeof(rds::GenNumber))];
+}
+
+template<typename HandleT>
+Vreg doCheckRDSHandleInitialized(Vout& v, HandleT ch) {
   auto const gen = v.makeReg();
   auto const sf = v.makeReg();
-  v << loadb{rvmtl()[rds::genNumberHandleFrom(ch)], gen};
+  v << loadb{getRDSHandleGenNumberAddr(ch), gen};
   v << cmpbm{gen, rvmtl()[rds::currentGenNumberHandle()], sf};
   return sf;
 }
 
-void markRDSHandleInitialized(Vout& v, rds::Handle ch) {
+Vreg checkRDSHandleInitialized(Vout& v, rds::Handle ch) {
   assertx(rds::isNormalHandle(ch));
+  return doCheckRDSHandleInitialized(v, ch);
+}
+Vreg checkRDSHandleInitialized(Vout& v, Vreg ch) {
+  return doCheckRDSHandleInitialized(v, ch);
+}
+
+template<typename HandleT>
+void doMarkRDSHandleInitialized(Vout &v, HandleT ch) {
   auto const gen = v.makeReg();
   v << loadb{rvmtl()[rds::currentGenNumberHandle()], gen};
-  v << storeb{gen, rvmtl()[rds::genNumberHandleFrom(ch)]};
+  v << storeb{gen, getRDSHandleGenNumberAddr(ch)};
+}
+
+void markRDSHandleInitialized(Vout& v, rds::Handle ch) {
+  assertx(rds::isNormalHandle(ch));
+  doMarkRDSHandleInitialized(v, ch);
+}
+
+void markRDSHandleInitialized(Vout& v, Vreg ch) {
+  doMarkRDSHandleInitialized(v, ch);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

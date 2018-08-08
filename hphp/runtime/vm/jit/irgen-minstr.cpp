@@ -21,6 +21,7 @@
 #include "hphp/runtime/base/collections.h"
 #include "hphp/runtime/vm/native-prop-handler.h"
 
+#include "hphp/runtime/vm/jit/analysis.h"
 #include "hphp/runtime/vm/jit/array-kind-profile.h"
 #include "hphp/runtime/vm/jit/array-offset-profile.h"
 #include "hphp/runtime/vm/jit/guard-constraint.h"
@@ -85,11 +86,13 @@ enum class SimpleOp {
 struct PropInfo {
   PropInfo() = default;
   explicit PropInfo(int offset,
+                    Slot slot,
                     bool immutable,
                     RepoAuthType repoAuthType,
                     const Class* objClass,
                     const Class* propClass)
     : offset{offset}
+    , slot{slot}
     , immutable{immutable}
     , repoAuthType{repoAuthType}
     , objClass{objClass}
@@ -97,6 +100,7 @@ struct PropInfo {
   {}
 
   int offset{-1};
+  Slot slot{kInvalidSlot};
   bool immutable{false};
   RepoAuthType repoAuthType{};
   const Class* objClass{nullptr};
@@ -116,10 +120,8 @@ PropInfo getPropertyOffset(IRGS& /*env*/, const Class* ctx,
   if (!keyType.hasConstVal(TStr)) return PropInfo();
   auto const name = keyType.strVal();
 
-  // If we are not in repo-authoriative mode, we need to check that baseClass
-  // cannot change in between requests.
-  if (!RuntimeOption::RepoAuthoritative ||
-      !(baseClass->preClass()->attrs() & AttrUnique)) {
+  // We need to check that baseClass cannot change between requests.
+  if (!(baseClass->preClass()->attrs() & AttrUnique)) {
     if (!ctx) return PropInfo();
     if (!ctx->classof(baseClass)) {
       if (baseClass->classof(ctx)) {
@@ -137,7 +139,7 @@ PropInfo getPropertyOffset(IRGS& /*env*/, const Class* ctx,
 
   // Lookup the index of the property based on ctx and baseClass
   auto const lookup = baseClass->getDeclPropIndex(ctx, name);
-  auto const idx = lookup.prop;
+  auto const idx = lookup.slot;
 
   // If we couldn't find a property that is accessible in the current context,
   // bail out
@@ -146,12 +148,15 @@ PropInfo getPropertyOffset(IRGS& /*env*/, const Class* ctx,
   // If it's a declared property we're good to go: even if a subclass redefines
   // an accessible property with the same name it's guaranteed to be at the same
   // offset.
+
+  auto const& prop = baseClass->declProperties()[idx];
   return PropInfo(
     baseClass->declPropOffset(idx),
-    bool(baseClass->declProperties()[idx].attrs & AttrIsImmutable),
+    idx,
+    prop.attrs & AttrIsImmutable,
     baseClass->declPropRepoAuthType(idx),
     baseClass,
-    baseClass->declProperties()[idx].cls
+    prop.cls
   );
 }
 
@@ -175,11 +180,11 @@ bool prop_ignores_tvref(IRGS& env, SSATmp* base, const SSATmp* key) {
     auto const keyStr = key->strVal();
     auto const ctx = curClass(env);
     auto const lookup = cls->getDeclPropIndex(ctx, keyStr);
-    if (lookup.prop != kInvalidSlot) {
+    if (lookup.slot != kInvalidSlot) {
       isDeclared = true;
-      propClass = cls->declProperties()[lookup.prop].cls;
+      propClass = cls->declProperties()[lookup.slot].cls;
       if (RuntimeOption::RepoAuthoritative) {
-        propType = typeFromRAT(cls->declPropRepoAuthType(lookup.prop), nullptr);
+        propType = typeFromRAT(cls->declPropRepoAuthType(lookup.slot), nullptr);
       }
     }
   }
@@ -234,13 +239,19 @@ folly::Optional<GuardConstraint> simpleOpConstraint(SimpleOp op) {
 //////////////////////////////////////////////////////////////////////
 
 /*
- * Obtain the member base pointer.
+ * Load or store the member base pointer.
  *
  * Note that the LdMBase may get preOptimize'd away, or might have its type
  * refined, based on earlier tracked updates to the member base.
  */
 SSATmp* ldMBase(IRGS& env) {
-  return gen(env, LdMBase, TPtrToGen);
+  return gen(env, LdMBase, TLvalToGen);
+}
+void stMBase(IRGS& env, SSATmp* base) {
+  if (base->isA(TPtrToGen)) base = gen(env, ConvPtrToLval, base);
+  assert_flog(base->isA(TLvalToGen), "Unexpected mbase: {}", *base->inst());
+
+  gen(env, StMBase, base);
 }
 
 /*
@@ -268,13 +279,41 @@ SSATmp* tvRef2Ptr(IRGS& env) {
 SSATmp* ptrToInitNull(IRGS& env) {
   // Nothing is allowed to write anything to the init null variant, so this
   // inner type is always true.
-  return cns(env, Type::cns(&immutable_null_base, TPtrToOtherInitNull));
+  return cns(env, Type::cns(&immutable_null_base, TLvalToOtherInitNull));
 }
 
 SSATmp* ptrToUninit(IRGS& env) {
   // Nothing can write to the uninit null variant either, so the inner type
   // here is also always true.
-  return cns(env, Type::cns(&immutable_uninit_base, TPtrToOtherUninit));
+  return cns(env, Type::cns(&immutable_uninit_base, TLvalToOtherUninit));
+}
+
+bool baseMightPromote(const SSATmp* base) {
+  auto const ty = base->type().strip();
+  return
+    ty.maybe(TNull) ||
+    ty.maybe(Type::cns(false)) ||
+    ty.maybe(Type::cns(staticEmptyString()));
+}
+
+SSATmp* propStatePtrDimProp(IRGS& env) {
+  return (RuntimeOption::EvalCheckPropTypeHints <= 0)
+    ? cns(env, TNullptr)
+    : gen(env, LdMIPropStateAddr);
+}
+
+SSATmp* propStatePtrElem(IRGS& env, const SSATmp* base) {
+  return RuntimeOption::EvalCheckPropTypeHints > 0 && baseMightPromote(base)
+    ? gen(env, LdMIPropStateAddr)
+    : cns(env, TNullptr);
+}
+
+SSATmp* propStatePtrFinalProp(IRGS& env, const SSATmp* base) {
+  if (RuntimeOption::EvalCheckPropTypeHints <= 0) return cns(env, TNullptr);
+  if (!RuntimeOption::EvalPromoteEmptyObject) return cns(env, TNullptr);
+  return baseMightPromote(base)
+    ? gen(env, LdMIPropStateAddr)
+    : cns(env, TNullptr);
 }
 
 bool mightCallMagicPropMethod(MOpMode mode, PropInfo propInfo) {
@@ -352,7 +391,7 @@ SSATmp* checkInitProp(IRGS& env,
                       bool doDefine) {
   assertx(key->isA(TStaticStr));
   assertx(baseAsObj->isA(TObj));
-  assertx(propAddr->type() <= TPtrToGen);
+  assertx(propAddr->type() <= TLvalToGen);
   assertx(!doWarn || !doDefine);
 
   auto const needsCheck = doWarn && propAddr->type().deref().maybe(TUninit);
@@ -377,7 +416,11 @@ SSATmp* checkInitProp(IRGS& env,
   );
 }
 
-SSATmp* emitPropSpecialized(
+/*
+ * Returns a pointer to the property, and for MOpMode::Define, the object base
+ * of the property.
+ */
+std::pair<SSATmp*, SSATmp*> emitPropSpecialized(
   IRGS& env,
   SSATmp* base,
   SSATmp* key,
@@ -403,10 +446,13 @@ SSATmp* emitPropSpecialized(
       env,
       LdPropAddr,
       ByteOffsetData { propInfo.offset },
-      typeFromRAT(propInfo.repoAuthType, curClass(env)).ptr(Ptr::Prop),
+      typeFromRAT(propInfo.repoAuthType, curClass(env)).lval(Ptr::Prop),
       base
     );
-    return checkInitProp(env, base, propAddr, key, doWarn, doDefine);
+    return {
+      checkInitProp(env, base, propAddr, key, doWarn, doDefine),
+      mode == MOpMode::Define ? base : nullptr
+    };
   }
 
   /*
@@ -419,19 +465,21 @@ SSATmp* emitPropSpecialized(
    * otherwise we just give out &immutable_null_base (after raising the
    * appropriate warnings).
    */
-  return cond(
+
+  SSATmp* obj = nullptr;
+  auto const prop = cond(
     env,
     [&] (Block* taken) {
       gen(env, CheckTypeMem, TObj, taken, base);
     },
     [&] {
       // Next: Base is an object. Load property and check for uninit.
-      auto const obj = gen(env, LdMem, baseType.deref() & TObj, base);
+      obj = gen(env, LdMem, baseType.deref() & TObj, base);
       auto const propAddr = gen(
         env,
         LdPropAddr,
         ByteOffsetData { propInfo.offset },
-        typeFromRAT(propInfo.repoAuthType, curClass(env)).ptr(Ptr::Prop),
+        typeFromRAT(propInfo.repoAuthType, curClass(env)).lval(Ptr::Prop),
         obj
       );
       return checkInitProp(env, obj, propAddr, key, doWarn, doDefine);
@@ -473,6 +521,12 @@ SSATmp* emitPropSpecialized(
       return initNull;
     }
   );
+
+  // Note that normally using obj here is unsafe, as its only defined on one
+  // side of the cond(). However, for MOpMode::Define, we'll assert if we emit
+  // an actual branch, so its okay.
+  assertx(mode != MOpMode::Define || obj);
+  return { prop, mode == MOpMode::Define ? obj : nullptr };
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -868,7 +922,7 @@ SSATmp* emitIncDecProp(IRGS& env, IncDecOp op, SSATmp* base, SSATmp* key) {
     if (base->isA(TObj) &&
         propInfo.repoAuthType.tag() == RepoAuthType::Tag::Int) {
       base = emitPropSpecialized(env, base, key, false,
-                                 MOpMode::Define, propInfo);
+                                 MOpMode::Define, propInfo).first;
       auto const prop = gen(env, LdMem, TInt, base);
       auto const result = incDec(env, op, prop);
       assertx(result != nullptr);
@@ -877,7 +931,14 @@ SSATmp* emitIncDecProp(IRGS& env, IncDecOp op, SSATmp* base, SSATmp* key) {
     }
   }
 
-  return gen(env, IncDecProp, IncDecData{op}, base, key);
+  return gen(
+    env,
+    IncDecProp,
+    IncDecData{op},
+    base,
+    key,
+    propStatePtrFinalProp(env, base)
+  );
 }
 
 template<class Finish>
@@ -996,7 +1057,8 @@ SSATmp* emitEmptyElem(IRGS& env, SSATmp* base,
 
 void setWithRefImpl(IRGS& env, int32_t keyLoc, SSATmp* value) {
   auto const key = ldLoc(env, keyLoc, nullptr, DataTypeGeneric);
-  gen(env, SetWithRefElem, ldMBase(env), key, value);
+  auto const base = ldMBase(env);
+  gen(env, SetWithRefElem, base, key, value, propStatePtrElem(env, base));
 }
 
 /*
@@ -1107,23 +1169,50 @@ SSATmp* ratchetRefs(IRGS& env, SSATmp* base) {
       // Adjust base pointer.  Don't use 'tvRef2' here so that we don't reuse
       // the temp.  This will let us elide uses of the register for 'tvRef2',
       // until the Jmp we're going to emit here.
-      return tvRef2Ptr(env);
+      return gen(env, ConvPtrToLval, tvRef2Ptr(env));
     }
   );
+}
+
+void setEmptyMIPropState(IRGS& env, const SSATmp* newBase, MOpMode mode) {
+  if (RuntimeOption::EvalCheckPropTypeHints <= 0) return;
+  if (mode != MOpMode::Define) return;
+  if (!baseMightPromote(newBase)) return;
+  gen(env, StMIPropState, cns(env, TNullptr), cns(env, 0), cns(env, false));
+}
+
+void setObjMIPropState(IRGS& env, const SSATmp* newBase, MOpMode mode,
+                       SSATmp* obj, Slot slot) {
+  if (RuntimeOption::EvalCheckPropTypeHints <= 0) return;
+  if (mode != MOpMode::Define) return;
+  if (!baseMightPromote(newBase)) return;
+  auto const cls = gen(env, LdObjClass, obj);
+  gen(env, StMIPropState, cls, cns(env, slot), cns(env, false));
+}
+
+void setClsMIPropState(IRGS& env, const SSATmp* newBase, MOpMode mode,
+                       SSATmp* cls, SSATmp* name) {
+  if (RuntimeOption::EvalCheckPropTypeHints <= 0) return;
+  if (mode != MOpMode::Define) return;
+  if (!baseMightPromote(newBase)) return;
+  auto const slot = gen(env, LookupSPropSlot, cls, name);
+  gen(env, StMIPropState, cls, slot, cns(env, true));
 }
 
 void baseGImpl(IRGS& env, SSATmp* name, MOpMode mode) {
   if (!name->isA(TStr)) PUNT(BaseG-non-string-name);
   auto base_mode = mode != MOpMode::Unset ? mode : MOpMode::None;
   auto gblPtr = gen(env, BaseG, MOpModeData{base_mode}, name);
-  gen(env, StMBase, gblPtr);
+  stMBase(env, gblPtr);
+  setEmptyMIPropState(env, gblPtr, mode);
 }
 
-void baseSImpl(IRGS& env, SSATmp* name, uint32_t clsRefSlot) {
+void baseSImpl(IRGS& env, SSATmp* name, uint32_t clsRefSlot, MOpMode mode) {
   if (!name->isA(TStr)) PUNT(BaseS-non-string-name);
   auto const cls = takeClsRef(env, clsRefSlot);
   auto const spropPtr = ldClsPropAddr(env, cls, name, true);
-  gen(env, StMBase, spropPtr);
+  stMBase(env, spropPtr);
+  setClsMIPropState(env, spropPtr, mode, cls, name);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1140,13 +1229,15 @@ void puntGenBase(Type baseType) {
 /*
  * Update FrameState for a base at a known location.
  */
-void simpleBaseImpl(IRGS& env, SSATmp* base, Location l) {
+void simpleBaseImpl(IRGS& env, SSATmp* base, MOpMode mode, Location l) {
   puntGenBase(base->type());
 
   auto const predicted = base->isA(TBoxedCell)
     ? folly::make_optional(env.irb->fs().predictedTypeOf(l))
     : folly::none;
   env.irb->fs().setMemberBase(base, predicted);
+
+  setEmptyMIPropState(env, base, mode);
 }
 
 /*
@@ -1230,7 +1321,9 @@ SSATmp* propGenericImpl(IRGS& env, MOpMode mode, SSATmp* base, SSATmp* key,
   auto const tvRef = propTvRefPtr(env, base, key);
   return nullsafe
     ? gen(env, PropQ, base, key, tvRef)
-    : gen(env, define ? PropDX : PropX, modeData, base, key, tvRef);
+    : define
+      ? gen(env, PropDX, modeData, base, key, tvRef, propStatePtrDimProp(env))
+      : gen(env, PropX, modeData, base, key, tvRef);
 }
 
 SSATmp* propImpl(IRGS& env, MOpMode mode, SSATmp* key, bool nullsafe) {
@@ -1251,7 +1344,21 @@ SSATmp* propImpl(IRGS& env, MOpMode mode, SSATmp* key, bool nullsafe) {
     return propGenericImpl(env, mode, base, key, nullsafe);
   }
 
-  return emitPropSpecialized(env, base, key, nullsafe, mode, propInfo);
+  SSATmp* propPtr;
+  SSATmp* obj;
+  std::tie(propPtr, obj) = emitPropSpecialized(
+    env,
+    base,
+    key,
+    nullsafe,
+    mode,
+    propInfo
+  );
+  if (mode == MOpMode::Define) {
+    assertx(obj != nullptr);
+    setObjMIPropState(env, propPtr, mode, obj, propInfo.slot);
+  }
+  return propPtr;
 }
 
 SSATmp* vecElemImpl(IRGS& env, MOpMode mode, Type baseType, SSATmp* key) {
@@ -1288,7 +1395,7 @@ SSATmp* vecElemImpl(IRGS& env, MOpMode mode, Type baseType, SSATmp* key) {
         base->type(),
         key->type(),
         curClass(env)
-      ).first.ptr(Ptr::Elem);
+      ).first.lval(Ptr::Elem);
       return gen(env, LdPackedArrayDataElemAddr, elemType, base, key);
     }
     return invalid_key();
@@ -1306,7 +1413,7 @@ SSATmp* vecElemImpl(IRGS& env, MOpMode mode, Type baseType, SSATmp* key) {
           base->type(),
           key->type(),
           curClass(env)
-        ).first.ptr(Ptr::Elem);
+        ).first.lval(Ptr::Elem);
         return gen(env, LdPackedArrayDataElemAddr, elemType, base, key);
       },
       [&] { return ptrToInitNull(env); }
@@ -1443,8 +1550,20 @@ SSATmp* elemImpl(IRGS& env, MOpMode mode, SSATmp* key) {
     }
   }
 
-  auto const op = define ? ElemDX : unset ? ElemUX : ElemX;
-  return gen(env, op, MOpModeData { mode }, ldMBase(env), key, tvRefPtr(env));
+  auto const base = ldMBase(env);
+  if (define) {
+    return gen(
+      env,
+      ElemDX,
+      MOpModeData { mode },
+      base,
+      key,
+      tvRefPtr(env),
+      propStatePtrElem(env, base)
+    );
+  }
+  auto const op = unset ? ElemUX : ElemX;
+  return gen(env, op, MOpModeData { mode }, base, key, tvRefPtr(env));
 }
 
 /*
@@ -1467,7 +1586,7 @@ SSATmp* cGetPropImpl(IRGS& env, SSATmp* base, SSATmp* key,
       !mightCallMagicPropMethod(MOpMode::None, propInfo)) {
 
     auto propAddr =
-      emitPropSpecialized(env, base, key, nullsafe, mode, propInfo);
+      emitPropSpecialized(env, base, key, nullsafe, mode, propInfo).first;
     auto const ty = propAddr->type().deref();
     auto const cellPtr =
       ty.maybe(TBoxedCell) ? gen(env, UnboxPtr, propAddr) : propAddr;
@@ -1539,7 +1658,8 @@ SSATmp* setPropImpl(IRGS& env, SSATmp* key) {
   if (propInfo.offset != -1 &&
       !propInfo.immutable &&
       !mightCallMagicPropMethod(mode, propInfo)) {
-    auto propPtr = emitPropSpecialized(env, base, key, false, mode, propInfo);
+    auto propPtr =
+      emitPropSpecialized(env, base, key, false, mode, propInfo).first;
     auto propTy = propPtr->type().deref();
 
     if (propTy.maybe(TBoxedCell)) {
@@ -1553,7 +1673,15 @@ SSATmp* setPropImpl(IRGS& env, SSATmp* key) {
     gen(env, StMem, propPtr, value);
     decRef(env, oldVal);
   } else {
-    gen(env, SetProp, makeCatchSet(env), base, key, value);
+    gen(
+      env,
+      SetProp,
+      makeCatchSet(env),
+      base,
+      key,
+      value,
+      propStatePtrFinalProp(env, base)
+    );
   }
 
   return value;
@@ -1611,7 +1739,7 @@ SSATmp* emitArrayLikeSet(IRGS& env, SSATmp* key, SSATmp* value) {
 
   auto const baseLoc = [&]() -> folly::Optional<Location> {
     auto const basePtr = ldMBase(env);
-    auto const ptrInst = basePtr->inst();
+    auto const ptrInst = canonical(basePtr)->inst();
 
     switch (ptrInst->op()) {
       case LdLocAddr: {
@@ -1696,7 +1824,7 @@ void setNewElemPackedArrayDataImpl(IRGS& env, SSATmp* basePtr, Type baseType,
       auto const elemPtr = gen(
         env,
         LdPackedArrayDataElemAddr,
-        TPtrToElemUninit,
+        TLvalToElemUninit,
         base,
         offset
       );
@@ -1741,7 +1869,14 @@ SSATmp* setNewElemImpl(IRGS& env) {
       gen(env, SetNewElemKeyset, makeCatchSet(env), basePtr, value);
     }
   } else {
-    gen(env, SetNewElem, makeCatchSet(env), basePtr, value);
+    gen(
+      env,
+      SetNewElem,
+      makeCatchSet(env),
+      basePtr,
+      value,
+      propStatePtrElem(env, basePtr)
+    );
   }
   return value;
 }
@@ -1786,7 +1921,8 @@ SSATmp* setElemImpl(IRGS& env, SSATmp* key) {
       // mismatched in-states for any catch block edges we emit later on.
       auto const basePtr = ldMBase(env);
       auto const result = gen(env, SetElem, makeCatchSet(env),
-                              basePtr, key, value);
+                              basePtr, key, value,
+                              propStatePtrElem(env, basePtr));
       auto const t = result->type();
       if (t == TNullptr) {
         // Base is not a string. Result is always value.
@@ -1850,22 +1986,22 @@ void emitBaseGL(IRGS& env, int32_t locId, MOpMode mode) {
   baseGImpl(env, name, mode);
 }
 
-void emitBaseSC(IRGS& env, uint32_t propIdx, uint32_t slot) {
+void emitBaseSC(IRGS& env, uint32_t propIdx, uint32_t slot, MOpMode mode) {
   initTvRefs(env);
   auto name = top(env, BCSPRelOffset{safe_cast<int32_t>(propIdx)});
-  baseSImpl(env, name, slot);
+  baseSImpl(env, name, slot, mode);
 }
 
-void emitBaseSL(IRGS& env, int32_t locId, uint32_t slot) {
+void emitBaseSL(IRGS& env, int32_t locId, uint32_t slot, MOpMode mode) {
   initTvRefs(env);
   auto name = ldLocInner(env, locId, makeExit(env), makePseudoMainExit(env),
                          DataTypeSpecific);
-  baseSImpl(env, name, slot);
+  baseSImpl(env, name, slot, mode);
 }
 
 void emitBaseL(IRGS& env, int32_t locId, MOpMode mode) {
   initTvRefs(env);
-  gen(env, StMBase, ldLocAddr(env, locId));
+  stMBase(env, ldLocAddr(env, locId));
 
   auto base = ldLoc(env, locId, makePseudoMainExit(env), DataTypeGeneric);
 
@@ -1875,22 +2011,24 @@ void emitBaseL(IRGS& env, int32_t locId, MOpMode mode) {
     gen(env, RaiseUninitLoc, cns(env, curFunc(env)->localVarName(locId)));
   }
 
-  simpleBaseImpl(env, base, Location::Local { safe_cast<uint32_t>(locId) });
+  simpleBaseImpl(
+    env, base, mode, Location::Local { safe_cast<uint32_t>(locId) }
+  );
 }
 
-void emitBaseC(IRGS& env, uint32_t idx) {
+void emitBaseC(IRGS& env, uint32_t idx, MOpMode mode) {
   initTvRefs(env);
 
   auto const bcOff = BCSPRelOffset{safe_cast<int32_t>(idx)};
   auto const irOff = offsetFromIRSP(env, bcOff);
-  gen(env, StMBase, ldStkAddr(env, bcOff));
+  stMBase(env, ldStkAddr(env, bcOff));
 
   auto base = top(env, bcOff);
-  simpleBaseImpl(env, base, Location::Stack { offsetFromFP(env, irOff) });
+  simpleBaseImpl(env, base, mode, Location::Stack { offsetFromFP(env, irOff) });
 }
 
-void emitBaseR(IRGS& env, uint32_t idx) {
-  emitBaseC(env, idx);
+void emitBaseR(IRGS& env, uint32_t idx, MOpMode mode) {
+  emitBaseC(env, idx, mode);
 }
 
 void emitBaseH(IRGS& env) {
@@ -1900,8 +2038,10 @@ void emitBaseH(IRGS& env) {
   auto base = ldThis(env);
   auto scratchPtr = misLea(env, offsetof(MInstrState, tvTempBase));
   gen(env, StMem, scratchPtr, base);
-  gen(env, StMBase, scratchPtr);
+  stMBase(env, scratchPtr);
   env.irb->fs().setMemberBase(base);
+  // Never write to MInstrPropState here since a base from BaseH will never
+  // promote
 }
 
 void emitDim(IRGS& env, MOpMode mode, MemberKey mk) {
@@ -1915,13 +2055,15 @@ void emitDim(IRGS& env, MOpMode mode, MemberKey mk) {
       return propImpl(env, mode, key, mk.mcode == MQT);
     }
     if (mcodeIsElem(mk.mcode)) {
-      return elemImpl(env, mode, key);
+      auto const base = elemImpl(env, mode, key);
+      setEmptyMIPropState(env, base, mode);
+      return base;
     }
     PUNT(DimNewElem);
   }();
 
   newBase = ratchetRefs(env, newBase);
-  gen(env, StMBase, newBase);
+  stMBase(env, newBase);
 }
 
 void emitQueryM(IRGS& env, uint32_t nDiscard, QueryMOp query, MemberKey mk) {
@@ -2000,10 +2142,12 @@ void emitVGetM(IRGS& env, uint32_t nDiscard, MemberKey mk) {
       if (mk.mcode == MQT) {
         gen(env, RaiseError, cns(env, s_NULLSAFE_PROP_WRITE_ERROR.get()));
       }
-      return gen(env, VGetProp, extractBaseIfObj(env), key);
+      auto const base = extractBaseIfObj(env);
+      return gen(env, VGetProp, base, key, propStatePtrFinalProp(env, base));
     }
     if (mcodeIsElem(mk.mcode)) {
-      return gen(env, VGetElem, ldMBase(env), key);
+      auto const base = ldMBase(env);
+      return gen(env, VGetElem, base, key, propStatePtrElem(env, base));
     }
     PUNT(VGetNewElem);
   }();
@@ -2030,7 +2174,15 @@ void emitIncDecM(IRGS& env, uint32_t nDiscard, IncDecOp incDec, MemberKey mk) {
       return emitIncDecProp(env, incDec, extractBaseIfObj(env), key);
     }
     if (mcodeIsElem(mk.mcode)) {
-      return gen(env, IncDecElem, IncDecData{incDec}, ldMBase(env), key);
+      auto const base = ldMBase(env);
+      return gen(
+        env,
+        IncDecElem,
+        IncDecData{incDec},
+        base,
+        key,
+        propStatePtrElem(env, base)
+      );
     }
     PUNT(IncDecNewElem);
   }();
@@ -2089,8 +2241,14 @@ SSATmp* setOpPropImpl(IRGS& env, SetOpOp op, SSATmp* base,
   if (propInfo.offset != -1 &&
       !propInfo.immutable &&
       !mightCallMagicPropMethod(MOpMode::Define, propInfo)) {
-    auto propPtr =
-      emitPropSpecialized(env, base, key, false, MOpMode::Define, propInfo);
+    auto propPtr = emitPropSpecialized(
+      env,
+      base,
+      key,
+      false,
+      MOpMode::Define,
+      propInfo
+    ).first;
     propPtr = gen(env, UnboxPtr, propPtr);
 
     auto const lhs = gen(env, LdMem, propPtr->type().deref(), propPtr);
@@ -2107,7 +2265,15 @@ SSATmp* setOpPropImpl(IRGS& env, SetOpOp op, SSATmp* base,
     return newVal;
   }
 
-  return gen(env, SetOpProp, SetOpData{op}, base, key, rhs);
+  return gen(
+    env,
+    SetOpProp,
+    SetOpData{op},
+    base,
+    key,
+    rhs,
+    propStatePtrFinalProp(env, base)
+  );
 }
 
 void emitSetOpM(IRGS& env, uint32_t nDiscard, SetOpOp op, MemberKey mk) {
@@ -2119,7 +2285,16 @@ void emitSetOpM(IRGS& env, uint32_t nDiscard, SetOpOp op, MemberKey mk) {
       return setOpPropImpl(env, op, extractBaseIfObj(env), key, rhs);
     }
     if (mcodeIsElem(mk.mcode)) {
-      return gen(env, SetOpElem, SetOpData{op}, ldMBase(env), key, rhs);
+      auto const base = ldMBase(env);
+      return gen(
+        env,
+        SetOpElem,
+        SetOpData{op},
+        base,
+        key,
+        rhs,
+        propStatePtrElem(env, base)
+      );
     }
     PUNT(SetOpNewElem);
   }();
@@ -2133,11 +2308,14 @@ void emitBindM(IRGS& env, uint32_t nDiscard, MemberKey mk) {
   auto rhs = topV(env);
 
   if (mcodeIsProp(mk.mcode)) {
-    gen(env, BindProp, extractBaseIfObj(env), key, rhs);
+    auto const base = extractBaseIfObj(env);
+    gen(env, BindProp, base, key, rhs, propStatePtrFinalProp(env, base));
   } else if (mcodeIsElem(mk.mcode)) {
-    gen(env, BindElem, ldMBase(env), key, rhs);
+    auto const base = ldMBase(env);
+    gen(env, BindElem, base, key, rhs, propStatePtrElem(env, base));
   } else {
-    gen(env, BindNewElem, ldMBase(env), rhs);
+    auto const base = ldMBase(env);
+    gen(env, BindNewElem, base, rhs, propStatePtrElem(env, base));
   }
 
   popV(env);

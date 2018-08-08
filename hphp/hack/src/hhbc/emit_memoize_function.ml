@@ -23,7 +23,7 @@ let make_memoize_function_no_params_code
     instr_retc;
     instr_label label;
     instr_fpushfuncd 0 renamed_function_id;
-    instr_fcall 0;
+    instr_fcall 0 false 1;
     instr_unboxr;
     instr_memoset None;
     instr_retc
@@ -51,7 +51,7 @@ let make_memoize_function_with_params_code
     instr_label label;
     instr_fpushfuncd param_count renamed_method_id;
     param_code_gets params;
-    instr_fcall param_count;
+    instr_fcall param_count false 1;
     instr_unboxr;
     instr_memoset (Some (first_local, param_count));
     instr_retc;
@@ -73,6 +73,7 @@ let make_wrapper_body env return_type params instrs =
     instrs
     [] (* decl_vars *)
     true (* is_memoize_wrapper *)
+    false (* is_memoize_wrapper_lsb *)
     params
     (Some return_type)
     [] (* static_inits: this is intentionally empty *)
@@ -93,7 +94,7 @@ let emit_wrapper_function
     empty |> with_namespace namespace |> with_scope scope
     ) in
   let tparams =
-    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _) -> s) in
+    List.map (Ast_scope.Scope.get_tparams scope) (fun (_, (_, s), _, _) -> s) in
   let params = Emit_param.from_asts ~namespace ~tparams ~generate_defaults:true
     ~scope ast_fun.Ast.f_params in
   let function_attributes =

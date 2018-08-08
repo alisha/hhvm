@@ -41,6 +41,7 @@ struct DebugTransport {
   }
 
   virtual void shutdown();
+  virtual void cleanupFd(int fd);
 
   // Enqueues an outgoing message to be sent to the client. This routine will
   // put the message into the outgoing message queue and then return. A worker
@@ -74,6 +75,9 @@ struct DebugTransport {
 
   // VS Code protocol event types
   static constexpr char* EventTypeOutput = "output";
+
+  // Custom event types.
+  static constexpr char* EventTypeConnectionRefused = "hhvmConnectionRefused";
 
   // Message output levels to be displayed in the debugger console.
   // NOTE: the protocol explicitly defines:

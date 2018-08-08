@@ -112,6 +112,13 @@ let rec t (env: Env.t) (node: Syntax.t) : Doc.t =
         end
       | _ -> failwith "Expected Token or SyntaxList"
     end
+  | Syntax.PrefixedStringExpression {
+      prefixed_string_name = name;
+      prefixed_string_str = str } ->
+      Concat [
+        t env name;
+        t env str;
+      ]
   | Syntax.MarkupSection {
       markup_prefix = prefix;
       markup_text = text;
@@ -163,6 +170,13 @@ let rec t (env: Env.t) (node: Syntax.t) : Doc.t =
   | Syntax.SoftTypeSpecifier _
   | Syntax.ListItem _ ->
     transform_simple env node
+  | Syntax.ReifiedTypeArgument
+    { reified_type_argument_reified; reified_type_argument_type } ->
+    Concat [
+      t env reified_type_argument_reified;
+      Space;
+      t env reified_type_argument_type;
+    ]
   | Syntax.QualifiedName { qualified_name_parts; } ->
     handle_possible_list env qualified_name_parts
   | Syntax.ExpressionStatement _ ->
@@ -779,7 +793,7 @@ let rec t (env: Env.t) (node: Syntax.t) : Doc.t =
       t env x.using_block_left_paren;
       Split;
       WithRule (Rule.Parental, Concat [
-        Nest [handle_possible_list env x.using_block_expressions];
+        Nest [handle_possible_list env ~after_each:separate_with_space_split x.using_block_expressions];
         Split;
         t env x.using_block_right_paren;
       ]);
@@ -960,15 +974,15 @@ let rec t (env: Env.t) (node: Syntax.t) : Doc.t =
       WithRule (Rule.Parental, Concat [
         Split;
         Nest [
-          handle_possible_list env ~after_each:after_each_argument init;
+          handle_possible_list env ~after_each:separate_with_space_split init;
           t env semi1;
           Space;
           Split;
-          handle_possible_list env ~after_each:after_each_argument control;
+          handle_possible_list env ~after_each:separate_with_space_split control;
           t env semi2;
           Space;
           Split;
-          handle_possible_list env ~after_each:after_each_argument after_iter;
+          handle_possible_list env ~after_each:separate_with_space_split after_iter;
         ];
         Split;
         t env right_p;
@@ -1987,10 +2001,13 @@ let rec t (env: Env.t) (node: Syntax.t) : Doc.t =
         left_a ks_type trailing_comma right_a;
     ]
   | Syntax.TypeParameter {
+      type_reified = reified;
       type_variance = variance;
       type_name = name;
       type_constraints = constraints; } ->
     Concat [
+      t env reified;
+      when_present reified space;
       t env variance;
       t env name;
       when_present constraints space;
@@ -2281,6 +2298,11 @@ and nest env ?(spaces=false) right_delim nodes =
 and after_each_argument is_last =
   if is_last
   then Split
+  else space_split ()
+
+and separate_with_space_split is_last =
+  if is_last
+  then Nothing
   else space_split ()
 
 and handle_lambda_body env node =
@@ -2659,6 +2681,26 @@ and transform_argish_with_return_type env left_p params right_p colon ret_type =
 and transform_argish env
     ?(allow_trailing=true) ?(force_newlines=false) ?(spaces=false)
     left_p arg_list right_p =
+  (* It is a syntax error to follow a splat argument with a trailing comma, so
+     suppress trailing commas in that case. *)
+  let allow_trailing =
+    match Syntax.syntax arg_list with
+    | Syntax.SyntaxList args ->
+      let last_arg =
+        match Syntax.syntax (List.last_exn args) with
+        | Syntax.ListItem { list_item; _ } -> list_item
+        | _ -> failwith "Expected ListItem"
+      in
+      begin match Syntax.syntax last_arg with
+      | Syntax.(DecoratedExpression {
+          decorated_expression_decorator = {
+            syntax = Token { Token.kind = TokenKind.DotDotDot; _ }; _
+          }; _
+        }) -> false
+      | _ -> allow_trailing
+      end
+    | _ -> allow_trailing
+  in
   (* When there is only one argument, with no surrounding whitespace in the
    * original source, allow that style to be preserved even when there are
    * line breaks within the argument (normally these would force the splits

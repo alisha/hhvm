@@ -72,16 +72,15 @@ module Env = struct
       | None -> tenv
       | Some parent_id -> Typing_env.set_parent_id tenv parent_id in
     let methods = List.fold_left ~f:method_ ~init:SMap.empty c.c_methods in
-    let adder = begin fun cv acc -> SSet.add (snd cv.cv_id) acc end in
-    let props = List.fold_left c.c_vars
-      ~f:(DICheck.prop_needs_init adder) ~init:SSet.empty in
-    let props = DICheck.parent_props tenv.Typing_env.decl_env props c in
-    (* If we define our own constructor, we need to pretend any traits we use
-     * did *not* define a constructor, because they are not reachable through
-     * parent::__construct or similar functions. *)
-    let props = DICheck.trait_props tenv.Typing_env.decl_env props c in
-    let props = DICheck.parent tenv.Typing_env.decl_env props c in
-    { methods = methods; props = props; tenv = tenv }
+    let decl_env = tenv.Typing_env.decl_env in
+    let props = SSet.empty
+      |> DICheck.own_props c SSet.add
+      (* If we define our own constructor, we need to pretend any traits we use
+       * did *not* define a constructor, because they are not reachable through
+       * parent::__construct or similar functions. *)
+      |> DICheck.trait_props decl_env c SSet.add
+      |> DICheck.parent decl_env c SSet.add in
+    { methods; props; tenv; }
 
   and method_ acc m =
     if m.m_visibility <> Private then acc else
@@ -169,7 +168,7 @@ and stmt env acc st =
   let catch = catch env in
   let case = case env in
   match st with
-    | Expr (_, Call (Cnormal, (_, Class_const (((), CIparent), (_, m))), _, el, _uel))
+    | Expr (_, Call (Cnormal, (_, Class_const ((_, CIparent), (_, m))), _, el, _uel))
         when m = SN.Members.__construct ->
       let acc = List.fold_left ~f:expr ~init:acc el in
       assign env acc DICheck.parent_init_prop
@@ -335,7 +334,8 @@ and expr_ env acc p e =
   | Float _
   | Null
   | String _
-  | String2 _ -> acc
+  | String2 _
+  | PrefixedString _ -> acc
   | Assert (AE_assert e) -> expr acc e
   | Yield e -> afield acc e
   | Yield_from e -> expr acc e

@@ -449,6 +449,10 @@ SSATmp* opt_strlen(IRGS& env, const ParamPrep& params) {
     return gen(env, LdStrLen, val);
   }
 
+  if (RuntimeOption::EvalWarnOnCoerceBuiltinParams) {
+    return nullptr;
+  }
+
   if (ty <= TNull) return cns(env, 0);
   if (ty <= TBool) return gen(env, ConvBoolToInt, val);
 
@@ -743,6 +747,9 @@ SSATmp* opt_foldable(IRGS& env,
       case KindOfObject:
       case KindOfResource:
       case KindOfRef:
+      // TODO (T29639296)
+      case KindOfFunc:
+      case KindOfClass:
         return nullptr;
     }
   } catch (...) {
@@ -903,7 +910,7 @@ prepare_params(IRGS& /*env*/, const Func* callee, SSATmp* thiz,
  *      But we implement this by generating all the relevant NativeImpl code
  *      after the InlineReturn for the callee, to make it easier for DCE to
  *      eliminate the code that constructs the callee's activation record.
- *      This means the unwinder is going to see our PC as equal to the FCallD
+ *      This means the unwinder is going to see our PC as equal to the FCall
  *      for the call to the function, which will be inside the FPI region for
  *      the call, so it'll try to pop an ActRec, so we'll need to reconstruct
  *      one for it during unwinding.
@@ -2068,16 +2075,9 @@ void emitAKExists(IRGS& env) {
     gen(env, ThrowInvalidArrayKey, arr, key);
   };
 
-  if (arr->isA(TVec)) {
-    if (key->isA(TNull | TStr)) {
-      push(env, cns(env, false));
-      decRef(env, arr);
-      decRef(env, key);
-      return;
-    }
-    if (!key->isA(TInt)) {
-      return throwBadKey();
-    }
+  auto const check_packed = [&] {
+    assertx(key->isA(TInt));
+
     auto const result = cond(
       env,
       [&](Block* taken) {
@@ -2088,7 +2088,19 @@ void emitAKExists(IRGS& env) {
     );
     push(env, result);
     decRef(env, arr);
-    return;
+  };
+
+  if (arr->isA(TVec)) {
+    if (key->isA(TNull | TStr)) {
+      push(env, cns(env, false));
+      decRef(env, arr);
+      decRef(env, key);
+      return;
+    }
+    if (key->isA(TInt)) {
+      return check_packed();
+    }
+    return throwBadKey();
   }
 
   if (arr->isA(TDict) || arr->isA(TKeyset)) {
@@ -2140,7 +2152,21 @@ void emitAKExists(IRGS& env) {
 
   if (!key->isA(TStr) && !key->isA(TInt)) PUNT(AKExists_badKey);
 
-  auto const val =
+  if (arr->isA(TObj) && key->isA(TInt) &&
+      collections::isType(arr->type().clsSpec().cls(), CollectionType::Vector,
+                          CollectionType::ImmVector)) {
+    auto const val =
+      gen(env, CheckRange, key, gen(env, CountCollection, arr));
+    push(env, val);
+    decRef(env, arr);
+    return;
+  }
+  if (arr->isA(TArr) && key->isA(TInt) &&
+      arr->type().arrSpec().kind() == ArrayData::kPackedKind) {
+    return check_packed();
+  }
+
+ auto const val =
     gen(env, arr->isA(TArr) ? AKExistsArr : AKExistsObj, arr, key);
   push(env, val);
   decRef(env, arr);
@@ -2233,6 +2259,31 @@ void emitMemoGet(IRGS& env, Offset relOffset, LocalRange keys) {
       );
     }
 
+    if (func->isMemoizeWrapperLSB()) {
+      /* For LSB memoization, we need the LSB class */
+      auto const lsbCls = gen(env, LdClsCtx, ldCtx(env));
+      if (keys.count > 0) {
+        return gen(
+          env,
+          MemoGetLSBCache,
+          MemoCacheStaticData { func, keys, types.data() },
+          taken,
+          retTy,
+          fp(env),
+          lsbCls
+        );
+      }
+      return gen(
+        env,
+        MemoGetLSBValue,
+        MemoValueStaticData { func },
+        taken,
+        retTy,
+        lsbCls
+      );
+    }
+
+    /* Static (non-LSB) Memoization */
     if (keys.count > 0) {
       return gen(
         env,
@@ -2317,6 +2368,30 @@ void emitMemoSet(IRGS& env, LocalRange keys) {
       ldVal(DataTypeGeneric)
     );
     return;
+  }
+
+  if (func->isMemoizeWrapperLSB()) {
+    /* For LSB memoization, we need the LSB class */
+    auto const lsbCls = gen(env, LdClsCtx, ldCtx(env));
+    if (keys.count > 0) {
+      gen(
+        env,
+        MemoSetLSBCache,
+        MemoCacheStaticData { func, keys, types.data() },
+        fp(env),
+        lsbCls,
+        ldVal(DataTypeGeneric)
+      );
+      return;
+    }
+
+    gen(
+      env,
+      MemoSetLSBValue,
+      MemoValueStaticData { func },
+      ldVal(DataTypeCountness),
+      lsbCls
+    );
   }
 
   if (keys.count > 0) {

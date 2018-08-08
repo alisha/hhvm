@@ -125,12 +125,6 @@ bool HHVM_FUNCTION(is_scalar, const Variant& v) {
 bool HHVM_FUNCTION(is_array, const Variant& v) {
   if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
     if (v.isPHPArray()) {
-      auto const& arr = v.toCArrRef();
-      if (arr.isVArray()) {
-        raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_VARR_IS_ARR);
-      } else if (arr.isDArray()) {
-        raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_DARR_IS_ARR);
-      }
       return true;
     } else if (v.isVecArray()) {
       raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_VEC_IS_ARR);
@@ -145,7 +139,7 @@ bool HHVM_FUNCTION(is_array, const Variant& v) {
 }
 
 bool HHVM_FUNCTION(HH_is_vec, const Variant& v) {
-  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
+  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsVecDictNotices)) {
     if (v.isPHPArray()) {
       auto const& arr = v.toCArrRef();
       if (arr.isVArray()) {
@@ -158,7 +152,7 @@ bool HHVM_FUNCTION(HH_is_vec, const Variant& v) {
 }
 
 bool HHVM_FUNCTION(HH_is_dict, const Variant& v) {
-  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
+  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsVecDictNotices)) {
     if (v.isPHPArray()) {
       auto const& arr = v.toCArrRef();
       if (arr.isDArray()) {
@@ -176,7 +170,7 @@ bool HHVM_FUNCTION(HH_is_keyset, const Variant& v) {
 
 bool HHVM_FUNCTION(HH_is_varray, const Variant& val) {
   if (RuntimeOption::EvalHackArrDVArrs) return is_vec(val);
-  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
+  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsVecDictNotices)) {
     if (val.isVecArray()) {
       raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_VEC_IS_VARR);
       return false;
@@ -187,7 +181,7 @@ bool HHVM_FUNCTION(HH_is_varray, const Variant& val) {
 
 bool HHVM_FUNCTION(HH_is_darray, const Variant& val) {
   if (RuntimeOption::EvalHackArrDVArrs) return is_dict(val);
-  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsArrayNotices)) {
+  if (UNLIKELY(RuntimeOption::EvalHackArrCompatIsVecDictNotices)) {
     if (val.isDict()) {
       raise_hackarr_compat_notice(Strings::HACKARR_COMPAT_DICT_IS_DARR);
       return false;
@@ -340,7 +334,11 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
     case KindOfVec: {
       ArrayData* arr = value.getArrayData();
       assertx(arr->isVecArray());
-      if (arr->empty()) return empty_hack(arr, s_EmptyVecArray);
+      if (arr->empty()) {
+        return UNLIKELY(arr->isLegacyArray())
+          ? s_EmptyArray
+          : empty_hack(arr, s_EmptyVecArray);
+      }
       break;
     }
 
@@ -348,7 +346,11 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
     case KindOfDict: {
       ArrayData* arr = value.getArrayData();
       assertx(arr->isDict());
-      if (arr->empty()) return empty_hack(arr, s_EmptyDictArray);
+      if (arr->empty()) {
+        return UNLIKELY(arr->isLegacyArray())
+          ? s_EmptyArray
+          : empty_hack(arr, s_EmptyDictArray);
+      }
       break;
     }
 
@@ -380,6 +382,9 @@ ALWAYS_INLINE String serialize_impl(const Variant& value,
     }
     case KindOfDouble:
     case KindOfObject:
+    // TODO (T29639296)
+    case KindOfFunc:
+    case KindOfClass:
       break;
 
     case KindOfRef:

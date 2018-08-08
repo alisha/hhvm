@@ -250,6 +250,7 @@ module type Errors_modes = sig
 
   val get_sorted_error_list: error files_t * applied_fixme files_t -> error list
   val sort: error list -> error list
+  val currently_has_errors : unit -> bool
 
 end
 
@@ -348,6 +349,8 @@ module NonTracingErrors: Errors_modes = struct
       | Some _ ->
         Common.lazy_decl_error_logging msg error_map to_absolute to_string
       | None -> assert_false_log_backtrace (Some msg)
+  let currently_has_errors () =
+    Common.get_current_list !error_map <> []
 
 end
 
@@ -443,7 +446,8 @@ module TracingErrors: Errors_modes = struct
 
   let sort = Common.sort get_pos
   let get_sorted_error_list = Common.get_sorted_error_list get_pos
-
+  let currently_has_errors () =
+    Common.get_current_list !error_map <> []
 end
 
 (** The Errors functor which produces the Errors module.
@@ -773,6 +777,10 @@ let method_name_already_bound pos name =
   "Method name already bound: "^name
  )
 
+let reference_in_rx pos =
+  add (Naming.err_code Naming.ReferenceInRx) pos (
+    "References are not allowed in reactive code."
+  )
 let error_name_already_bound name name_prev p p_prev =
   let name = Utils.strip_ns name in
   let name_prev = Utils.strip_ns name_prev in
@@ -870,6 +878,14 @@ let duplicate_user_attribute (pos, name) existing_attr_pos =
     existing_attr_pos, name^" was already used here";
   ]
 
+let misplaced_rx_of_scope pos =
+  add (Naming.err_code Naming.MisplacedRxOfScope) pos (
+    "<<__RxOfScope>> attribute is only allowed on lambdas."
+  )
+let rx_of_scope_and_explicit_rx pos =
+  add (Naming.err_code Naming.RxOfScopeAndExplicitRx) pos (
+    "<<__RxOfScope>> attribute cannot be used with explicit reactivity annotations."
+  )
 let unbound_attribute_name pos name =
   let reason = if (string_starts_with name "__")
     then "starts with __ but is not a standard attribute"
@@ -1042,10 +1058,6 @@ let abstract_const_usage usage_pos decl_pos name =
     decl_pos, "Declaration is here"
   ]
 
-let typedef_constraint pos =
-  add (Naming.err_code Naming.TypedefConstraint) pos
-    "Constraints on typedefs are not supported"
-
 let add_a_typehint pos =
   add (Naming.err_code Naming.AddATypehint) pos
     "Please add a type hint"
@@ -1099,6 +1111,9 @@ let goto_label_defined_in_finally pos =
   add (Naming.err_code Naming.GotoLabelDefinedInFinally)
     pos
     "It is illegal to define a goto label within a finally block."
+
+let unsupported_feature pos name =
+  add (Naming.err_code Naming.UnsupportedFeature) pos (name ^ " is not supported in Hack.")
 
 let goto_invoked_in_finally pos =
   add (Naming.err_code Naming.GotoInvokedInFinally)
@@ -1373,6 +1388,15 @@ let mutable_attribute_on_function pos =
     "<<__Mutable>> only makes sense on methods, or parameters on functions or methods."
   )
 
+let maybe_mutable_attribute_on_function pos =
+  add (NastCheck.err_code NastCheck.MaybeMutableAttributeOnFunction) pos (
+    "<<__MaybeMutable>> only makes sense on methods, or parameters on functions or methods."
+  )
+
+let conflicting_mutable_and_maybe_mutable_attributes pos =
+  add  (NastCheck.err_code NastCheck.ConflictingMutableAndMaybeMutableAttributes) pos (
+    "Declaration cannot have both <<__Mutable>> and <<__MaybeMutable>> attributtes."
+  )
 
 let mutable_methods_must_be_reactive pos name =
   add (NastCheck.err_code NastCheck.MutableMethodsMustBeReactive) pos (
@@ -1385,6 +1409,13 @@ let mutable_return_annotated_decls_must_be_reactive kind pos name =
     "The " ^ kind ^ " " ^ (strip_ns name) ^ " is annotated with <<__MutableReturn>>, " ^
     " so it must be marked reactive with <<__Rx>>."
   )
+
+let maybe_mutable_methods_must_be_reactive pos name =
+  add (NastCheck.err_code NastCheck.MaybeMutableMethodsMustBeReactive) pos (
+    "The method " ^ (strip_ns name) ^ " is annotated with <<__MaybeMutable> attribute, \
+    or has this attribute on one of parameters so it must be marked reactive."
+  )
+
 
 let inout_params_special pos =
   add (NastCheck.err_code NastCheck.InoutParamsSpecial) pos
@@ -1613,7 +1644,7 @@ let enum_switch_wrong_class pos expected got =
 
 let invalid_shape_field_name p =
   add (Typing.err_code Typing.InvalidShapeFieldName) p
-    "Was expecting a constant string or class constant (for shape access)"
+    "Was expecting a constant string, class constant, or int (for shape access)"
 
 let invalid_shape_field_name_empty p =
   add (Typing.err_code Typing.InvalidShapeFieldNameEmpty) p
@@ -1664,18 +1695,6 @@ let unknown_field_disallowed_in_shape pos1 pos2 name =
       pos2,
       "The field '" ^ name ^ "' is set in the shape.";
     ]
-
-let missing_optional_field pos1 pos2 name =
-  add_list (Typing.err_code Typing.MissingOptionalField)
-    (* We have the position of shape type that is marked as optional -
-     * explain why we can't omit it despite this.*)
-    (if pos2 <> Pos.none then (
-      (pos1, "The field '"^name^"' may be set to an unknown type. " ^
-              "Explicitly null out the field, or remove it " ^
-              "(with Shapes::removeKey(...))")::
-      [pos2, "The field '"^name^"' is defined as optional"])
-   else
-      [pos1, "The field '"^name^"' is missing"])
 
 let shape_fields_unknown pos1 pos2 =
   add_list (Typing.err_code Typing.ShapeFieldsUnknown)
@@ -1752,6 +1771,14 @@ let format_string pos snippet s class_pos fname class_suggest =
 let expected_literal_string pos =
   add (Typing.err_code Typing.ExpectedLiteralString) pos
     "This argument must be a literal string"
+
+let re_prefixed_non_string pos non_strings =
+  add (Typing.err_code Typing.RePrefixedNonString) pos
+    (non_strings^" are not allowed to be to be `re`-prefixed")
+
+let bad_regex_pattern pos s =
+  add (Typing.err_code Typing.BadRegexPattern) pos
+    ("Bad regex pattern; "^s^".")
 
 let generic_array_strict p =
   add (Typing.err_code Typing.GenericArrayStrict) p
@@ -1863,6 +1890,9 @@ let too_many_type_arguments p =
   add (Naming.err_code Naming.TooManyTypeArguments) p
     ("Too many type arguments for this type")
 
+let declare_statement_in_hack p =
+  add (Naming.err_code Naming.DeclareStatement) p
+    ("Declare statements are disallowed in Hack code.")
 let return_in_void pos1 pos2 =
   add_list (Typing.err_code Typing.ReturnInVoid) [
   pos1,
@@ -2357,11 +2387,55 @@ let reassign_mutable_var pos1 =
   add (Typing.err_code Typing.ReassignMutableVar) pos1
   ("This variable is mutable. You cannot create a new reference to it.")
 
+let reassign_mutable_this pos1 =
+  add (Typing.err_code Typing.ReassignMutableThis) pos1
+  ("$this here is mutable. You cannot create a new reference to it.")
+
+let mutable_expression_as_multiple_mutable_arguments pos param_kind prev_pos prev_param_kind =
+  add_list (Typing.err_code Typing.MutableExpressionAsMultipleMutableArguments) [
+    pos, "A mutable expression may not be passed as multiple arguments where \
+    at least one matching parameter is mutable. Matching parameter here is " ^ param_kind;
+    prev_pos, "This is where it was used before, being passed as " ^ prev_param_kind
+  ]
+
+let reassign_maybe_mutable_var pos1 =
+  add (Typing.err_code Typing.ReassignMaybeMutableVar) pos1
+  ("This variable is maybe mutable. You cannot create a new reference to it.")
+
+
 let mutable_call_on_immutable fpos pos1 =
   add_list (Typing.err_code Typing.MutableCallOnImmutable)
   [
     pos1, "Cannot call mutable function on immutable expression";
     fpos, "This function is marked <<__Mutable>>, so it has a mutable $this.";
+  ]
+
+let immutable_call_on_mutable fpos pos1 =
+  add_list (Typing.err_code Typing.ImmutableCallOnMutable)
+  [
+    pos1, "Cannot call non-mutable function on mutable expression";
+    fpos, "This function is not marked as <<__Mutable>>.";
+  ]
+
+let mutability_mismatch ~is_receiver pos1 mut1 pos2 mut2 =
+  let msg mut =
+    let msg = if is_receiver then "Receiver of this function" else "This parameter" in
+    msg ^ " is " ^ mut in
+  add_list (Typing.err_code Typing.MutabilityMismatch)
+  [
+    pos1, "Incompatible mutabilities:";
+    pos1, msg mut1;
+    pos2, msg mut2;
+  ]
+
+let invalid_call_on_maybe_mutable ~fun_is_mutable pos fpos =
+  let msg =
+    "Cannot call " ^ (if fun_is_mutable then "mutable" else "non-mutable") ^ " \
+    function on maybe mutable value." in
+  add_list (Typing.err_code Typing.InvalidCallMaybeMutable)
+  [
+    pos, msg;
+    fpos, "This function is not marked as <<__MaybeMutable>>."
   ]
 
 let mutable_argument_mismatch param_pos arg_pos =
@@ -2370,6 +2444,22 @@ let mutable_argument_mismatch param_pos arg_pos =
     arg_pos, "Invalid argument";
     param_pos, "This parameter is marked mutable";
     arg_pos, "But this expression is not";
+  ]
+
+let immutable_argument_mismatch param_pos arg_pos =
+  add_list (Typing.err_code Typing.ImmutableArgumentMismatch)
+  [
+    arg_pos, "Invalid argument";
+    param_pos, "This parameter is not marked as mutable";
+    arg_pos, "But this expression is mutable";
+  ]
+
+let maybe_mutable_argument_mismatch param_pos arg_pos =
+  add_list (Typing.err_code Typing.MaybeMutableArgumentMismatch)
+  [
+    arg_pos, "Invalid argument";
+    param_pos, "This parameter is not marked <<__MaybeMutable>>";
+    arg_pos, "But this expression is maybe mutable"
   ]
 
 let invalid_mutable_return_result error_pos function_pos value_kind =
@@ -2627,6 +2717,22 @@ let coroutinness_mismatch pos1_is_coroutine pos1 pos2 =
       pos1, if pos1_is_coroutine then m1 else m2;
       pos2, if pos1_is_coroutine then m2 else m1;
     ]
+
+let invalid_ppl_call pos context =
+  let error_msg = "Cannot call a method on an object of a <<__PPL>> class "^context in
+  add (Typing.err_code Typing.InvalidPPLCall) pos error_msg
+
+let invalid_ppl_static_call pos reason =
+  let error_msg = "Cannot call a static method on a <<__PPL>> class "^reason in
+  add (Typing.err_code Typing.InvalidPPLStaticCall) pos error_msg
+
+let ppl_meth_pointer pos func =
+  let error_msg = func^" cannot be used with a <<__PPL>> class" in
+  add (Typing.err_code Typing.PPLMethPointer) pos error_msg
+
+let coroutine_outside_experimental pos =
+  add (Typing.err_code Typing.CoroutineOutsideExperimental) pos
+    Coroutine_errors.error_message
 
 let return_disposable_mismatch pos1_return_disposable pos1 pos2 =
   let m1 = "This is marked <<__ReturnDisposable>>." in
@@ -3018,6 +3124,11 @@ let obj_set_reactive pos =
   "\nYou cannot set non-mutable object properties in reactive functions") in
   add (Typing.err_code Typing.ObjSetReactive) pos msg
 
+let invalid_unset_target_rx pos =
+  add (Typing.err_code Typing.InvalidUnsetTargetInRx) pos (
+    "Non-mutable argument for 'unset' is not allowed in reactive functions."
+  )
+
 let inout_argument_bad_type pos msgl =
   let msg =
     "Expected argument marked inout to be contained in a local or " ^
@@ -3025,13 +3136,15 @@ let inout_argument_bad_type pos msgl =
     "To use inout here, assign to/from a temporary local variable." in
   add_list (Typing.err_code Typing.InoutArgumentBadType) ((pos, msg) :: msgl)
 
-let ambiguous_lambda pos n =
-  let msg =
+let ambiguous_lambda pos uses =
+  let msg1 =
+    "Lambda has parameter types that could not be determined at definition site." in
+  let msg2 =
     Printf.sprintf
-      "Lambda has parameter types that could not be determined at definition-site: \
-       body was checked %d times. Please add type hints"
-      n in
-  add (Typing.err_code Typing.AmbiguousLambda) pos msg
+    "%d distinct use types were determined: please add type hints to lambda parameters."
+      (List.length uses) in
+  add_list (Typing.err_code Typing.AmbiguousLambda) ([(pos, msg1); (pos, msg2)] @
+    List.map uses (fun (pos, ty) -> (pos, "This use has type " ^ ty)))
 
 let wrong_expression_kind_attribute expr_kind pos attr attr_class_pos attr_class_name intf_name =
   let msg1 =
@@ -3161,6 +3274,15 @@ let ambiguous_object_access pos name self_pos vis subclass_pos class_self class_
     subclass_pos, "Instead of the " ^ vis ^ " instance declared in " ^ class_subclass;
   ]
 
+let invalid_traversable_in_rx pos =
+  add (Typing.err_code Typing.InvalidTraversableInRx) pos (
+    "Cannot traverse over non-reactive traversable in reactive code."
+  )
+
+let lateinit_with_default pos =
+  add (Typing.err_code Typing.LateInitWithDefault) pos
+    "A late-initialized property cannot have a default value"
+
 let forward_compatibility_not_current pos value =
   let current = ForwardCompatibilityLevel.current in
   add (Init.err_code Init.ForwardCompatibilityNotCurrent)
@@ -3259,6 +3381,9 @@ let try_when f ~when_ ~do_ =
     else add_error error;
     result
   end
+
+(* Whether we've found at least one error *)
+let currently_has_errors = M.currently_has_errors
 
 (* Runs the first function that is expected to produce an error. If it doesn't
  * then we run the second function we are given

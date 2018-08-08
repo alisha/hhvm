@@ -41,13 +41,14 @@ class Error implements Throwable {
     int $code = 0,
     ?Throwable $previous = null,
   );
+  <<__Rx, __MaybeMutable>>
   final public function getMessage(): string;
   final public function getPrevious(): ?Throwable;
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getCode(): mixed;
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getFile(): string;
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getLine(): int;
   /* HH_FIXME[2082] T30662901 */
   final public function getTrace(): array<mixed>;
@@ -69,6 +70,7 @@ class Exception implements Throwable {
   protected int $line;
   /* HH_FIXME[2082] T30662901 */
   protected array $trace;
+  protected mixed $userMetadata;
 
   <<__Rx>>
   public function __construct (
@@ -76,15 +78,15 @@ class Exception implements Throwable {
     int $code = 0,
     protected ?Exception $previous = null,
   );
-  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class)>>
+  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class), __MaybeMutable>>
   public function getMessage(): string;
   final public function getPrevious(): ?Exception;
   public final function setPrevious(Exception $previous): void;
-  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class)>>
+  <<__Rx, __OnlyRxIfImpl(HH\Rx\Exception::class), __MaybeMutable>>
   public function getCode(): int;
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getFile(): string;
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   final public function getLine(): int;
   /* HH_FIXME[2082] T30662901 */
   final public function getTrace(): array<mixed>;
@@ -108,7 +110,7 @@ class ErrorException extends Exception {
     int $lineno = 0 /* __LINE__ */,
     ?Exception $previous = null
   );
-  <<__Rx>>
+  <<__Rx, __MaybeMutable>>
   public final function getSeverity(): int;
 }
 

@@ -15,6 +15,7 @@
 */
 #include "hphp/runtime/base/weakref-data.h"
 
+#include "hphp/runtime/base/string-hash-map.h"
 #include "hphp/runtime/base/type-object.h"
 #include "hphp/runtime/base/type-variant.h"
 #include "hphp/system/systemlib.h"
@@ -22,7 +23,7 @@
 namespace HPHP {
 
 // Maps object ids to the WeakRefData associated to them.
-using weakref_data_map = req::hash_map<uintptr_t, req::weak_ptr<WeakRefData>>;
+using weakref_data_map = req::fast_map<uintptr_t, req::weak_ptr<WeakRefData>>;
 THREAD_LOCAL(weakref_data_map, s_weakref_data);
 
 void weakref_cleanup() {
@@ -51,8 +52,7 @@ req::shared_ptr<WeakRefData> WeakRefData::forObject(Object obj) {
 
     obj->setWeakRefed();
     req::weak_ptr<WeakRefData> weak_data = req::weak_ptr<WeakRefData>(wr_data);
-    if (!(weakmap->insert(
-            {(uintptr_t)obj.get(), weak_data}).second)) {
+    if (!(weakmap->emplace((uintptr_t)obj.get(), weak_data).second)) {
       // Failure. Key should be unique.  We just checked.
       assertx(false);
     }

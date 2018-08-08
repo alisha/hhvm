@@ -32,21 +32,22 @@
 #include "hphp/runtime/vm/jit/array-offset-profile.h"
 #include "hphp/runtime/vm/jit/call-target-profile.h"
 #include "hphp/runtime/vm/jit/cls-cns-profile.h"
+#include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/inlining-decider.h"
 #include "hphp/runtime/vm/jit/meth-profile.h"
+#include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/profile-refcount.h"
 #include "hphp/runtime/vm/jit/release-vv-profile.h"
 #include "hphp/runtime/vm/jit/switch-profile.h"
-#include "hphp/runtime/vm/jit/type-profile.h"
-#include "hphp/runtime/vm/jit/containers.h"
-#include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/trans-cfg.h"
-#include "hphp/runtime/vm/named-entity.h"
+#include "hphp/runtime/vm/jit/type-profile.h"
 #include "hphp/runtime/vm/named-entity-defs.h"
-#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/named-entity.h"
 #include "hphp/runtime/vm/repo-global-data.h"
-#include "hphp/runtime/vm/unit.h"
+#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/treadmill.h"
+#include "hphp/runtime/vm/type-profile.h"
+#include "hphp/runtime/vm/unit.h"
 
 #include "hphp/util/build-info.h"
 #include "hphp/util/process.h"
@@ -66,9 +67,11 @@ StaticString s_invoke("__invoke");
 StaticString s_86ctor("86ctor");
 StaticString s_86pinit("86pinit");
 StaticString s_86sinit("86sinit");
+StaticString s_86linit("86linit");
 
 constexpr uint32_t k86pinitSlot = 0x80000000u;
 constexpr uint32_t k86sinitSlot = 0x80000001u;
+constexpr uint32_t k86linitSlot = 0x80000002u;
 
 template<typename F>
 auto deserialize(ProfDataDeserializer&ser, F&& f) -> decltype(f()) {
@@ -777,6 +780,7 @@ void merge_loaded_units(int numWorkers) {
   std::atomic<size_t> index{0};
   for (auto worker = 0; worker < numWorkers; ++worker) {
     workers.push_back(std::thread([&] {
+      ProfileNonVMThread nonVM;
       hphp_thread_init();
       hphp_session_init(Treadmill::SessionKind::PreloadRepo);
 
@@ -1159,6 +1163,7 @@ void write_func(ProfDataSerializer& ser, const Func* func) {
       if (cls->getMethod(slot) != func) {
         if (func->name() == s_86pinit.get()) return k86pinitSlot;
         if (func->name() == s_86sinit.get()) return k86sinitSlot;
+        if (func->name() == s_86linit.get()) return k86linitSlot;
         cls = getOwningClassForFunc(func);
         assertx(cls->getMethod(slot) == func);
       }
@@ -1200,6 +1205,7 @@ Func* read_func(ProfDataDeserializer& ser) {
           auto const cls = read_class(ser);
           if (id == k86pinitSlot) return cls->get86pinit();
           if (id == k86sinitSlot) return cls->get86sinit();
+          if (id == k86linitSlot) return cls->get86linit();
           const Slot slot = ~id;
           return cls->getMethod(slot);
         }
@@ -1228,7 +1234,7 @@ Func* read_func(ProfDataDeserializer& ser) {
   return ret;
 }
 
-bool serializeProfData(const std::string& filename) {
+std::string serializeProfData(const std::string& filename) {
   try {
     ProfDataSerializer ser{filename};
 
@@ -1259,8 +1265,6 @@ bool serializeProfData(const std::string& filename) {
 
     write_target_profiles(ser);
 
-    InliningDecider::serializeForbiddenInlines(ser);
-
     // We've written everything directly referenced by the profile
     // data, but jitted code might still use Classes and TypeAliasReqs
     // that haven't been otherwise mentioned (eg VerifyParamType,
@@ -1269,14 +1273,13 @@ bool serializeProfData(const std::string& filename) {
 
     ser.finalize();
 
-    return true;
+    return "";
   } catch (std::runtime_error& err) {
-    FTRACE(1, "serializeProfData - Failed: {}\n", err.what());
-    return false;
+    return folly::sformat("Failed to serialize profile data: {}", err.what());
   }
 }
 
-bool deserializeProfData(const std::string& filename, int numWorkers) {
+std::string deserializeProfData(const std::string& filename, int numWorkers) {
   try {
     ProfDataDeserializer ser{filename};
 
@@ -1302,8 +1305,6 @@ bool deserializeProfData(const std::string& filename, int numWorkers) {
 
     read_target_profiles(ser);
 
-    InliningDecider::deserializeForbiddenInlines(ser);
-
     read_classes_and_type_aliases(ser);
 
     always_assert(ser.done());
@@ -1319,10 +1320,10 @@ bool deserializeProfData(const std::string& filename, int numWorkers) {
     // in (resulting in fatals when the wrapper tries to call it).
     merge_loaded_units(numWorkers);
 
-    return true;
+    return "";
   } catch (std::runtime_error& err) {
-    FTRACE(1, "deserializeProfData - Failed: {}\n", err.what());
-    return false;
+    return folly::sformat("Failed to deserialize profile data {}: {}",
+                          filename, err.what());
   }
 }
 

@@ -103,13 +103,15 @@ let check_param : Env.env -> Nast.fun_param -> unit =
   match param_hint with
   | None -> ()
   | Some hint ->
-    let env, ty = Typing_phase.hint_locl env hint in
+    let env, ty = Typing_phase.localize_hint_with_self env hint in
     check_memoizable env ty
 
 let check: Env.env -> Nast.user_attribute list ->
     Nast.fun_param list -> Nast.fun_variadicity -> unit =
   fun env user_attributes params variadic ->
-  if Attributes.mem SN.UserAttributes.uaMemoize user_attributes then begin
+  if Attributes.mem SN.UserAttributes.uaMemoize user_attributes ||
+     Attributes.mem SN.UserAttributes.uaMemoizeLSB user_attributes
+  then begin
     List.iter ~f:(check_param env) params;
     match variadic with
     | FVvariadicArg vparam -> check_param env vparam

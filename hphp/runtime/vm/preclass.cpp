@@ -169,7 +169,8 @@ void PreClass::enforceInMaybeSealedParentWhitelist(
 PreClass::Prop::Prop(PreClass* preClass,
                      const StringData* name,
                      Attr attrs,
-                     const StringData* typeConstraint,
+                     const StringData* userType,
+                     const TypeConstraint& typeConstraint,
                      const StringData* docComment,
                      const TypedValue& val,
                      RepoAuthType repoAuthType,
@@ -177,10 +178,11 @@ PreClass::Prop::Prop(PreClass* preClass,
   : m_name(name)
   , m_mangledName(manglePropName(preClass->name(), name, attrs))
   , m_attrs(attrs)
-  , m_typeConstraint(typeConstraint)
+  , m_userType{userType}
   , m_docComment(docComment)
   , m_val(val)
   , m_repoAuthType{repoAuthType}
+  , m_typeConstraint{typeConstraint}
   , m_userAttributes(userAttributes)
 {}
 
@@ -194,6 +196,11 @@ void PreClass::Prop::prettyPrint(std::ostream& out,
   if (m_attrs & AttrPersistent) { out << "(persistent) "; }
   if (m_attrs & AttrNoSerialize) { out << "(no-serialize) "; }
   if (m_attrs & AttrIsImmutable) { out << "(immutable) "; }
+  if (m_attrs & AttrNoBadRedeclare) { out << "(no-bad-redeclare) "; }
+  if (m_attrs & AttrNoOverride) { out << "(no-override) "; }
+  if (m_attrs & AttrSystemInitialValue) { out << "(system-initial-val) "; }
+  if (m_attrs & AttrNoImplicitNullable) { out << "(no-implicit-nullable) "; }
+  if (m_attrs & AttrInitialSatisfiesTC) { out << "(initial-satisfies-tc) "; }
   out << preClass->name()->data() << "::" << m_name->data() << " = ";
   if (m_val.m_type == KindOfUninit) {
     out << "<non-scalar>";
@@ -203,8 +210,11 @@ void PreClass::Prop::prettyPrint(std::ostream& out,
     out << ss;
   }
   out << " (RAT = " << show(m_repoAuthType) << ")";
-  if (m_typeConstraint && !m_typeConstraint->empty()) {
-    out << " (tc = " << m_typeConstraint->data() << ")";
+  if (m_userType && !m_userType->empty()) {
+    out << " (user-type = " << m_userType->data() << ")";
+  }
+  if (m_typeConstraint.hasConstraint()) {
+    out << " (tc = " << m_typeConstraint.displayName(nullptr, true) << ")";
   }
   out << std::endl;
 }

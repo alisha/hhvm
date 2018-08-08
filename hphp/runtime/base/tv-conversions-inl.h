@@ -29,6 +29,11 @@
 
 namespace HPHP {
 
+// We want to avoid potential include cycle with func.h/class.h, so putting
+// forward declarations here is more feasible and simpler.
+const StringData* funcToStringHelper(const Func* func);
+const StringData* classToStringHelper(const Class* cls);
+
 ///////////////////////////////////////////////////////////////////////////////
 
 inline bool cellToBool(Cell cell) {
@@ -53,6 +58,10 @@ inline bool cellToBool(Cell cell) {
     case KindOfObject:        return cell.m_data.pobj->toBoolean();
     case KindOfResource:      return cell.m_data.pres->data()->o_toBoolean();
     case KindOfRef:           break;
+    case KindOfFunc:
+      return funcToStringHelper(cell.m_data.pfunc)->toBoolean();
+    case KindOfClass:
+      return classToStringHelper(cell.m_data.pclass)->toBoolean();
   }
   not_reached();
 }
@@ -79,6 +88,10 @@ inline int64_t cellToInt(Cell cell) {
     case KindOfObject:        return cell.m_data.pobj->toInt64();
     case KindOfResource:      return cell.m_data.pres->data()->o_toInt64();
     case KindOfRef:           break;
+    case KindOfFunc:
+      return funcToStringHelper(cell.m_data.pfunc)->toInt64(10);
+    case KindOfClass:
+      return classToStringHelper(cell.m_data.pclass)->toInt64(10);
   }
   not_reached();
 }
@@ -95,13 +108,22 @@ inline double cellToDouble(Cell cell) {
 inline Cell cellToKey(Cell cell, const ArrayData* ad) {
   assertx(cellIsPlausible(cell));
 
-  if (isStringType(cell.m_type)) {
+  auto strToKey = [&] (const StringData* str) {
     int64_t n;
-    if (ad->convertKey(cell.m_data.pstr, n)) {
+    if (ad->convertKey(str, n)) {
       return make_tv<KindOfInt64>(n);
     }
     return cell;
+  };
+
+  if (isStringType(cell.m_type)) {
+    return strToKey(cell.m_data.pstr);
+  } else if (isFuncType(cell.m_type)) {
+    return strToKey(funcToStringHelper(cell.m_data.pfunc));
+  } else if (isClassType(cell.m_type)) {
+    return strToKey(classToStringHelper(cell.m_data.pclass));
   }
+
   if (LIKELY(isIntType(cell.m_type))) return cell;
 
   if (!ad->useWeakKeys()) {
@@ -140,6 +162,8 @@ inline Cell cellToKey(Cell cell, const ArrayData* ad) {
     case KindOfInt64:
     case KindOfString:
     case KindOfPersistentString:
+    case KindOfFunc:
+    case KindOfClass:
     case KindOfRef:
       break;
   }

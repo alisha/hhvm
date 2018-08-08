@@ -140,28 +140,30 @@ void BasicPeephole::push_back(const Bytecode& next) {
       return;
     }
 
-    // transform suitable FCallD; UnboxRNop; Await to FCallAwait
+    // transform suitable FCall; UnboxRNop; Await to FCallAwait
     if (!m_ctx.func->isGenerator &&
         m_next.size() > 1 &&
         cur.op == Op::UnboxRNop &&
         next.op == Op::Await) {
       auto& prev = (&cur)[-1];
-      if (prev.op == Op::FCallD) {
-        auto& call = prev.FCallD;
+      if (prev.op == Op::FCall) {
+        auto& call = prev.FCall;
         auto async = [&]() {
-          if (call.str2->empty()) {
+          if (call.arg2 || call.arg3 != 1) return false;
+          if (call.str5->empty()) return false;
+          if (call.str4->empty()) {
             return m_index.is_async_func(
-              m_index.resolve_func(m_ctx, call.str3));
+              m_index.resolve_func(m_ctx, call.str5));
           }
-          auto cls = m_index.resolve_class(m_ctx, call.str2);
+          auto cls = m_index.resolve_class(m_ctx, call.str4);
           assert(cls);
           auto func = m_index.resolve_method(m_ctx, subCls(*cls),
-                                             call.str3);
+                                             call.str5);
           return m_index.is_async_func(func);
         }();
         if (async) {
           prev = bc::FCallAwait {
-            call.arg1, call.str2, call.str3
+            call.arg1, call.str4, call.str5
           };
           m_next.pop_back();
           return;
@@ -179,7 +181,7 @@ void BasicPeephole::push_back(const Bytecode& next) {
 }
 
 std::string BasicPeephole::show(const Bytecode& op) {
-  return ::HPHP::HHBBC::show(m_ctx.func, op);
+  return php::show(m_ctx.func, op);
 }
 
 void ConcatPeephole::finalize() {

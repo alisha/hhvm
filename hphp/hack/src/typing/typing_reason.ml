@@ -81,6 +81,9 @@ type t =
   | Rmissing_optional_field of Pos.t * string
   | Rcontravariant_generic of t * string
   | Rinvariant_generic of t * string
+  | Rregex           of Pos.t
+  | Rlambda_use      of Pos.t
+  | Rimplicit_upper_bound of Pos.t
 
 and expr_dep_type_reason =
   | ERexpr of int
@@ -230,6 +233,12 @@ let rec to_string prefix r =
   | Rinvariant_generic (r_orig, class_name) ->
     (to_string prefix r_orig) @
     [(p, "Considering that this type argument is invariant with respect to " ^ class_name)]
+  | Rregex _ ->
+    [(p, prefix ^ " resulting from this regex pattern")]
+  | Rlambda_use p ->
+      [(p, prefix ^ " because the lambda function was used here")]
+  | Rimplicit_upper_bound _ ->
+    [(p, prefix ^ " arising from an implicit 'as ?nonnull' constraint on this type")]
 
 and to_pos = function
   | Rnone     -> Pos.none
@@ -299,6 +308,9 @@ and to_pos = function
   | Rmissing_optional_field (p, _) -> p
   | Rcontravariant_generic (r, _) -> to_pos r
   | Rinvariant_generic (r, _) -> to_pos r
+  | Rregex p -> p
+  | Rlambda_use p -> p
+  | Rimplicit_upper_bound p -> p
 
 (* This is a mapping from internal expression ids to a standardized int.
  * Used for outputting cleaner error messages to users
@@ -397,6 +409,9 @@ match r with
   | Rmissing_optional_field _ -> "Rmissing_optional_field"
   | Rcontravariant_generic _ -> "Rcontravariant_generic"
   | Rinvariant_generic _ -> "Rinvariant_generic"
+  | Rregex _ -> "Rregex"
+  | Rlambda_use _ -> "Rlambda_use"
+  | Rimplicit_upper_bound _ -> "Rimplicit_upper_bound"
 
 let pp fmt r =
   Format.pp_print_string fmt @@ to_constructor_string r

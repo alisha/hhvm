@@ -218,7 +218,7 @@ function lambda_param(): void {
 let lambda_param_cases = [
    ("lambda_param.php", 4, 9), "_";
    ("lambda_param.php", 6, 14), "int";
-   ("lambda_param.php", 4, 12), "(function($s): _)";
+   ("lambda_param.php", 4, 12), "[fun]";
    ("lambda_param.php", 6, 17), "(function(int $x): num)";
 ]
 
@@ -234,6 +234,9 @@ function class_id(): void {
 //^9:3
   if ($x instanceof B) {}
 //                  ^11:21
+  $cls = A::class;
+  $cls;
+// ^14:4
 }
 "
 
@@ -243,6 +246,7 @@ let class_id_cases = [
   ("class_id.php", 7, 3), "A";
   ("class_id.php", 9, 3), "A";
   ("class_id.php", 11, 21), "B";
+  ("class_id.php", 14, 4), "classname<A>";
 ]
 
 

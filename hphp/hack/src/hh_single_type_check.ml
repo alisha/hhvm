@@ -49,6 +49,7 @@ module TypedTree = Full_fidelity_syntax_tree
 type mode =
   | Ai of Ai_options.t
   | Autocomplete
+  | Autocomplete_manually_invoked
   | Ffp_autocomplete
   | Color
   | Coverage
@@ -152,16 +153,17 @@ let parse_options () =
   let disallow_ambiguous_lambda = ref false in
   let disallow_array_typehint = ref false in
   let disallow_array_literal = ref false in
+  let disallow_reified_generics = ref false in
   let no_fallback_in_namespaces = ref false in
   let dynamic_view = ref false in
   let allow_array_as_tuple = ref false in
   let allow_return_by_ref = ref false in
   let allow_array_cell_pass_by_ref = ref false in
-  let hacksperimental = ref false in
   let void_is_type_of_null = ref false in
   let parser = ref Legacy in
   let auto_namespace_map = ref [] in
   let dont_assume_php = ref false in
+  let unsafe_rx = ref false in
   let options = [
     "--ai",
       Arg.String (set_ai),
@@ -174,7 +176,10 @@ let parse_options () =
       " Ignore all functions with attribute '__PHPStdLib'";
     "--auto-complete",
       Arg.Unit (set_mode Autocomplete),
-      " Produce autocomplete suggestions";
+      " Produce autocomplete suggestions as if triggered by trigger character";
+    "--auto-complete-manually-invoked",
+      Arg.Unit (set_mode Autocomplete_manually_invoked),
+      " Produce autocomplete suggestions as if manually triggered by user";
     "--auto-namespace-map",
       Arg.String (fun m ->
         auto_namespace_map := ServerConfig.convert_auto_namespace_to_map m),
@@ -296,6 +301,9 @@ let parse_options () =
     "--disallow-array-literal",
       Arg.Set disallow_array_literal,
       " Disallow usage of array literals.";
+    "--disallow-reified-generics",
+      Arg.Set disallow_reified_generics,
+      " Disallow usage of reified generics.";
     "--no-fallback-in-namespaces",
       Arg.Set no_fallback_in_namespaces,
       " Treat foo() as namespace\\foo() and MY_CONST as namespace\\MY_CONST.";
@@ -317,12 +325,12 @@ let parse_options () =
     "--allow-array-cell-pass-by-ref",
         Arg.Set allow_array_cell_pass_by_ref,
         " Allow binding of array cells by reference as arguments to function calls";
-    "--hacksperimental",
-        Arg.Set hacksperimental,
-        " Enable experimental Hack features";
     "--void-is-type-of-null",
         Arg.Set void_is_type_of_null,
         " Make void the type of null";
+    "--unsafe-rx",
+        Arg.Set unsafe_rx,
+        " Disables reactivity related errors"
   ] in
   let options = Arg.align ~limit:25 options in
   Arg.parse options (fun fn -> fn_ref := Some fn) usage;
@@ -332,7 +340,7 @@ let parse_options () =
   let tcopt = {
     GlobalOptions.default with
       GlobalOptions.tco_assume_php = not !dont_assume_php;
-      GlobalOptions.tco_unsafe_rx = false;
+      GlobalOptions.tco_unsafe_rx = !unsafe_rx;
       GlobalOptions.tco_safe_array = !safe_array;
       GlobalOptions.tco_safe_vector_array = !safe_vector_array;
       GlobalOptions.po_deregister_php_stdlib = !deregister_attributes;
@@ -352,8 +360,8 @@ let parse_options () =
         then !forbid_nullable_cast
         else if x = GlobalOptions.tco_experimental_disable_optional_and_unknown_shape_fields
         then !disable_optional_and_unknown_shape_fields
-        else if x = GlobalOptions.tco_hacksperimental
-        then !hacksperimental
+        else if x = GlobalOptions.tco_experimental_reified_generics
+        then not (!disallow_reified_generics)
         else if x = GlobalOptions.tco_experimental_void_is_type_of_null
         then !void_is_type_of_null
         else true
@@ -376,7 +384,7 @@ let compute_least_type tcopt popt fn =
         Nast.(List.fold fnb_nast ~init:[]
           ~f:begin fun acc stmt ->
             match stmt with
-            | Expr (_, New (((), CI ((_, "\\least_upper_bound"), hints)), _, _)) ->
+            | Expr (_, New ((_, CI ((_, "\\least_upper_bound"), hints)), _, _)) ->
               (List.map hints
                 (fun h -> snd (Typing_infer_return.type_from_hint tcopt fn h)))
               :: acc
@@ -560,12 +568,7 @@ let parse_name_and_decl popt files_contents tcopt parser =
         Errors.run_in_context fn Errors.Parsing begin fun () ->
           match parser with
           | Legacy -> Parser_hack.program popt fn contents
-          | FFP ->
-            let hacksperimental =
-              GlobalOptions.tco_experimental_feature_enabled tcopt GlobalOptions.tco_hacksperimental
-            in
-            let env = Full_fidelity_ast.make_env ~hacksperimental fn in
-            Full_fidelity_ast.from_text_with_legacy env contents
+          | FFP -> Full_fidelity_ast.defensive_program popt fn contents
         end
       end
     in
@@ -696,43 +699,54 @@ let handle_mode
   mode filename tcopt popt parser files_contents files_info errors =
   match mode with
   | Ai _ -> ()
-  | Autocomplete ->
+  | Autocomplete
+  | Autocomplete_manually_invoked ->
+      let token = "AUTO332" in
+      let token_len = String.length token in
       let file = cat (Relative_path.to_absolute filename) in
-      let autocomplete_context = { AutocompleteTypes.
-        is_xhp_classname = false;
-        is_instance_member = false;
-        is_after_single_colon = false;
-      } in (* feature not implemented here; it only works for LSP *)
-      let result = ServerAutoComplete.auto_complete
-        ~tcopt ~delimit_on_namespaces:false ~autocomplete_context file in
+      (* Search backwards: there should only be one /real/ case. If there's multiple, *)
+      (* guess that the others are preceding explanation comments *)
+      let offset = Str.search_backward (Str.regexp token) file (String.length file) in
+      let pos = File_content.offset_to_position file offset in
+      let file = (Str.string_before file offset) ^ (Str.string_after file (offset + token_len)) in
+      let is_manually_invoked = mode = Autocomplete_manually_invoked in
+
+      let result = ServerAutoComplete.auto_complete_at_position
+        ~tcopt ~pos ~is_manually_invoked ~delimit_on_namespaces:false ~file_content:file in
       List.iter ~f: begin fun r ->
         let open AutocompleteTypes in
         Printf.printf "%s %s\n" r.res_name r.res_ty
       end result.Utils.With_complete_flag.value
   | Ffp_autocomplete ->
-      let file_text = cat (Relative_path.to_absolute filename) in
-      (* TODO: Use a magic word/symbol to identify autocomplete location instead *)
-      let args_regex = Str.regexp "AUTOCOMPLETE [1-9][0-9]* [1-9][0-9]*" in
-      let position = try
-        let _ = Str.search_forward args_regex file_text 0 in
-        let raw_flags = Str.matched_string file_text in
-        match split ' ' raw_flags with
-        | [ _; row; column] ->
-          { line = int_of_string row; column = int_of_string column }
-        | _ -> failwith "Invalid test file: no flags found"
-      with
-        Not_found -> failwith "Invalid test file: no flags found"
-      in
-      let result =
-        FfpAutocompleteService.auto_complete tcopt file_text position
-        ~filter_by_token:true
-      in begin
+      begin try
+        let file_text = cat (Relative_path.to_absolute filename) in
+        (* TODO: Use a magic word/symbol to identify autocomplete location instead *)
+        let args_regex = Str.regexp "AUTOCOMPLETE [1-9][0-9]* [1-9][0-9]*" in
+        let position = try
+          let _ = Str.search_forward args_regex file_text 0 in
+          let raw_flags = Str.matched_string file_text in
+          match split ' ' raw_flags with
+          | [ _; row; column] ->
+            { line = int_of_string row; column = int_of_string column }
+          | _ -> failwith "Invalid test file: no flags found"
+        with
+          Not_found -> failwith "Invalid test file: no flags found"
+        in
+        let result =
+          FfpAutocompleteService.auto_complete tcopt file_text position
+          ~filter_by_token:true
+        in
         match result with
         | [] -> Printf.printf "No result found\n"
         | res -> List.iter res ~f:begin fun r ->
             let open AutocompleteTypes in
             Printf.printf "%s\n" r.res_name
           end
+      with
+      | Failure msg
+      | Invalid_argument msg ->
+        Printf.printf "%s\n" msg;
+        exit 1
       end
   | Color ->
       Relative_path.Map.iter files_info begin fun fn fileinfo ->
@@ -876,13 +890,13 @@ let handle_mode
     let env = Typing_env.empty tcopt filename ~droot:None in
     let stringify_types tast =
       let tast = Tast_expand.expand_program tast in
+      let print_pos_and_ty () (pos, ty) =
+        Format.asprintf "(%a, %s)" Pos.pp pos (Typing_print.full_strip_ns env ty)
+      in
       TASTStringMapper.map_program tast
         ~map_env_annotation:(fun () -> ())
-        ~map_expr_annotation:begin fun () (pos, ty) ->
-          Format.asprintf "(%a, %s)" Pos.pp pos
-            (Typing_print.full_strip_ns env ty)
-        end
-        ~map_class_id_annotation:(fun () -> Typing_print.full_strip_ns env)
+        ~map_expr_annotation:print_pos_and_ty
+        ~map_class_id_annotation:print_pos_and_ty
     in
     let string_ast = stringify_types tast in
     Printf.printf "%s\n" (StringNAST.show_program string_ast)
@@ -910,7 +924,7 @@ let handle_mode
     let strip_types =
       TASTTypeStripper.map_program
         ~map_env_annotation:(fun _ -> ())
-        ~map_class_id_annotation:(fun _ _ -> ())
+        ~map_class_id_annotation:(fun _ (p, _) -> p)
         ~map_expr_annotation:(fun _ (p, _) -> p)
     in
     let nast = strip_types tast in
@@ -927,7 +941,7 @@ let handle_mode
     } in
     let filename = Relative_path.to_absolute filename in
     let content = cat filename in
-    let include_defs = false in
+    let include_defs = true in
     let labelled_file = ServerCommandTypes.LabelledFileContent { filename; content; } in
     let results = ServerFindRefs.go_from_file
       (labelled_file, line, column, include_defs) genv env in

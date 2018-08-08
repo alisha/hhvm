@@ -42,6 +42,7 @@ MODULES=\
   annotated_ast\
   ast\
   client\
+	common\
   config\
   decl\
   deps\
@@ -73,6 +74,7 @@ MODULES=\
   procs\
   recorder\
   search\
+	search/signatures\
   server\
   socket\
   stubs\

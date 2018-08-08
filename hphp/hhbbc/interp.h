@@ -57,11 +57,18 @@ struct RunFlags {
   folly::Optional<Type> returned;
 
   /*
+   * If returned is set, and the returned value was a parameter,
+   * retParam will be set to the parameter's id; otherwise it will be
+   * NoLocalId.
+   */
+  LocalId retParam{NoLocalId};
+
+  /*
    * Map from the local statics whose types were used by this block,
    * to the type that was used.  This is used to force re-analysis of
    * the corresponding blocks when the type of the static changes.
    */
-  std::shared_ptr<std::map<LocalId,Type>> usedLocalStatics;
+  std::shared_ptr<hphp_fast_map<LocalId,Type>> usedLocalStatics;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -142,12 +149,19 @@ struct StepFlags {
   folly::Optional<Type> returned;
 
   /*
+   * If returned is set, and the returned value was a parameter,
+   * retParam will be set to the parameter's id; otherwise it will be
+   * NoLocalId.
+   */
+  LocalId retParam{NoLocalId};
+
+  /*
    * Map from the local statics whose types were used by this
    * instruction, to the type that was used.  This is used to force
    * re-analysis of the corresponding blocks when the type of the
    * static changes.
    */
-  std::shared_ptr<std::map<LocalId,Type>> usedLocalStatics;
+  std::shared_ptr<hphp_fast_map<LocalId,Type>> usedLocalStatics;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -160,7 +174,7 @@ struct Interp {
   const Index& index;
   Context ctx;
   CollectedInfo& collect;
-  borrowed_ptr<const php::Block> blk;
+  const php::Block* blk;
   State& state;
 };
 
@@ -199,11 +213,11 @@ void default_dispatch(ISS&, const Bytecode&);
 /*
  * Can this call be converted to an FCallBuiltin
  */
-bool can_emit_builtin(borrowed_ptr<const php::Func> func,
+bool can_emit_builtin(const php::Func* func,
                       int numParams, bool hasUnpack);
 
 void finish_builtin(ISS& env,
-                    borrowed_ptr<const php::Func> func,
+                    const php::Func* func,
                     uint32_t numParams,
                     bool unpack);
 

@@ -48,9 +48,19 @@ struct StructuredLogEntry;
 template <typename T> struct AtomicVector;
 
 /*
- * C++ builtin function type.
+ * Signature for native functions called by the hhvm using the hhvm
+ * calling convention that provides raw access to the ActRec.
  */
-using BuiltinFunction = TypedValue* (*)(ActRec* ar);
+using ArFunction = TypedValue* (*)(ActRec* ar);
+
+/*
+ * Signature for native functions expecting the platform ABI calling
+ * convention. This must always be casted to a proper signature before
+ * calling, so make something up to prevent accidental mixing with other
+ * function pointer types.
+ */
+struct NativeArgs; // never defined
+using NativeFunction = void(*)(NativeArgs*);
 
 /*
  * Vector of pairs (param index, offset of corresponding DV funclet).
@@ -87,6 +97,8 @@ struct EHEnt {
   int m_parentIndex;
   Offset m_handler;
   Offset m_end;
+
+  template<class SerDe> void serde(SerDe& sd);
 };
 
 /*
@@ -236,7 +248,7 @@ struct Func final {
    *
    * FIXME: Currently this method does almost nothing.
    */
-  void validate() const;
+  bool validate() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // FuncId manipulation.
@@ -727,6 +739,11 @@ struct Func final {
   bool isMemoizeWrapper() const;
 
   /*
+   * Is this func a memoization wrapper with LSB parameter set?
+   */
+  bool isMemoizeWrapperLSB() const;
+
+  /*
    * Is this string the name of a memoize implementation.
    */
   static bool isMemoizeImplName(const StringData*);
@@ -794,28 +811,28 @@ struct Func final {
   bool takesNumArgs() const;
 
   /*
-   * The builtinFuncPtr takes an ActRec*, unpacks it, and usually dispatches to
-   * a nativeFuncPtr.
+   * The function returned by arFuncPtr() takes an ActRec*, unpacks it,
+   * and usually dispatches to a nativeFuncPtr() with a specific signature.
    *
-   * All C++ builtins have a builtinFuncPtr, with no exceptions.
+   * All C++ builtins have an ArFunction, with no exceptions.
    *
-   * Most HNI functions share a single builtinFuncPtr, which performs
-   * unpacking and dispatch.  The exception is HNI functions declared
-   * with NeedsActRec, which do not have nativeFuncPtr's and have
-   * unique builtinFuncPtr's which do all their work.
+   * Most HNI functions share a single ArFunction, which performs
+   * unpacking and dispatch. The exception is HNI functions declared
+   * with NeedsActRec, which do not have NativeFunctions, but have unique
+   * ArFunctions which do all their work.
    */
-  BuiltinFunction builtinFuncPtr() const;
+  ArFunction arFuncPtr() const;
 
   /*
-   * The nativeFuncPtr is a type-punned function pointer which takes the actual
-   * argument types of a builtin and does the actual work.
+   * The nativeFuncPtr is a type-punned function pointer to the unerlying
+   * function which takes the actual argument types, and does the actual work.
    *
    * These are the functions with names prefixed by f_ or t_.
    *
-   * All C++ builtins have nativeFuncPtr's, with the ironic exception of HNI
-   * (i.e., "Native") functions declared with NeedsActRec.
+   * All C++ builtins have NativeFunctions, with the ironic exception of HNI
+   * functions declared with NeedsActRec.
    */
-  BuiltinFunction nativeFuncPtr() const;
+  NativeFunction nativeFuncPtr() const;
 
   /////////////////////////////////////////////////////////////////////////////
   // Closures.                                                          [const]
@@ -1110,6 +1127,11 @@ struct Func final {
 
   void prettyPrint(std::ostream& out, const PrintOpts& = PrintOpts()) const;
 
+  /*
+   * Print function attributes to out.
+   */
+  static void print_attrs(std::ostream& out, Attr attrs);
+
 
   /////////////////////////////////////////////////////////////////////////////
   // Other methods.
@@ -1239,6 +1261,7 @@ private:
     bool m_hasExtendedSharedData : 1;
     bool m_returnByValue : 1; // only for builtins
     bool m_isMemoizeWrapper : 1;
+    bool m_isMemoizeWrapperLSB : 1;
     bool m_isPhpLeafFn : 1;
     bool m_takesNumArgs : 1;
     // Needing more than 2 class ref slots basically doesn't happen, so just use
@@ -1272,8 +1295,8 @@ private:
   };
 
   /*
-   * If a Func represents a C++ builtin, or is exceptionally large (either in
-   * line count or bytecode size), it requires extra information that most
+   * If this Func represents a native function or is exceptionally large
+   * (line count or bytecode size), it requires extra information that most
    * Funcs don't need, so it's SharedData is actually one of these extended
    * SharedDatas.
    */
@@ -1288,8 +1311,8 @@ private:
     ExtendedSharedData(ExtendedSharedData&&) = delete;
 
     MaybeDataType m_hniReturnType;
-    BuiltinFunction m_builtinFuncPtr;
-    BuiltinFunction m_nativeFuncPtr;
+    ArFunction m_arFuncPtr;
+    NativeFunction m_nativeFuncPtr;
     Offset m_past;  // Only read if SharedData::m_pastDelta is kSmallDeltaLimit
     int m_line2;    // Only read if SharedData::m_line2 is kSmallDeltaLimit
     Id m_actualNumClsRefSlots;
@@ -1384,7 +1407,7 @@ public:
   // Do not re-order without checking perf!
 
 private:
-#ifdef DEBUG
+#ifndef NDEBUG
   // For asserts only.
   int m_magic;
 #endif
@@ -1495,6 +1518,11 @@ bool funcNeedsCallerFrame(const Func*);
  * and iterators. Does not record function name or class.
  */
 void logFunc(const Func* func, StructuredLogEntry& ent);
+
+/*
+ * Convert a function pointer where a string is needed in some context.
+ */
+const StringData* funcToStringHelper(const Func* func);
 
 ///////////////////////////////////////////////////////////////////////////////
 

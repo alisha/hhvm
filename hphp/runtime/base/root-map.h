@@ -17,7 +17,7 @@
 #ifndef incl_HPHP_ROOT_MAP_H_
 #define incl_HPHP_ROOT_MAP_H_
 
-#include "hphp/runtime/base/req-containers.h"
+#include "hphp/runtime/base/req-hash-map.h"
 #include "hphp/runtime/base/req-ptr.h"
 
 namespace HPHP {
@@ -31,7 +31,7 @@ namespace HPHP {
  */
 template<class T> struct RootMap {
   using RootId = uintptr_t;
-  using Map = req::hash_map<RootId,req::ptr<T>>;
+  using Map = req::fast_map<RootId,req::ptr<T>>;
 
   RootId addRoot(req::ptr<T>&& ptr) {
     assertx(ptr);

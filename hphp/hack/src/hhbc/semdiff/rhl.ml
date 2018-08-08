@@ -417,9 +417,8 @@ let check_instruct_call asn i i' =
   | FPushClsMethodS _, _ | FPushClsMethodSD _, _
   | FPushClsMethodD _, _ | FPushCtor _, _ | FPushCtorD _, _ | FPushCtorI _, _
   | FPushCtorS _, _ | FPushCufIter _, _ | FIsParamByRef _, _
-  | FThrowOnRefMismatch _, _ | FCall _, _ | FCallD _, _ | FCallAwait _, _
-  | FCallUnpack _, _ | FCallBuiltin _, _ | FCallM _, _ | FCallUnpackM _, _
-  | FCallDM _, _ ->
+  | FThrowOnRefMismatch _, _ | FCall _, _ | FCallAwait _, _
+  | FCallBuiltin _, _ ->
     if i=i' then Some asn else None
   | _, _ -> None
 
@@ -447,7 +446,7 @@ let check_instruct_base asn i i' =
   | BaseGL (l,mode), BaseGL(l',mode') ->
     if mode = mode' then reads asn l l'
     else None (* don't really know if this is right *)
-  | BaseSL (l,n), BaseSL (l',n') ->
+  | BaseSL (l,n,_), BaseSL (l',n',_) ->
     if n=n' then reads asn l l'
     else None
   | BaseL (l,mode), BaseL (l',mode') ->
@@ -663,7 +662,8 @@ let check_instruct_operator i i' =
   | CastBool, _ | CastInt, _ | CastDouble, _ | CastString, _ | CastArray, _
   | CastObject, _ | CastVec, _ | CastDict, _ | CastKeyset, _ | CastVArray, _
   | CastDArray, _ | InstanceOf, _ | InstanceOfD _, _ | IsTypeStruct _, _
-  | Print, _ | AsTypeStruct _, _ | Clone, _ ->
+  | Print, _ | ResolveFunc _, _ | ResolveObjMethod, _ | ResolveClsMethod, _
+  | AsTypeStruct _, _ | Clone, _ ->
     if i=i' then Some false else None
 
 let check_instruct_special_flow i i' =

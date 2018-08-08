@@ -296,6 +296,8 @@ void ParameterExpression::compatibleDefault(FileScopeRawPtr file) {
       case KindOfObject:
       case KindOfResource:
       case KindOfRef:
+      case KindOfFunc:
+      case KindOfClass:
         if (!m_hhType) {
           compat = false;
           return;

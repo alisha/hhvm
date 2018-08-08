@@ -282,8 +282,7 @@ SSATmp* mergeBranchDests(State& env, const IRInstruction* inst) {
                    CheckMBase,
                    CheckInit,
                    CheckInitMem,
-                   CheckInitProps,
-                   CheckInitSProps,
+                   CheckRDSInitialized,
                    CheckPackedArrayDataBounds,
                    CheckMixedArrayOffset,
                    CheckDictOffset,
@@ -2353,7 +2352,14 @@ SSATmp* simplifyConvCellToObj(State& /*env*/, const IRInstruction* inst) {
 
 SSATmp* simplifyDblAsBits(State& env, const IRInstruction* inst) {
   auto const src = inst->src(0);
-  if (src->hasConstVal()) return cns(env, reinterpretDblAsInt(src->dblVal()));
+  if (src->hasConstVal()) {
+    union {
+      int64_t i;
+      double d;
+    };
+    d = src->dblVal();
+    return cns(env, i);
+  }
   return nullptr;
 }
 
@@ -2375,9 +2381,11 @@ SSATmp* simplifyCoerceCellToBool(State& env, const IRInstruction* inst) {
   auto const src     = inst->src(0);
   auto const srcType = src->type();
 
-  if (srcType <= TBool ||
-       (isSimplifyOkay(inst)
-        && srcType.subtypeOfAny(TNull, TDbl, TInt, TStr))) {
+  if (srcType <= TBool) return gen(env, Mov, src);
+
+  if (isSimplifyOkay(inst) &&
+      srcType.subtypeOfAny(TNull, TDbl, TInt, TStr)) {
+    if (RuntimeOption::EvalWarnOnCoerceBuiltinParams) return nullptr;
     return gen(env, ConvCellToBool, src);
   }
 
@@ -2391,8 +2399,10 @@ SSATmp* simplifyCoerceCellToInt(State& env, const IRInstruction* inst) {
   auto const src      = inst->src(0);
   auto const srcType  = src->type();
 
-  if (srcType <= TInt ||
-       (isSimplifyOkay(inst) && srcType.subtypeOfAny(TBool, TNull, TDbl))) {
+  if (srcType <= TInt) return gen(env, Mov, src);
+
+  if (isSimplifyOkay(inst) && srcType.subtypeOfAny(TBool, TNull, TDbl)) {
+    if (RuntimeOption::EvalWarnOnCoerceBuiltinParams) return nullptr;
     return gen(env, ConvCellToInt, inst->taken(), src);
   }
 
@@ -2409,8 +2419,11 @@ SSATmp* simplifyCoerceCellToDbl(State& env, const IRInstruction* inst) {
   auto const src      = inst->src(0);
   auto const srcType  = src->type();
 
-  if (srcType.subtypeOfAny(TInt, TDbl) ||
-       (isSimplifyOkay(inst) && srcType.subtypeOfAny(TBool, TNull))) {
+  if (srcType <= TDbl) return gen(env, Mov, src);
+
+  if (isSimplifyOkay(inst) &&
+      srcType.subtypeOfAny(TBool, TNull, TInt)) {
+    if (RuntimeOption::EvalWarnOnCoerceBuiltinParams) return nullptr;
     return gen(env, ConvCellToDbl, inst->taken(), src);
   }
 
@@ -2447,14 +2460,14 @@ SSATmp* simplifyCeil(State& env, const IRInstruction* inst) {
 }
 
 SSATmp* simplifyUnboxPtr(State& /*env*/, const IRInstruction* inst) {
-  if (inst->src(0)->isA(TPtrToCell)) {
+  if (inst->src(0)->isA(TMemToCell)) {
     return inst->src(0);
   }
   return nullptr;
 }
 
 SSATmp* simplifyBoxPtr(State& /*env*/, const IRInstruction* inst) {
-  if (inst->src(0)->isA(TPtrToBoxedCell)) {
+  if (inst->src(0)->isA(TMemToBoxedCell)) {
     return inst->src(0);
   }
   return nullptr;
@@ -2462,7 +2475,7 @@ SSATmp* simplifyBoxPtr(State& /*env*/, const IRInstruction* inst) {
 
 SSATmp* simplifyCheckInit(State& env, const IRInstruction* inst) {
   auto const srcType = inst->src(0)->type();
-  assertx(!srcType.maybe(TPtrToGen));
+  assertx(!srcType.maybe(TMemToGen));
   assertx(inst->taken());
   if (!srcType.maybe(TUninit)) return gen(env, Nop);
   return mergeBranchDests(env, inst);
@@ -2472,12 +2485,16 @@ SSATmp* simplifyCheckInitMem(State& env, const IRInstruction* inst) {
   return mergeBranchDests(env, inst);
 }
 
-SSATmp* simplifyCheckInitProps(State& env, const IRInstruction* inst) {
+SSATmp* simplifyCheckRDSInitialized(State& env, const IRInstruction* inst) {
+  auto const handle = inst->extra<CheckRDSInitialized>()->handle;
+  if (!rds::isNormalHandle(handle)) return gen(env, Jmp, inst->next());
   return mergeBranchDests(env, inst);
 }
 
-SSATmp* simplifyCheckInitSProps(State& env, const IRInstruction* inst) {
-  return mergeBranchDests(env, inst);
+SSATmp* simplifyMarkRDSInitialized(State& env, const IRInstruction* inst) {
+  auto const handle = inst->extra<MarkRDSInitialized>()->handle;
+  if (!rds::isNormalHandle(handle)) return gen(env, Nop);
+  return nullptr;
 }
 
 SSATmp* simplifyInitObjProps(State& env, const IRInstruction* inst) {
@@ -3382,6 +3399,13 @@ SSATmp* simplifyLookupClsRDS(State& /*env*/, const IRInstruction* inst) {
   return nullptr;
 }
 
+SSATmp* simplifyLookupSPropSlot(State& env, const IRInstruction* inst) {
+  auto const cls = inst->src(0);
+  auto const name = inst->src(1);
+  if (!cls->hasConstVal(TCls) || !name->hasConstVal(TStr)) return nullptr;
+  return cns(env, cls->clsVal()->lookupSProp(name->strVal()));
+}
+
 SSATmp* simplifyLdStrLen(State& env, const IRInstruction* inst) {
   auto const src = inst->src(0);
   return src->hasConstVal(TStr) ? cns(env, src->strVal()->size()) : nullptr;
@@ -3650,8 +3674,8 @@ SSATmp* simplifyWork(State& env, const IRInstruction* inst) {
   X(Ceil)
   X(CheckInit)
   X(CheckInitMem)
-  X(CheckInitProps)
-  X(CheckInitSProps)
+  X(CheckRDSInitialized)
+  X(MarkRDSInitialized)
   X(CheckLoc)
   X(CheckMBase)
   X(CheckRefs)
@@ -3748,6 +3772,7 @@ SSATmp* simplifyWork(State& env, const IRInstruction* inst) {
   X(LdClsCctx)
   X(LdClsName)
   X(LookupClsRDS)
+  X(LookupSPropSlot)
   X(LdClsMethod)
   X(LdStrLen)
   X(LdVecElem)

@@ -59,12 +59,6 @@ struct FuncAnalysisResult {
   Context ctx;
 
   /*
-   * The inferred function return type.  May be TBottom if the
-   * function never returns.
-   */
-  Type inferredReturn;
-
-  /*
    * If this function allocates closures, this maps each of those
    * closure classes to the types of its used variables, in their
    * declared order.
@@ -76,6 +70,19 @@ struct FuncAnalysisResult {
    * function could define.
    */
   ConstantMap cnsMap;
+
+  /*
+   * The inferred function return type.  May be TBottom if the
+   * function never returns.
+   */
+  Type inferredReturn;
+
+  /*
+   * If the function returns one of its parameters, the index of that
+   * parameter. MaxLocalId and above indicate that it doesn't return a
+   * parameter.
+   */
+  LocalId retParam{MaxLocalId};
 
   /*
    * Reads a constant thats not in the index (yet - this can only
@@ -108,7 +115,7 @@ struct FuncAnalysisResult {
   /*
    * A set of pair of functions and their push blocks that we failed to fold.
    */
-  hphp_fast_set<std::pair<borrowed_ptr<const php::Func>, BlockId>>
+  hphp_fast_set<std::pair<const php::Func*, BlockId>>
     unfoldableFuncs;
 
   /*
@@ -130,7 +137,7 @@ struct FuncAnalysis : FuncAnalysisResult {
   FuncAnalysis& operator=(FuncAnalysis&&) = default;
 
   // Blocks in a reverse post order, with DV initializers.
-  std::vector<borrowed_ptr<php::Block>> rpoBlocks;
+  std::vector<php::Block*> rpoBlocks;
 
   // Block data is indexed by Block::id.
   std::vector<BlockData> bdata;
@@ -158,6 +165,9 @@ struct ClassAnalysis {
   PropState privateProperties;
   PropState privateStatics;
   bool anyInterceptable;
+
+  // Whether this class might have a bad initial value for a property.
+  bool badPropInitialValues{false};
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -219,7 +229,7 @@ std::vector<std::pair<State,StepFlags>>
 locally_propagated_states(const Index&,
                           const FuncAnalysis&,
                           CollectedInfo& collect,
-                          borrowed_ptr<const php::Block>,
+                          const php::Block*,
                           State stateIn);
 
 //////////////////////////////////////////////////////////////////////

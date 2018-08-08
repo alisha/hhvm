@@ -63,6 +63,10 @@ type sub_type = Env.env -> locl ty -> locl ty -> Env.env
 let (sub_type_ref: sub_type ref) = ref not_implemented
 let sub_type x = !sub_type_ref x
 
+type is_sub_type_type = Env.env -> locl ty -> locl ty -> bool
+let (is_sub_type_ref: is_sub_type_type ref) = ref not_implemented
+let is_sub_type x = !is_sub_type_ref x
+
 type add_constraint = Pos.Map.key -> Env.env -> Ast.constraint_kind -> locl ty -> locl ty -> Env.env
 let (add_constraint_ref: add_constraint ref) = ref not_implemented
 let add_constraint x = !add_constraint_ref x
@@ -92,6 +96,8 @@ let rec is_option env ty =
   | Tunresolved tyl ->
       List.exists tyl (is_option env)
   | _ -> false
+
+let ensure_option env r ty = if is_option env ty then ty else (r, Toption ty)
 
 let rec is_option_non_mixed env ty =
   let _, ety = Env.expand_type env ty in
@@ -147,7 +153,7 @@ let get_all_supertypes env ty =
  * In the case of a generic parameter whose "as" constraint is another
  * generic parameter, repeat the process until a type is reached that is not
  * a generic parameter. Don't loop on cycles.
- * (For example, functon foo<Tu as Tv, Tv as Tu>(...))
+ * (For example, function foo<Tu as Tv, Tv as Tu>(...))
  *****************************************************************************)
 let get_concrete_supertypes env ty =
   let rec iter seen env acc tyl =
@@ -194,6 +200,16 @@ let rec find_dynamic env tyl =
 
 let is_dynamic env ty =
   find_dynamic env [ty] <> None
+
+(*****************************************************************************)
+(* Check if type is any or a variant thereof  *)
+(*****************************************************************************)
+
+let rec is_any env ty =
+  match Env.expand_type env ty with
+  | (_, (_, (Tany | Terr))) -> true
+  | (_, (_, Tunresolved tyl)) -> List.for_all tyl (is_any env)
+  | _ -> false
 
 (*****************************************************************************)
 (* Gets the base type of an abstract type *)
@@ -331,68 +347,77 @@ let get_printable_shape_field_name = Env.get_shape_field_name
 
 (* Traverses two shapes structurally, parameterized by functions to run on
   common fields (on_common_field) and when the first shape has an optional
-  field that is missing in the second (on_missing_optional_field).
+  field that is missing in the second (on_missing_omittable optional_field
+  and on_missing_non_omittable_optional_field).
+
+  This is used in subtyping and unification. When subtyping, the first and
+  second fields are respectively the supertype and subtype.
 
   The unset fields of the first shape (empty if it is fully known) must be a
   subset of the unset fields of the second shape. An error will be reported
   otherwise.
 
-  If the first shape has an optional field that is not present and not
-  explicitly unset in the second shape (i.e. the second shape is partially known
-  and the field is not listed in its unset_fields), then
-  Error.missing_optional_field will be emitted.
+  If the first shape has an optional field, we distinguish two cases:
 
-  This is used in subtyping and unification. When subtyping, the first and
-  second fields are respectively the supertype and subtype.
+    - the field may be omitted in the second shape because the shape is
+    closed or because the field is explicitly unset in it;
 
-  Example of Error.missing_optional_field for subtyping:
-    s = shape('x' => int, ...)
-    t = shape('x' => int, ?'z' => bool)
-    $s = shape('x' => 1, 'z' => 2)
-    $s is a subtype of s
-    $s is not a subtype of t
-    If s is a subtype of t, then by transitivity, $s is a subtype of t
-      --> contradiction
-    We prevent this by making sure that (apply_changes ... t s) fails because
-    t has an optional field 'z' that is not unset by s.
+    - the field may not be omitted (i.e., the second shape is open and
+    the field is not explicitly unset in it).
+
+  The first case corresponds roughly to the rule
+
+      shape() <: shape(?'x' => t),
+
+  saying that a closed shape can be widened with optional fields of any
+  types.  The second case corresponds to the rule
+
+      shape(...) <: shape(?'x' => mixed, ...),
+
+  i.e., an open shape can be widened with optional fields of type mixed
+  only.
+
 *)
 let apply_shape
   ~on_common_field
   ~on_missing_omittable_optional_field
   ~on_missing_non_omittable_optional_field
+  ~on_error
   (env, acc)
   (r1, fields_known1, fdm1)
   (r2, fields_known2, fdm2) =
+  let (env, acc) =
   begin match fields_known1, fields_known2 with
     | FieldsFullyKnown, FieldsFullyKnown ->
         (* If both shapes are FieldsFullyKnown, then we must ensure that the
            supertype shape knows about every single field that could possibly
            be present in the subtype shape. *)
-        ShapeMap.iter begin fun name _ ->
+        ShapeMap.fold begin fun name _ (env, acc) ->
           if not @@ ShapeMap.mem name fdm1 then
             let pos1 = Reason.to_pos r1 in
             let pos2 = Reason.to_pos r2 in
-            Errors.unknown_field_disallowed_in_shape
+            on_error (env,acc) (fun () -> Errors.unknown_field_disallowed_in_shape
               pos1
               pos2
-              (get_printable_shape_field_name name)
-        end fdm2
+              (get_printable_shape_field_name name))
+          else (env, acc)
+        end fdm2 (env, acc)
     | FieldsFullyKnown, FieldsPartiallyKnown _  ->
         let pos1 = Reason.to_pos r1 in
         let pos2 = Reason.to_pos r2 in
-        Errors.shape_fields_unknown pos2 pos1
+        on_error (env, acc) (fun () -> Errors.shape_fields_unknown pos2 pos1)
     | FieldsPartiallyKnown unset_fields1,
       FieldsPartiallyKnown unset_fields2 ->
-        ShapeMap.iter begin fun name unset_pos ->
+        ShapeMap.fold begin fun name unset_pos (env, acc) ->
           match ShapeMap.get name unset_fields2 with
-            | Some _ -> ()
+            | Some _ -> (env, acc)
             | None ->
                 let pos2 = Reason.to_pos r2 in
-                Errors.shape_field_unset unset_pos pos2
-                  (get_printable_shape_field_name name);
-        end unset_fields1
-    | _ -> ()
-  end;
+                on_error (env, acc) (fun () -> Errors.shape_field_unset unset_pos pos2
+                  (get_printable_shape_field_name name))
+        end unset_fields1 (env, acc)
+    | _ -> (env, acc)
+  end in
   ShapeMap.fold begin fun name shape_field_type_1 (env, acc) ->
     match ShapeMap.get name fdm2 with
     | None when is_shape_field_optional env shape_field_type_1 ->
@@ -408,17 +433,18 @@ let apply_shape
     | None ->
         let pos1 = Reason.to_pos r1 in
         let pos2 = Reason.to_pos r2 in
-        Errors.missing_field pos2 pos1 (get_printable_shape_field_name name);
-        (env, acc)
+        on_error (env, acc) (fun () ->
+          Errors.missing_field pos2 pos1 (get_printable_shape_field_name name))
     | Some shape_field_type_2 ->
         on_common_field (env, acc) name shape_field_type_1 shape_field_type_2
   end fdm1 (env, acc)
 
 let shape_field_name_ env field =
   let open Nast in match field with
-    | p, String name -> Ok (Ast.SFlit (p, name))
-    | _, Class_const (((), CI (x, _)), y) -> Ok (Ast.SFclass_const (x, y))
-    | _, Class_const (((), CIself), y) ->
+    | p, Int name -> Ok (Ast.SFlit_int (p, name))
+    | p, String name -> Ok (Ast.SFlit_str (p, name))
+    | _, Class_const ((_, CI (x, _)), y) -> Ok (Ast.SFclass_const (x, y))
+    | _, Class_const ((_, CIself), y) ->
       let _, c_ty = Env.get_self env in
       (match c_ty with
       | Tclass (sid, _) ->
@@ -450,6 +476,7 @@ let flatten_unresolved env ty acc =
   let res = match ety with
     (* flatten Tunresolved[Tunresolved[...]] *)
     | (_, Tunresolved tyl) -> tyl @ acc
+    | (_, Tany) -> acc
     | _ -> ty :: acc in
   env, res
 
@@ -551,7 +578,7 @@ let in_var env ty =
   let env = Env.add env x ty in
   env, (fst ty, Tvar x)
 
-let unresolved_tparam env (_, (pos, _), _) =
+let unresolved_tparam env (_, (pos, _), _, _) =
   let reason = Reason.Rwitness pos in
   in_var env (reason, Tunresolved [])
 
@@ -632,8 +659,8 @@ let class_is_final_and_not_contravariant class_ty =
     List.for_all
       class_ty.tc_tparams
       ~f:(begin function
-          (Ast.Invariant | Ast.Covariant), _, _ -> true
-          | _, _, _ -> false
+          (Ast.Invariant | Ast.Covariant), _, _, _ -> true
+          | _, _, _, _ -> false
           end)
 
 (*****************************************************************************)
@@ -692,7 +719,7 @@ let default_fun_param ?(pos=Pos.none) ty : 'a fun_param = {
   fp_type = ty;
   fp_kind = FPnormal;
   fp_accept_disposable = false;
-  fp_mutable = false;
+  fp_mutability = None;
   fp_rx_condition = None;
 }
 
@@ -710,3 +737,21 @@ let terr env =
   let dynamic_view_enabled =
     TypecheckerOptions.dynamic_view (Typing_env.get_tcopt env) in
   if dynamic_view_enabled then Tdynamic else Terr
+
+(* Hacked version of Typing_subtype.try_intersect for collecting function types *)
+let add_function_type env fty logged =
+  let (untyped_ftys, ftys) = logged in
+  let rec try_intersect env ty tyl =
+  match tyl with
+  | [] -> [ty]
+  | ty'::tyl' ->
+    if is_sub_type env ty ty' && not (HasTany.check ty)
+    then try_intersect env ty tyl'
+    else
+    if is_sub_type env ty' ty && not (HasTany.check ty')
+    then try_intersect env ty' tyl'
+    else ty' :: try_intersect env ty tyl'
+in
+  if HasTany.check fty
+  then (try_intersect env fty untyped_ftys, ftys)
+  else (untyped_ftys, try_intersect env fty ftys)

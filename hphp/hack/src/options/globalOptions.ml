@@ -27,6 +27,7 @@ type t = {
   tco_disallow_array_cell_pass_by_ref: bool;
   tco_language_feature_logging : bool;
   tco_unsafe_rx : bool;
+  tco_disallow_implicit_returns_in_non_void_functions : bool;
   ignored_fixme_codes : ISet.t;
   forward_compatibility_level : ForwardCompatibilityLevel.t;
 } [@@deriving show]
@@ -112,29 +113,6 @@ let tco_experimental_disable_optional_and_unknown_shape_fields =
 let tco_experimental_no_trait_reuse = "no_trait_reuse"
 
 (**
- * Typechecker support for `is` expressions. This feature is incomplete and
- * under development, see T22779957 for details and progress.
- *)
-let tco_experimental_is_expression = "is_expression"
-
-(**
- * Typechecker support for `as` expressions. This feature is incomplete and
- * under development, see T26859386 for details and progress.
- *)
-let tco_experimental_as_expression = "as_expression"
-
-(**
- * Typechecker support for all features behind the hacksperimental flag.
- *)
-let tco_hacksperimental = "hacksperimental"
-
-(**
- * When overriding a class member: if the parent or child's member is typed,
- * require that the user specify a typehint for the other member.
- *)
-let tco_decl_override_require_hint = "decl_override_require_hint"
-
-(**
  * Make void the type of null.
  *)
 let tco_experimental_void_is_type_of_null = "void_is_type_of_null"
@@ -143,6 +121,16 @@ let tco_experimental_void_is_type_of_null = "void_is_type_of_null"
  * Enable the null coalescence assignment (`??=`) operator.
  *)
 let tco_experimental_null_coalesce_assignment = "null_coalesce_assignment"
+
+(**
+ * Enable reified generics
+ *)
+let tco_experimental_reified_generics = "reified_generics"
+
+(**
+ * Enable specially typed regex strings (e.g. `re"\d"`).
+ *)
+let tco_experimental_re_prefixed_strings = "re_prefixed_strings"
 
 let tco_experimental_all =
  SSet.empty |> List.fold_right SSet.add
@@ -161,12 +149,10 @@ let tco_experimental_all =
      tco_experimental_disallow_static_memoized;
      tco_experimental_disable_optional_and_unknown_shape_fields;
      tco_experimental_no_trait_reuse;
-     tco_experimental_is_expression;
-     tco_experimental_as_expression;
-     tco_hacksperimental;
-     tco_decl_override_require_hint;
      tco_experimental_void_is_type_of_null;
      tco_experimental_null_coalesce_assignment;
+     tco_experimental_reified_generics;
+     tco_experimental_re_prefixed_strings;
    ]
 
 let tco_migration_flags_all =
@@ -197,6 +183,7 @@ let default = {
  tco_disallow_array_cell_pass_by_ref = false;
  tco_language_feature_logging = false;
  tco_unsafe_rx = true;
+ tco_disallow_implicit_returns_in_non_void_functions = true;
  ignored_fixme_codes = Errors.default_ignored_fixme_codes;
  forward_compatibility_level = ForwardCompatibilityLevel.default;
 }
@@ -233,6 +220,7 @@ let make ~tco_assume_php
          ~tco_disallow_array_cell_pass_by_ref
          ~tco_language_feature_logging
          ~tco_unsafe_rx
+         ~tco_disallow_implicit_returns_in_non_void_functions
          ~ignored_fixme_codes
          ~forward_compatibility_level = {
                    tco_assume_php;
@@ -255,6 +243,7 @@ let make ~tco_assume_php
                    tco_disallow_array_cell_pass_by_ref;
                    tco_language_feature_logging;
                    tco_unsafe_rx;
+                   tco_disallow_implicit_returns_in_non_void_functions;
                    forward_compatibility_level;
         }
 let tco_assume_php t = t.tco_assume_php
@@ -283,5 +272,7 @@ let tco_disallow_return_by_ref t = t.tco_disallow_return_by_ref
 let tco_disallow_array_cell_pass_by_ref t = t.tco_disallow_array_cell_pass_by_ref
 let tco_language_feature_logging t = t.tco_language_feature_logging
 let tco_unsafe_rx t = t.tco_unsafe_rx
+let tco_disallow_implicit_returns_in_non_void_functions t =
+  t.tco_disallow_implicit_returns_in_non_void_functions
 let ignored_fixme_codes t = t.ignored_fixme_codes
 let forward_compatibility_level t = t.forward_compatibility_level

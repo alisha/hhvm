@@ -107,6 +107,14 @@ void tvCastToBooleanInPlace(TypedValue* tv) {
         tvDecRefRes(tv);
         continue;
 
+      case KindOfFunc:
+        b = funcToStringHelper(tv->m_data.pfunc)->toBoolean();
+        continue;
+
+      case KindOfClass:
+        b = classToStringHelper(tv->m_data.pclass)->toBoolean();
+        continue;
+
       case KindOfRef:
         break;
     }
@@ -181,6 +189,14 @@ void tvCastToDoubleInPlace(TypedValue* tv) {
         tvDecRefRes(tv);
         continue;
 
+      case KindOfFunc:
+        d = funcToStringHelper(tv->m_data.pfunc)->toDouble();
+        continue;
+
+      case KindOfClass:
+        d = classToStringHelper(tv->m_data.pclass)->toDouble();
+        continue;
+
       case KindOfRef:
         break;
     }
@@ -249,6 +265,14 @@ void tvCastToInt64InPlace(TypedValue* tv) {
         tvDecRefRes(tv);
         continue;
 
+      case KindOfFunc:
+        i = funcToStringHelper(tv->m_data.pfunc)->toInt64();
+        continue;
+
+      case KindOfClass:
+        i = classToStringHelper(tv->m_data.pclass)->toInt64();
+        continue;
+
       case KindOfRef:
         break;
     }
@@ -306,6 +330,12 @@ double tvCastToDouble(TypedValue tv) {
 
     case KindOfResource:
       return tv.m_data.pres->data()->o_toDouble();
+
+    case KindOfFunc:
+      return funcToStringHelper(tv.m_data.pfunc)->toDouble();
+
+    case KindOfClass:
+      return classToStringHelper(tv.m_data.pclass)->toDouble();
 
     case KindOfRef:
       break;
@@ -390,6 +420,16 @@ void cellCastToStringInPlace(tv_lval tv) {
       );
       return;
 
+    case KindOfFunc: {
+      auto const s = funcToStringHelper(val(tv).pfunc);
+      return persistentString(const_cast<StringData*>(s));
+    }
+
+    case KindOfClass: {
+      auto const s = classToStringHelper(val(tv).pclass);
+      return persistentString(const_cast<StringData*>(s));
+    }
+
     case KindOfRef:
       break;
   }
@@ -456,6 +496,16 @@ StringData* cellCastToStringData(Cell tv) {
     case KindOfResource:
       return tv.m_data.pres->data()->o_toString().detach();
 
+    case KindOfFunc: {
+      auto const s = funcToStringHelper(tv.m_data.pfunc);
+      return const_cast<StringData*>(s);
+    }
+
+    case KindOfClass: {
+      auto const s = classToStringHelper(tv.m_data.pclass);
+      return const_cast<StringData*>(s);
+    }
+
     case KindOfRef:
       not_reached();
   }
@@ -483,6 +533,8 @@ ArrayData* tvCastToArrayLikeData(TypedValue tv) {
     case KindOfPersistentString:
     case KindOfString:
     case KindOfResource:
+    case KindOfFunc:
+    case KindOfClass:
       return ArrayData::Create(tv);
 
     case KindOfPersistentVec:
@@ -614,6 +666,11 @@ void tvCastToArrayInPlace(TypedValue* tv) {
         tvDecRefRes(tv);
         continue;
 
+      case KindOfFunc:
+      case KindOfClass:
+        a = ArrayData::Create(tvAsVariant(tv));
+        continue;
+
       case KindOfRef:
         break;
     }
@@ -707,6 +764,16 @@ void tvCastToVecInPlace(TypedValue* tv) {
         tvDecRefGen(tv);
         continue;
 
+      case KindOfFunc:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Func to vec conversion"
+        );
+
+      case KindOfClass:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Class to vec conversion"
+        );
+
       case KindOfRef:
         break;
     }
@@ -796,6 +863,16 @@ void tvCastToDictInPlace(TypedValue* tv) {
         tvDecRefGen(tv);
         continue;
 
+      case KindOfFunc:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Func to dict conversion"
+        );
+
+      case KindOfClass:
+        SystemLib::throwInvalidArgumentExceptionObject(
+          "Class to dict conversion"
+        );
+
       case KindOfRef:
         break;
     }
@@ -884,6 +961,16 @@ void tvCastToKeysetInPlace(TypedValue* tv) {
         // We might have re-entered, so tv may not contain the object anymore.
         tvDecRefGen(tv);
         continue;
+
+      case KindOfFunc:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Func to keyset conversion"
+        );
+
+      case KindOfClass:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Class to keyset conversion"
+        );
 
       case KindOfRef:
         break;
@@ -983,6 +1070,16 @@ void tvCastToVArrayInPlace(TypedValue* tv) {
         // We might have re-entered, so tv may not contain the object anymore.
         tvDecRefGen(tv);
         continue;
+
+      case KindOfFunc:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Func to varray conversion"
+        );
+
+      case KindOfClass:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Class to varray conversion"
+        );
 
       case KindOfRef:
         break;
@@ -1086,6 +1183,16 @@ void tvCastToDArrayInPlace(TypedValue* tv) {
         tvDecRefGen(tv);
         continue;
 
+      case KindOfFunc:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Func to darray conversion"
+        );
+
+      case KindOfClass:
+        SystemLib::throwInvalidOperationExceptionObject(
+          "Class to darray conversion"
+        );
+
       case KindOfRef:
         break;
     }
@@ -1116,6 +1223,8 @@ ObjectData* tvCastToObjectData(TypedValue tv) {
     case KindOfDouble:
     case KindOfPersistentString:
     case KindOfString:
+    case KindOfFunc:
+    case KindOfClass:
     case KindOfResource: {
       ArrayInit props(1, ArrayInit::Map{});
       props.set(s_scalar, tv);
@@ -1166,6 +1275,8 @@ void tvCastToObjectInPlace(TypedValue* tv) {
       case KindOfInt64:
       case KindOfDouble:
       case KindOfPersistentString:
+      case KindOfFunc:
+      case KindOfClass:
       case KindOfResource: {
         ArrayInit props(1, ArrayInit::Map{});
         props.set(s_scalar, *tv);
@@ -1270,6 +1381,8 @@ bool tvCoerceParamToBooleanInPlace(TypedValue* tv,
     case KindOfDouble:
     case KindOfPersistentString:
     case KindOfString:
+    case KindOfFunc:
+    case KindOfClass:
       tvCastToBooleanInPlace(tv);
       return true;
 
@@ -1318,6 +1431,8 @@ static bool tvCanBeCoercedToNumber(const TypedValue* tv,
     case KindOfArray:
     case KindOfObject:
     case KindOfResource:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
 
     case KindOfRef:
@@ -1374,6 +1489,8 @@ bool tvCoerceParamToStringInPlace(TypedValue* tv,
     case KindOfDouble:
     case KindOfPersistentString:
     case KindOfString:
+    case KindOfFunc:
+    case KindOfClass:
       tvCastToStringInPlace(tv);
       return true;
 
@@ -1421,6 +1538,8 @@ bool tvCoerceParamToArrayInPlace(TypedValue* tv, bool /*builtin*/) {
     case KindOfDict:
     case KindOfPersistentKeyset:
     case KindOfKeyset:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
 
     case KindOfPersistentArray:
@@ -1462,6 +1581,8 @@ bool tvCoerceParamToVecInPlace(TypedValue* tv, bool /*builtin*/) {
     case KindOfKeyset:
     case KindOfPersistentArray:
     case KindOfArray:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
 
     case KindOfPersistentVec:
@@ -1494,6 +1615,8 @@ bool tvCoerceParamToDictInPlace(TypedValue* tv, bool /*builtin*/) {
     case KindOfKeyset:
     case KindOfPersistentArray:
     case KindOfArray:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
 
     case KindOfPersistentDict:
@@ -1526,6 +1649,8 @@ bool tvCoerceParamToKeysetInPlace(TypedValue* tv, bool /*builtin*/) {
     case KindOfDict:
     case KindOfPersistentArray:
     case KindOfArray:
+    case KindOfFunc:
+    case KindOfClass:
       return false;
 
     case KindOfPersistentKeyset:

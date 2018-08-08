@@ -23,7 +23,6 @@
 
 #include <folly/String.h>
 
-#include "hphp/parser/parser.h"
 #include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/base/repo-auth-type-codec.h"
 #include "hphp/runtime/base/variable-serializer.h"
@@ -32,6 +31,7 @@
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/hhbc-codec.h"
 #include "hphp/runtime/vm/hhbc.h"
+#include "hphp/runtime/vm/preclass-emitter.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/util/match.h"
@@ -436,6 +436,9 @@ void print_func_directives(Output& out, const FuncInfo& finfo) {
   if (func->isMemoizeWrapper()) {
     out.fmtln(".ismemoizewrapper;");
   }
+  if (func->isMemoizeWrapperLSB()) {
+    out.fmtln(".ismemoizewrapperlsb;");
+  }
   if (auto const niters = func->numIterators()) {
     out.fmtln(".numiters {};", niters);
   }
@@ -682,7 +685,7 @@ void print_property(Output& out, const PreClass::Prop* prop) {
     RuntimeOption::EvalDisassemblerPropDocComments
       ? opt_escaped_long(prop->docComment())
       : std::string(""),
-    opt_type_info(prop->typeConstraint(), TypeConstraint{}),
+    opt_type_info(prop->userType(), prop->typeConstraint()),
     prop->name()->data());
   indented(out, [&] {
     out.fmtln("{};", member_tv_initializer(prop->val()));
@@ -798,7 +801,7 @@ void print_cls_directives(Output& out, const PreClass* cls) {
 void print_cls(Output& out, const PreClass* cls) {
   out.indent();
   auto name = cls->name()->toCppString();
-  if (ParserBase::IsAnonymousClassName(name)) {
+  if (PreClassEmitter::IsAnonymousClassName(name)) {
     auto p = name.find(';');
     if (p != std::string::npos) {
       name = name.substr(0, p);
