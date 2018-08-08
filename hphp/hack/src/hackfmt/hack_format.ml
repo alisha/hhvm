@@ -822,7 +822,17 @@ let rec t (env: Env.t) (node: Syntax.t) : Doc.t =
       t env kw;
       Space;
       transform_condition env left_p condition right_p;
-      handle_possible_compound_statement env if_body;
+      (match Syntax.syntax if_body with
+      | Syntax.CompoundStatement {
+        compound_left_brace;
+        compound_statements;
+        compound_right_brace; } ->
+          handle_possible_compound_statement env if_body;
+      | _ -> Concat [
+          Space;
+          t env if_body
+        ]
+      );
       handle_possible_list env elseif_clauses;
       t env else_clause;
       Newline;
